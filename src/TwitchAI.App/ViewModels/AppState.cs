@@ -7,20 +7,9 @@ namespace TwitchAI.App.ViewModels;
 
 public sealed partial class AppState : ObservableObject
 {
-    public const int MaximumVisibleAiRuns = 4;
-
-    public AppState()
-    {
-        var localAiRunSlots = new ObservableCollection<LocalAiRunItem>(
-            Enumerable.Range(0, MaximumVisibleAiRuns)
-                .Select(_ => new LocalAiRunItem()));
-        LocalAiRuns = new ReadOnlyObservableCollection<LocalAiRunItem>(
-            localAiRunSlots);
-    }
-
     public ObservableCollection<ModerationCaseItem> ModerationCases { get; } = [];
 
-    public ReadOnlyObservableCollection<LocalAiRunItem> LocalAiRuns { get; }
+    public LocalAiRunItem CurrentLocalAiRun { get; } = new();
 
     public ObservableCollection<PolicyPhraseItem> PolicyPhrases { get; } = [];
 
@@ -62,7 +51,10 @@ public sealed partial class AppState : ObservableObject
     public partial int SkippedWhitelistCount { get; set; }
 
     [ObservableProperty]
-    public partial int VisibleLocalAiRunCount { get; set; }
+    public partial int QueuedLocalAiRunCount { get; set; }
+
+    [ObservableProperty]
+    public partial int QueuedLocalAiMessageCount { get; set; }
 }
 
 public sealed partial class ModerationCaseItem : ObservableObject

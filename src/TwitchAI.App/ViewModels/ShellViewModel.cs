@@ -2,6 +2,8 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Microsoft.UI.Xaml;
+using TwitchAI.Infrastructure.AI;
 using TwitchAI.Infrastructure.Pipeline;
 
 namespace TwitchAI.App.ViewModels;
@@ -19,6 +21,8 @@ public sealed partial class ShellViewModel : ObservableObject
         _state = state;
         _coordinator = coordinator;
         _state.PropertyChanged += (_, _) => RefreshFromState();
+        _state.CurrentLocalAiRun.PropertyChanged +=
+            OnCurrentLocalAiRunPropertyChanged;
         _state.ModerationCases.CollectionChanged += OnCasesCollectionChanged;
         foreach (var item in _state.ModerationCases)
         {
@@ -54,6 +58,84 @@ public sealed partial class ShellViewModel : ObservableObject
             : "Zuerst Twitch in den Einstellungen erfolgreich verbinden";
 
     public int PendingCount => _state.ModerationCases.Count(item => item.Status == "Pending");
+
+    public string LocalAiRunStateLabel =>
+        _state.CurrentLocalAiRun.IsPresent
+            ? _state.CurrentLocalAiRun.StateLabel
+            : "Bereit";
+
+    public string LocalAiRunBatchLabel =>
+        _state.CurrentLocalAiRun.IsPresent
+            ? $"{_state.CurrentLocalAiRun.RunLabel} · "
+                + _state.CurrentLocalAiRun.MessageCountLabel
+            : "Noch kein lokaler AI-Lauf";
+
+    public string LocalAiRunTokenLabel =>
+        _state.CurrentLocalAiRun.IsPresent
+            ? _state.CurrentLocalAiRun.TokenLabel
+            : "LM Studio lokal";
+
+    public string LocalAiRunMetaLabel
+    {
+        get
+        {
+            var run = _state.CurrentLocalAiRun;
+            if (!run.IsPresent)
+            {
+                return "Bereit für den nächsten Batch";
+            }
+
+            var model = string.IsNullOrWhiteSpace(run.ModelId)
+                ? "Lokales Modell"
+                : run.ModelId;
+            return $"{run.DurationLabel} · {run.UpdatedAtLabel} · {model}";
+        }
+    }
+
+    public bool IsLocalAiRunRunning =>
+        _state.CurrentLocalAiRun.IsPresent
+        && _state.CurrentLocalAiRun.State == LocalAiRunState.Running;
+
+    public Visibility LocalAiRunRunningVisibility =>
+        VisibilityForCurrentState(LocalAiRunState.Running);
+
+    public Visibility LocalAiRunQueuedVisibility =>
+        VisibilityForCurrentState(LocalAiRunState.Queued);
+
+    public Visibility LocalAiRunSucceededVisibility =>
+        VisibilityForCurrentState(LocalAiRunState.Succeeded);
+
+    public Visibility LocalAiRunFailedVisibility =>
+        VisibilityForCurrentState(LocalAiRunState.Failed);
+
+    public Visibility LocalAiRunIdleVisibility =>
+        _state.CurrentLocalAiRun.IsPresent
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+
+    public string LocalAiQueueLabel
+    {
+        get
+        {
+            var batchCount = _state.QueuedLocalAiRunCount;
+            var messageCount = _state.QueuedLocalAiMessageCount;
+            var batches = batchCount == 1
+                ? "1 Batch"
+                : $"{batchCount:N0} Batches";
+            var messages = messageCount == 1
+                ? "1 Nachricht"
+                : $"{messageCount:N0} Nachrichten";
+            return $"{batches} · {messages} warten";
+        }
+    }
+
+    public Visibility LocalAiQueueVisibility =>
+        _state.QueuedLocalAiRunCount > 0
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+    public string LocalAiQueueCompactLabel =>
+        $"{_state.QueuedLocalAiRunCount:N0} wartet";
 
     [ObservableProperty]
     public partial string ActivePageTitle { get; set; } = "Moderationswarteschlange";
@@ -93,8 +175,37 @@ public sealed partial class ShellViewModel : ObservableObject
         OnPropertyChanged(nameof(AnalysisLabel));
         OnPropertyChanged(nameof(CanToggleAnalysis));
         OnPropertyChanged(nameof(AnalysisToolTip));
+        RefreshAiFooter();
         ToggleAnalysisCommand.NotifyCanExecuteChanged();
     }
+
+    private void OnCurrentLocalAiRunPropertyChanged(
+        object? sender,
+        PropertyChangedEventArgs args) =>
+        RefreshAiFooter();
+
+    private void RefreshAiFooter()
+    {
+        OnPropertyChanged(nameof(LocalAiRunStateLabel));
+        OnPropertyChanged(nameof(LocalAiRunBatchLabel));
+        OnPropertyChanged(nameof(LocalAiRunTokenLabel));
+        OnPropertyChanged(nameof(LocalAiRunMetaLabel));
+        OnPropertyChanged(nameof(IsLocalAiRunRunning));
+        OnPropertyChanged(nameof(LocalAiRunRunningVisibility));
+        OnPropertyChanged(nameof(LocalAiRunQueuedVisibility));
+        OnPropertyChanged(nameof(LocalAiRunSucceededVisibility));
+        OnPropertyChanged(nameof(LocalAiRunFailedVisibility));
+        OnPropertyChanged(nameof(LocalAiRunIdleVisibility));
+        OnPropertyChanged(nameof(LocalAiQueueLabel));
+        OnPropertyChanged(nameof(LocalAiQueueCompactLabel));
+        OnPropertyChanged(nameof(LocalAiQueueVisibility));
+    }
+
+    private Visibility VisibilityForCurrentState(LocalAiRunState state) =>
+        _state.CurrentLocalAiRun.IsPresent
+        && _state.CurrentLocalAiRun.State == state
+            ? Visibility.Visible
+            : Visibility.Collapsed;
 
     private void RefreshFromState()
     {
@@ -108,6 +219,7 @@ public sealed partial class ShellViewModel : ObservableObject
         OnPropertyChanged(nameof(AnalysisLabel));
         OnPropertyChanged(nameof(CanToggleAnalysis));
         OnPropertyChanged(nameof(AnalysisToolTip));
+        RefreshAiFooter();
         ToggleAnalysisCommand.NotifyCanExecuteChanged();
     }
 

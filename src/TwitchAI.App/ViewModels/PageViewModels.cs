@@ -44,7 +44,6 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         _configuration = configuration;
         _policyStore = policyStore;
         Cases = state.ModerationCases;
-        AiRuns = state.LocalAiRuns;
         Cases.CollectionChanged += OnCasesCollectionChanged;
         foreach (var item in Cases)
         {
@@ -61,18 +60,10 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
             {
                 OnPropertyChanged(nameof(SkippedOverloadCount));
             }
-            else if (args.PropertyName == nameof(AppState.VisibleLocalAiRunCount))
-            {
-                OnPropertyChanged(nameof(AiRunCountLabel));
-                OnPropertyChanged(nameof(AiRunHistoryVisibility));
-                OnPropertyChanged(nameof(AiRunEmptyVisibility));
-            }
         };
     }
 
     public ObservableCollection<ModerationCaseItem> Cases { get; }
-
-    public ReadOnlyObservableCollection<LocalAiRunItem> AiRuns { get; }
 
     public bool HasCases => Cases.Count > 0;
 
@@ -81,21 +72,6 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
     public int SkippedWhitelistCount => _state.SkippedWhitelistCount;
 
     public int SkippedOverloadCount => _state.SkippedOverloadCount;
-
-    public string AiRunCountLabel =>
-        _state.VisibleLocalAiRunCount == 1
-            ? "1 Lauf"
-            : $"{_state.VisibleLocalAiRunCount:N0} Läufe";
-
-    public Visibility AiRunHistoryVisibility =>
-        _state.VisibleLocalAiRunCount > 0
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-
-    public Visibility AiRunEmptyVisibility =>
-        _state.VisibleLocalAiRunCount == 0
-            ? Visibility.Visible
-            : Visibility.Collapsed;
 
     private void OnCasesCollectionChanged(
         object? sender,

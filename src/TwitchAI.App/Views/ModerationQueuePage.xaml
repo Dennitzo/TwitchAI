@@ -12,549 +12,319 @@
   Unloaded="OnPageUnloaded"
   mc:Ignorable="d">
 
-  <ScrollViewer
-    HorizontalScrollBarVisibility="Disabled"
-    VerticalScrollBarVisibility="Auto">
-    <Grid
-      x:Name="PageContent"
-      Margin="28,24,28,40"
-      HorizontalAlignment="Stretch">
-      <Grid.RowDefinitions>
-        <RowDefinition Height="Auto" />
-        <RowDefinition Height="Auto" />
-        <RowDefinition Height="Auto" />
-        <RowDefinition Height="*" />
-      </Grid.RowDefinitions>
+  <Grid
+    x:Name="PageContent"
+    Margin="28,24,28,40"
+    HorizontalAlignment="Stretch">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
 
-      <StackPanel Spacing="6">
-        <TextBlock Style="{StaticResource PageTitleStyle}" Text="Moderationswarteschlange" />
+    <StackPanel Spacing="6">
+      <TextBlock
+        Style="{StaticResource PageTitleStyle}"
+        Text="Moderationswarteschlange" />
+      <TextBlock
+        Foreground="{ThemeResource MutedTextBrush}"
+        Text="AI-Vorschläge bleiben lokal gebunden und werden erst nach deiner Freigabe ausgeführt."
+        TextWrapping="Wrap" />
+    </StackPanel>
+
+    <InfoBar
+      Grid.Row="1"
+      Margin="0,20,0,16"
+      IsClosable="False"
+      IsOpen="True"
+      Message="Vorschläge werden erst nach „Ausführen“ an Twitch gesendet."
+      Severity="Informational"
+      Title="Menschliche Freigabe" />
+
+    <Grid Grid.Row="2">
+      <StackPanel
+        x:Name="EmptyState"
+        MaxWidth="520"
+        Margin="0,54"
+        HorizontalAlignment="Center"
+        Spacing="12">
+        <Border
+          Width="64"
+          Height="64"
+          HorizontalAlignment="Center"
+          Background="{ThemeResource LayerStrongBrush}"
+          CornerRadius="20">
+          <FontIcon
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            FontSize="26"
+            Foreground="{ThemeResource TwitchAccentBrush}"
+            Glyph="&#xE8F2;" />
+        </Border>
         <TextBlock
+          HorizontalAlignment="Center"
+          Style="{StaticResource SectionTitleStyle}"
+          Text="Keine offenen Vorschläge" />
+        <TextBlock
+          HorizontalAlignment="Center"
           Foreground="{ThemeResource MutedTextBrush}"
-          Text="AI-Vorschläge bleiben lokal gebunden und werden erst nach deiner Freigabe ausgeführt."
+          Text="Sobald eine validierte AI-Entscheidung vorliegt, erscheint sie hier zur menschlichen Prüfung."
+          TextAlignment="Center"
           TextWrapping="Wrap" />
       </StackPanel>
 
-      <InfoBar
-        Grid.Row="1"
-        Margin="0,20,0,16"
-        IsClosable="False"
-        IsOpen="True"
-        Message="Vorschläge werden erst nach „Ausführen“ an Twitch gesendet."
-        Severity="Informational"
-        Title="Menschliche Freigabe" />
-
-      <Border
-        Grid.Row="2"
-        Margin="0,0,0,16"
-        Padding="14"
-        Background="{ThemeResource LayerBrush}"
-        BorderBrush="{ThemeResource CardStrokeBrush}"
-        BorderThickness="1"
-        CornerRadius="12">
-        <Grid RowSpacing="12">
-          <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-          </Grid.RowDefinitions>
-
-          <Grid ColumnSpacing="12">
-            <Grid.ColumnDefinitions>
-              <ColumnDefinition Width="Auto" />
-              <ColumnDefinition Width="*" />
-              <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-            <Border
-              Width="34"
-              Height="34"
-              Background="#249146FF"
-              CornerRadius="8">
-              <FontIcon
-                HorizontalAlignment="Center"
-                VerticalAlignment="Center"
-                FontSize="16"
-                Foreground="{ThemeResource TwitchAccentBrush}"
-                Glyph="&#xE950;" />
-            </Border>
-            <StackPanel Grid.Column="1" Spacing="1">
-              <TextBlock
-                FontSize="14"
-                FontWeight="SemiBold"
-                Text="Lokale AI-Runs" />
-              <TextBlock
-                FontSize="11"
-                Foreground="{ThemeResource MutedTextBrush}"
-                Text="Live-Status und echte Tokenwerte aus LM Studio"
-                TextWrapping="Wrap" />
-            </StackPanel>
-            <TextBlock
-              Grid.Column="2"
-              VerticalAlignment="Center"
-              FontSize="12"
-              Foreground="{ThemeResource MutedTextBrush}"
-              Text="{x:Bind ViewModel.AiRunCountLabel, Mode=OneWay}" />
-          </Grid>
-
-          <StackPanel
-            Grid.Row="1"
-            Orientation="Horizontal"
-            Spacing="8"
-            Visibility="{x:Bind ViewModel.AiRunEmptyVisibility, Mode=OneWay}">
-            <FontIcon
-              FontSize="13"
-              Foreground="{ThemeResource MutedTextBrush}"
-              Glyph="&#xE823;" />
-            <TextBlock
-              FontSize="12"
-              Foreground="{ThemeResource MutedTextBrush}"
-              Text="Noch kein Batch an das lokale Modell gesendet." />
-          </StackPanel>
-
-          <ScrollViewer
-            Grid.Row="1"
-            HorizontalScrollBarVisibility="Auto"
-            HorizontalScrollMode="Enabled"
-            VerticalScrollBarVisibility="Disabled"
-            VerticalScrollMode="Disabled"
-            Visibility="{x:Bind ViewModel.AiRunHistoryVisibility, Mode=OneWay}">
-            <ItemsRepeater x:Name="AiRunsRepeater">
-              <ItemsRepeater.Layout>
-                <StackLayout Orientation="Horizontal" Spacing="8" />
-              </ItemsRepeater.Layout>
-              <ItemsRepeater.ItemTemplate>
-                <DataTemplate x:DataType="vm:LocalAiRunItem">
-                  <Border
-                    Width="286"
-                    MinHeight="112"
-                    Padding="11"
-                    Background="{ThemeResource LayerStrongBrush}"
-                    BorderBrush="{ThemeResource CardStrokeBrush}"
-                    BorderThickness="1"
-                    CornerRadius="9"
-                    Visibility="{x:Bind ItemVisibility, Mode=OneWay}">
-                    <Grid RowSpacing="7">
-                      <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
-                      </Grid.RowDefinitions>
-                      <Grid ColumnSpacing="7">
-                        <Grid.ColumnDefinitions>
-                          <ColumnDefinition Width="Auto" />
-                          <ColumnDefinition Width="*" />
-                          <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <FontIcon
-                          FontSize="13"
-                          Foreground="{ThemeResource MutedTextBrush}"
-                          Glyph="&#xE823;"
-                          Visibility="{x:Bind QueuedVisibility, Mode=OneWay}" />
-                        <ProgressRing
-                          Width="14"
-                          Height="14"
-                          IsActive="True"
-                          Visibility="{x:Bind RunningVisibility, Mode=OneWay}" />
-                        <FontIcon
-                          FontSize="13"
-                          Foreground="{ThemeResource SuccessBrush}"
-                          Glyph="&#xE73E;"
-                          Visibility="{x:Bind SucceededVisibility, Mode=OneWay}" />
-                        <FontIcon
-                          FontSize="13"
-                          Foreground="{ThemeResource DangerBrush}"
-                          Glyph="&#xEA39;"
-                          Visibility="{x:Bind FailedVisibility, Mode=OneWay}" />
-                        <StackPanel
-                          Grid.Column="1"
-                          Orientation="Horizontal"
-                          Spacing="6">
-                          <TextBlock
-                            FontSize="12"
-                            FontWeight="SemiBold"
-                            Text="{x:Bind StateLabel, Mode=OneWay}" />
-                          <TextBlock
-                            FontSize="11"
-                            Foreground="{ThemeResource MutedTextBrush}"
-                            Text="{x:Bind RunLabel, Mode=OneWay}" />
-                        </StackPanel>
-                        <TextBlock
-                          Grid.Column="2"
-                          FontSize="11"
-                          Foreground="{ThemeResource MutedTextBrush}"
-                          Text="{x:Bind UpdatedAtLabel, Mode=OneWay}" />
-                      </Grid>
-                      <TextBlock
-                        Grid.Row="1"
-                        FontSize="12"
-                        FontWeight="SemiBold"
-                        Text="{x:Bind TokenLabel, Mode=OneWay}"
-                        TextWrapping="Wrap" />
-                      <Grid Grid.Row="2" ColumnSpacing="6">
-                        <Grid.ColumnDefinitions>
-                          <ColumnDefinition Width="Auto" />
-                          <ColumnDefinition Width="Auto" />
-                          <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock
-                          FontSize="11"
-                          Foreground="{ThemeResource MutedTextBrush}"
-                          Text="{x:Bind MessageCountLabel, Mode=OneWay}" />
-                        <TextBlock
-                          Grid.Column="1"
-                          FontSize="11"
-                          Foreground="{ThemeResource MutedTextBrush}"
-                          Text="{x:Bind DurationLabel, Mode=OneWay}" />
-                        <TextBlock
-                          Grid.Column="2"
-                          MaxWidth="110"
-                          HorizontalAlignment="Right"
-                          FontSize="11"
-                          Foreground="{ThemeResource MutedTextBrush}"
-                          Text="{x:Bind ModelId, Mode=OneWay}"
-                          TextTrimming="CharacterEllipsis" />
-                      </Grid>
-                    </Grid>
-                  </Border>
-                </DataTemplate>
-              </ItemsRepeater.ItemTemplate>
-            </ItemsRepeater>
-          </ScrollViewer>
-        </Grid>
-      </Border>
-
-      <Grid Grid.Row="3">
-        <StackPanel
-          x:Name="EmptyState"
-          MaxWidth="520"
-          Margin="0,54"
-          HorizontalAlignment="Center"
-          Spacing="12">
-          <Border
-            Width="64"
-            Height="64"
-            HorizontalAlignment="Center"
-            Background="{ThemeResource LayerStrongBrush}"
-            CornerRadius="20">
-            <FontIcon
-              HorizontalAlignment="Center"
-              VerticalAlignment="Center"
-              FontSize="26"
-              Foreground="{ThemeResource TwitchAccentBrush}"
-              Glyph="&#xE8F2;" />
-          </Border>
-          <TextBlock
-            HorizontalAlignment="Center"
-            Style="{StaticResource SectionTitleStyle}"
-            Text="Keine offenen Vorschläge" />
-          <TextBlock
-            HorizontalAlignment="Center"
-            Foreground="{ThemeResource MutedTextBrush}"
-            Text="Sobald eine validierte AI-Entscheidung vorliegt, erscheint sie hier zur menschlichen Prüfung."
-            TextAlignment="Center"
-            TextWrapping="Wrap" />
-        </StackPanel>
-
-        <ItemsRepeater
-          x:Name="CasesRepeater"
-          Visibility="Collapsed">
+      <ItemsRepeater
+        x:Name="CasesRepeater"
+        HorizontalAlignment="Stretch"
+        Visibility="Collapsed">
         <ItemsRepeater.Layout>
           <StackLayout Spacing="10" />
         </ItemsRepeater.Layout>
         <ItemsRepeater.ItemTemplate>
           <DataTemplate x:DataType="vm:ModerationCaseItem">
             <Border
-              Padding="14"
+              Padding="12"
+              HorizontalAlignment="Stretch"
               Style="{StaticResource CardStyle}">
               <Grid
-                x:Name="CaseCardLayout"
-                ColumnSpacing="16"
-                RowSpacing="12"
-                SizeChanged="OnCaseCardSizeChanged">
+                RowSpacing="8"
+                HorizontalAlignment="Stretch">
                 <Grid.RowDefinitions>
                   <RowDefinition Height="Auto" />
                   <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="2*" />
-                  <ColumnDefinition x:Name="ReviewColumn" Width="400" />
-                </Grid.ColumnDefinitions>
 
-                <StackPanel Spacing="10">
-                  <Grid
-                    x:Name="IdentityHeader"
-                    RowSpacing="6"
-                    SizeChanged="OnIdentityHeaderSizeChanged">
-                    <Grid.RowDefinitions>
-                      <RowDefinition Height="Auto" />
-                      <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-                    <Grid.ColumnDefinitions>
-                      <ColumnDefinition Width="*" />
-                      <ColumnDefinition x:Name="CaseStatusColumn" Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <StackPanel Orientation="Horizontal" Spacing="10">
-                      <Border
-                        Width="32"
-                        Height="32"
-                        Background="{ThemeResource TwitchAccentBrush}"
-                        CornerRadius="16">
-                        <FontIcon
-                          HorizontalAlignment="Center"
-                          VerticalAlignment="Center"
-                          FontSize="14"
-                          Foreground="White"
-                          Glyph="&#xE77B;" />
-                      </Border>
-                      <StackPanel>
-                        <TextBlock
-                          FontSize="14"
-                          FontWeight="SemiBold"
-                          Text="{x:Bind UserName}" />
-                        <TextBlock
-                          FontSize="11"
-                          Foreground="{ThemeResource MutedTextBrush}"
-                          Text="{x:Bind ReceivedAtDisplay}" />
-                      </StackPanel>
-                    </StackPanel>
+                <Grid
+                  x:Name="IdentityHeader"
+                  RowSpacing="5"
+                  SizeChanged="OnIdentityHeaderSizeChanged">
+                  <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                  </Grid.RowDefinitions>
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition x:Name="CaseStatusColumn" Width="Auto" />
+                  </Grid.ColumnDefinitions>
+                  <StackPanel Orientation="Horizontal" Spacing="9">
                     <Border
-                      x:Name="CaseStatus"
-                      Grid.Column="1"
-                      HorizontalAlignment="Right"
-                      Background="#24F4B860"
-                      MinHeight="26"
-                      Padding="9,3"
-                      Style="{StaticResource StatusPillStyle}">
-                      <TextBlock
-                        FontSize="12"
-                        Foreground="{ThemeResource WarningBrush}"
-                        Text="{x:Bind Status}" />
+                      Width="30"
+                      Height="30"
+                      Background="{ThemeResource TwitchAccentBrush}"
+                      CornerRadius="15">
+                      <FontIcon
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        FontSize="13"
+                        Foreground="White"
+                        Glyph="&#xE77B;" />
                     </Border>
-                  </Grid>
-
-                  <Border
-                    Padding="12,9"
-                    HorizontalAlignment="Stretch"
-                    Background="{ThemeResource LayerStrongBrush}"
-                    BorderBrush="{ThemeResource CardStrokeBrush}"
-                    BorderThickness="1"
-                    CornerRadius="8">
-                    <Grid ColumnSpacing="10">
-                      <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="3" />
-                        <ColumnDefinition Width="*" />
-                      </Grid.ColumnDefinitions>
-                      <Border
-                        Background="{ThemeResource TwitchAccentBrush}"
-                        CornerRadius="2" />
+                    <StackPanel VerticalAlignment="Center" Spacing="0">
                       <TextBlock
-                        Grid.Column="1"
-                        HorizontalAlignment="Stretch"
-                        FontFamily="Segoe UI Variable Text"
-                        FontSize="16"
-                        IsTextSelectionEnabled="True"
-                        MaxLines="0"
-                        Text="{x:Bind OriginalMessage}"
-                        TextTrimming="None"
-                        TextWrapping="Wrap" />
-                    </Grid>
-                  </Border>
-
-                  <Grid
-                    x:Name="MetadataGrid"
-                    ColumnSpacing="6"
-                    RowSpacing="6"
-                    SizeChanged="OnMetadataGridSizeChanged">
-                    <Grid.RowDefinitions>
-                      <RowDefinition Height="Auto" />
-                      <RowDefinition Height="Auto" />
-                      <RowDefinition Height="Auto" />
-                      <RowDefinition Height="Auto" />
-                      <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-                    <Grid.ColumnDefinitions>
-                      <ColumnDefinition Width="Auto" />
-                      <ColumnDefinition Width="Auto" />
-                      <ColumnDefinition Width="Auto" />
-                      <ColumnDefinition Width="Auto" />
-                      <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <Border
-                      MinHeight="26"
-                      Padding="9,3"
-                      HorizontalAlignment="Stretch"
-                      Style="{StaticResource StatusPillStyle}">
-                      <TextBlock
-                        FontSize="12"
-                        Text="{x:Bind CategoryName}"
+                        MaxLines="1"
+                        FontSize="14"
+                        FontWeight="SemiBold"
+                        Text="{x:Bind UserName}"
                         TextTrimming="CharacterEllipsis" />
-                    </Border>
-                    <Border
-                      Grid.Column="1"
-                      MinHeight="26"
-                      Padding="9,3"
-                      HorizontalAlignment="Stretch"
-                      Style="{StaticResource StatusPillStyle}">
                       <TextBlock
-                        FontSize="12"
-                        Text="{x:Bind AvailabilityLabel}"
-                        TextTrimming="CharacterEllipsis" />
-                    </Border>
-                    <Border
-                      Grid.Column="2"
-                      MinHeight="26"
-                      Padding="9,3"
-                      HorizontalAlignment="Stretch"
-                      Style="{StaticResource StatusPillStyle}">
-                      <TextBlock
-                        FontSize="12"
-                        Text="{x:Bind ConfidenceLabel, Mode=OneWay}"
-                        TextTrimming="CharacterEllipsis" />
-                    </Border>
-                    <Border
-                      Grid.Column="3"
-                      MinHeight="26"
-                      Padding="9,3"
-                      HorizontalAlignment="Stretch"
-                      Style="{StaticResource StatusPillStyle}">
-                      <TextBlock
-                        FontSize="12"
-                        Text="{x:Bind AiDurationLabel, Mode=OneWay}"
-                        TextTrimming="CharacterEllipsis" />
-                    </Border>
-                    <Border
-                      Grid.Column="4"
-                      MinHeight="26"
-                      Padding="9,3"
-                      HorizontalAlignment="Stretch"
-                      Style="{StaticResource StatusPillStyle}">
-                      <TextBlock
-                        FontSize="12"
-                        Text="{x:Bind PolicySet, Mode=OneWay}"
-                        TextTrimming="CharacterEllipsis" />
-                    </Border>
-                  </Grid>
-
-                  <Expander Header="Identität und Lernphrasen">
-                    <StackPanel Padding="0,8,0,0" Spacing="8">
-                      <TextBlock
-                        FontFamily="Consolas"
-                        FontSize="12"
+                        MaxLines="1"
+                        FontSize="10"
                         Foreground="{ThemeResource MutedTextBrush}"
-                        Text="{x:Bind MessageIdLabel}"
+                        Text="{x:Bind ReceivedAtDisplay}"
                         TextTrimming="CharacterEllipsis" />
-                      <TextBlock
-                        FontSize="12"
-                        FontWeight="SemiBold"
-                        Text="Lokale Treffercodes" />
-                      <ItemsControl ItemsSource="{x:Bind LocalMatchCodes}">
-                        <ItemsControl.ItemTemplate>
-                          <DataTemplate>
-                            <Border
-                              Margin="0,0,0,4"
-                              MinHeight="26"
-                              Padding="9,3"
-                              HorizontalAlignment="Left"
-                              Style="{StaticResource StatusPillStyle}">
-                              <TextBlock FontFamily="Consolas" Text="{Binding}" />
-                            </Border>
-                          </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                      </ItemsControl>
-                      <TextBlock
-                        FontSize="12"
-                        FontWeight="SemiBold"
-                        Text="Ausgewählte Lernphrasen" />
-                      <ItemsControl ItemsSource="{x:Bind TriggerPhrases}">
-                        <ItemsControl.ItemTemplate>
-                          <DataTemplate x:DataType="vm:TriggerPhraseItem">
-                            <CheckBox
-                              Content="{x:Bind Phrase}"
-                              IsChecked="{x:Bind IsSelected, Mode=TwoWay}" />
-                          </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                      </ItemsControl>
                     </StackPanel>
-                  </Expander>
-                </StackPanel>
+                  </StackPanel>
+                  <Border
+                    x:Name="CaseStatus"
+                    Grid.Column="1"
+                    MinHeight="24"
+                    Padding="8,2"
+                    HorizontalAlignment="Right"
+                    Background="#24F4B860"
+                    Style="{StaticResource StatusPillStyle}">
+                    <TextBlock
+                      MaxLines="1"
+                      FontSize="11"
+                      Foreground="{ThemeResource WarningBrush}"
+                      Text="{x:Bind Status}"
+                      TextTrimming="CharacterEllipsis" />
+                  </Border>
+                </Grid>
 
                 <Border
-                  x:Name="ReviewPanel"
-                  Grid.Column="1"
-                  Padding="14"
+                  Grid.Row="1"
+                  Padding="10,7"
+                  HorizontalAlignment="Stretch"
+                  Background="{ThemeResource LayerStrongBrush}"
+                  BorderBrush="{ThemeResource CardStrokeBrush}"
+                  BorderThickness="1"
+                  CornerRadius="8">
+                  <Grid MinWidth="0" ColumnSpacing="9">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="3" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Border
+                      Background="{ThemeResource TwitchAccentBrush}"
+                      CornerRadius="2" />
+                    <TextBlock
+                      Grid.Column="1"
+                      MinWidth="0"
+                      HorizontalAlignment="Stretch"
+                      FontFamily="Segoe UI Variable Text"
+                      FontSize="15"
+                      IsTextSelectionEnabled="True"
+                      MaxLines="0"
+                      Text="{x:Bind OriginalMessage}"
+                      TextTrimming="None"
+                      TextWrapping="Wrap" />
+                  </Grid>
+                </Border>
+
+                <Expander
+                  Grid.Row="2"
+                  HorizontalAlignment="Stretch"
+                  Header="Trefferphrasen"
+                  HorizontalContentAlignment="Stretch">
+                  <ItemsControl
+                    Margin="0,4,0,0"
+                    ItemsSource="{x:Bind TriggerPhrases}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:TriggerPhraseItem">
+                        <CheckBox
+                          MinHeight="28"
+                          Content="{x:Bind Phrase}"
+                          IsChecked="{x:Bind IsSelected, Mode=TwoWay}" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </Expander>
+
+                <Border
+                  Grid.Row="3"
+                  Padding="10"
                   Background="{ThemeResource LayerStrongBrush}"
                   CornerRadius="8">
-                  <StackPanel Spacing="9">
-                    <Grid>
-                      <TextBlock Style="{StaticResource SectionTitleStyle}" Text="Vorschlag prüfen" />
+                  <Grid
+                    x:Name="ReviewGrid"
+                    MinWidth="0"
+                    ColumnSpacing="8"
+                    RowSpacing="8"
+                    SizeChanged="OnReviewGridSizeChanged">
+                    <Grid.RowDefinitions>
+                      <RowDefinition Height="Auto" />
+                      <RowDefinition Height="Auto" />
+                      <RowDefinition Height="Auto" />
+                      <RowDefinition Height="Auto" />
+                      <RowDefinition Height="Auto" />
+                      <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="160" />
+                      <ColumnDefinition Width="145" />
+                      <ColumnDefinition Width="230" />
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="230" />
+                    </Grid.ColumnDefinitions>
+
+                    <Grid Grid.ColumnSpan="5" Margin="0,0,0,1">
+                      <TextBlock
+                        FontSize="14"
+                        FontWeight="SemiBold"
+                        Text="Vorschlag prüfen" />
                       <ProgressRing
-                        Width="20"
-                        Height="20"
+                        Width="18"
+                        Height="18"
                         HorizontalAlignment="Right"
                         IsActive="{x:Bind IsBusy, Mode=OneWay}" />
                     </Grid>
-                    <StackPanel Spacing="5">
-                      <TextBlock FontSize="12" Text="Aktion" />
-                      <ComboBox SelectedValue="{x:Bind Action, Mode=TwoWay}" SelectedValuePath="Tag">
-                        <ComboBoxItem Content="Nachricht löschen" Tag="delete" />
-                        <ComboBoxItem Content="Timeout" Tag="timeout" />
-                      </ComboBox>
-                    </StackPanel>
+
+                    <ComboBox
+                      x:Name="ActionEditor"
+                      Grid.Row="1"
+                      Grid.Column="0"
+                      Header="Aktion"
+                      HorizontalAlignment="Stretch"
+                      SelectedValue="{x:Bind Action, Mode=TwoWay}"
+                      SelectedValuePath="Tag">
+                      <ComboBoxItem Content="Nachricht löschen" Tag="delete" />
+                      <ComboBoxItem Content="Timeout" Tag="timeout" />
+                    </ComboBox>
+
+                    <NumberBox
+                      x:Name="TimeoutEditor"
+                      Grid.Row="1"
+                      Grid.Column="1"
+                      Header="Timeout (Sekunden)"
+                      HorizontalAlignment="Stretch"
+                      Maximum="1209600"
+                      Minimum="1"
+                      SmallChange="30"
+                      Value="{x:Bind TimeoutSeconds, Mode=TwoWay}"
+                      Visibility="{x:Bind TimeoutEditorVisibility, Mode=OneWay}" />
+
+                    <ComboBox
+                      x:Name="ViolationEditor"
+                      Grid.Row="1"
+                      Grid.Column="2"
+                      Header="Verstoßkategorie"
+                      HorizontalAlignment="Stretch"
+                      DisplayMemberPath="DisplayName"
+                      ItemsSource="{x:Bind ViolationRuleOptions}"
+                      SelectedItem="{x:Bind SelectedViolationRule, Mode=TwoWay}" />
+
+                    <TextBox
+                      x:Name="ReasonEditor"
+                      Grid.Row="1"
+                      Grid.Column="3"
+                      Header="Kurze Begründung"
+                      HorizontalAlignment="Stretch"
+                      AcceptsReturn="False"
+                      MaxLength="120"
+                      Text="{x:Bind Reason, Mode=TwoWay}"
+                      TextWrapping="NoWrap"
+                      Visibility="{x:Bind TimeoutEditorVisibility, Mode=OneWay}" />
+
                     <StackPanel
-                      Spacing="5"
-                      Visibility="{x:Bind TimeoutEditorVisibility, Mode=OneWay}">
-                      <TextBlock FontSize="12" Text="Timeout in Sekunden" />
-                      <NumberBox
-                        Maximum="1209600"
-                        Minimum="1"
-                        SmallChange="30"
-                        Value="{x:Bind TimeoutSeconds, Mode=TwoWay}" />
+                      x:Name="ActionButtons"
+                      Grid.Row="1"
+                      Grid.Column="4"
+                      Spacing="4">
+                      <TextBlock
+                        FontSize="12"
+                        Foreground="{ThemeResource MutedTextBrush}"
+                        Text="Aktionen" />
+                      <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button
+                          HorizontalAlignment="Stretch"
+                          Click="OnDiscardClicked"
+                          Content="Verwerfen"
+                          IsEnabled="{x:Bind CanDiscard, Mode=OneWay}"
+                          Tag="{x:Bind}"
+                          Style="{StaticResource SubtleButtonStyle}" />
+                        <Button
+                          Grid.Column="1"
+                          HorizontalAlignment="Stretch"
+                          Click="OnExecuteClicked"
+                          Content="Ausführen"
+                          IsEnabled="{x:Bind CanExecute, Mode=OneWay}"
+                          Tag="{x:Bind}"
+                          Style="{StaticResource AccentButtonStyle}" />
+                      </Grid>
                     </StackPanel>
-                    <StackPanel Spacing="5">
-                      <TextBlock FontSize="12" Text="Verstoßkategorie" />
-                      <ComboBox
-                        DisplayMemberPath="DisplayName"
-                        ItemsSource="{x:Bind ViolationRuleOptions}"
-                        SelectedItem="{x:Bind SelectedViolationRule, Mode=TwoWay}" />
-                    </StackPanel>
-                    <StackPanel
-                      Spacing="5"
-                      Visibility="{x:Bind TimeoutEditorVisibility, Mode=OneWay}">
-                      <TextBlock FontSize="12" Text="Kurze Begründung (Deutsch)" />
-                      <TextBox
-                        AcceptsReturn="True"
-                        MaxLength="120"
-                        MinHeight="64"
-                        Text="{x:Bind Reason, Mode=TwoWay}"
-                        TextWrapping="Wrap" />
-                    </StackPanel>
-                    <Grid Margin="0,4,0,0" ColumnSpacing="8">
-                      <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="*" />
-                      </Grid.ColumnDefinitions>
-                      <Button
-                        HorizontalAlignment="Stretch"
-                        Click="OnDiscardClicked"
-                        Content="Verwerfen"
-                        IsEnabled="{x:Bind CanDiscard, Mode=OneWay}"
-                        Tag="{x:Bind}"
-                        Style="{StaticResource SubtleButtonStyle}" />
-                      <Button
-                        Grid.Column="1"
-                        HorizontalAlignment="Stretch"
-                        Click="OnExecuteClicked"
-                        Content="Ausführen"
-                        IsEnabled="{x:Bind CanExecute, Mode=OneWay}"
-                        Tag="{x:Bind}"
-                        Style="{StaticResource AccentButtonStyle}" />
-                    </Grid>
-                  </StackPanel>
+                  </Grid>
                 </Border>
               </Grid>
             </Border>
           </DataTemplate>
         </ItemsRepeater.ItemTemplate>
-        </ItemsRepeater>
-      </Grid>
+      </ItemsRepeater>
     </Grid>
-  </ScrollViewer>
+  </Grid>
 </Page>

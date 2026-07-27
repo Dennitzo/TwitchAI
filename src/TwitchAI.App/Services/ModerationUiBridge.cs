@@ -120,12 +120,7 @@ public sealed class ModerationUiBridge : IDisposable
                 eventArgs.Activity;
             _aiRunOrder.Remove(eventArgs.Activity.CorrelationId);
             _aiRunOrder.AddFirst(eventArgs.Activity.CorrelationId);
-            while (_aiRunOrder.Count > AppState.MaximumVisibleAiRuns)
-            {
-                var oldestCorrelationId = _aiRunOrder.Last!.Value;
-                _aiRunOrder.RemoveLast();
-                _aiRunsByCorrelationId.Remove(oldestCorrelationId);
-            }
+            PruneCompletedAiRuns();
 
             _aiRunVersion++;
         }
@@ -336,25 +331,24 @@ public sealed class ModerationUiBridge : IDisposable
     private void ApplyAiRunSnapshot(
         LocalAiRunActivity[] activities)
     {
-        for (var index = 0; index < _state.LocalAiRuns.Count; index++)
-        {
-            if (index < activities.Length)
-            {
-                _state.LocalAiRuns[index].Apply(activities[index]);
-            }
-            else
-            {
-                _state.LocalAiRuns[index].Clear();
-            }
-        }
+        _state.QueuedLocalAiRunCount = activities.Count(
+            activity => activity.State == LocalAiRunState.Queued);
+        _state.QueuedLocalAiMessageCount = activities
+            .Where(activity => activity.State == LocalAiRunState.Queued)
+            .Sum(activity => activity.MessageCount);
 
-        _state.VisibleLocalAiRunCount = activities.Length;
-        if (activities.Length == 0)
+        var activity = activities.FirstOrDefault(
+                candidate => candidate.State == LocalAiRunState.Running)
+            ?? activities.FirstOrDefault(
+                candidate => candidate.State is LocalAiRunState.Succeeded
+                    or LocalAiRunState.Failed);
+        if (activity is null)
         {
+            _state.CurrentLocalAiRun.Clear();
             return;
         }
 
-        var activity = activities[0];
+        _state.CurrentLocalAiRun.Apply(activity);
 
         _state.LmStudioStatus = activity.State switch
         {
@@ -369,6 +363,26 @@ public sealed class ModerationUiBridge : IDisposable
                 ? "AI-Lauf abgebrochen"
                 : $"AI-Fehler · {activity.ErrorCode ?? "unbekannt"}",
         };
+    }
+
+    private void PruneCompletedAiRuns()
+    {
+        var retainedTerminalRunCount = 0;
+        var currentNode = _aiRunOrder.First;
+        while (currentNode is not null)
+        {
+            var nextNode = currentNode.Next;
+            var activity = _aiRunsByCorrelationId[currentNode.Value];
+            if ((activity.State is LocalAiRunState.Succeeded
+                    or LocalAiRunState.Failed)
+                && ++retainedTerminalRunCount > 1)
+            {
+                _aiRunOrder.Remove(currentNode);
+                _aiRunsByCorrelationId.Remove(activity.CorrelationId);
+            }
+
+            currentNode = nextNode;
+        }
     }
 
     private void RemoveReanalyzedCase(long? caseId)

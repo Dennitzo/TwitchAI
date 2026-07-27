@@ -18,11 +18,8 @@ public sealed partial class ModerationQueuePage : Page
 
     private async void OnPageLoaded(object sender, RoutedEventArgs e)
     {
-        // ItemsRepeater keeps native collection/item subscriptions while its
-        // source is assigned. Attach only while this page is in the visual
-        // tree so AI or case updates cannot call back into a page that is
-        // being removed by Frame navigation.
-        AiRunsRepeater.ItemsSource = ViewModel.AiRuns;
+        // Attach only while this page is in the visual tree so case updates
+        // cannot call back into a page that is being removed by navigation.
         CasesRepeater.ItemsSource = ViewModel.Cases;
         ViewModel.Cases.CollectionChanged -= OnCasesChanged;
         ViewModel.Cases.CollectionChanged += OnCasesChanged;
@@ -45,7 +42,6 @@ public sealed partial class ModerationQueuePage : Page
     private void OnPageUnloaded(object sender, RoutedEventArgs e)
     {
         ViewModel.Cases.CollectionChanged -= OnCasesChanged;
-        AiRunsRepeater.ItemsSource = null;
         CasesRepeater.ItemsSource = null;
     }
 
@@ -54,39 +50,6 @@ public sealed partial class ModerationQueuePage : Page
         PageContent.Margin = e.NewSize.Width < 760
             ? new Thickness(72, 20, 16, 40)
             : new Thickness(28, 24, 28, 40);
-    }
-
-    private void OnCaseCardSizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        if (sender is not Grid caseCard
-            || caseCard.ColumnDefinitions.Count < 2)
-        {
-            return;
-        }
-
-        Border? reviewPanel = null;
-        foreach (var child in caseCard.Children)
-        {
-            if (child is Border border)
-            {
-                reviewPanel = border;
-                break;
-            }
-        }
-
-        if (reviewPanel is null)
-        {
-            return;
-        }
-
-        var useSideBySideLayout = e.NewSize.Width >= 1050;
-        caseCard.ColumnSpacing = useSideBySideLayout ? 16 : 0;
-        caseCard.ColumnDefinitions[1].Width = useSideBySideLayout
-            ? new GridLength(
-                Math.Clamp(e.NewSize.Width * 0.34, 340, 400))
-            : new GridLength(0);
-        Grid.SetColumn(reviewPanel, useSideBySideLayout ? 1 : 0);
-        Grid.SetRow(reviewPanel, useSideBySideLayout ? 0 : 1);
     }
 
     private void OnIdentityHeaderSizeChanged(object sender, SizeChangedEventArgs e)
@@ -123,43 +86,115 @@ public sealed partial class ModerationQueuePage : Page
             : HorizontalAlignment.Right;
     }
 
-    private void OnMetadataGridSizeChanged(object sender, SizeChangedEventArgs e)
+    private void OnReviewGridSizeChanged(object sender, SizeChangedEventArgs e)
     {
-        if (sender is not Grid metadataGrid
-            || metadataGrid.ColumnDefinitions.Count < 5)
+        if (sender is not Grid reviewGrid
+            || reviewGrid.ColumnDefinitions.Count < 5)
         {
             return;
         }
 
-        var visibleColumnCount = e.NewSize.Width switch
+        var actionEditor = FindNamedChild<ComboBox>(
+            reviewGrid,
+            "ActionEditor");
+        var timeoutEditor = FindNamedChild<NumberBox>(
+            reviewGrid,
+            "TimeoutEditor");
+        var violationEditor = FindNamedChild<ComboBox>(
+            reviewGrid,
+            "ViolationEditor");
+        var reasonEditor = FindNamedChild<TextBox>(
+            reviewGrid,
+            "ReasonEditor");
+        var actionButtons = FindNamedChild<StackPanel>(
+            reviewGrid,
+            "ActionButtons");
+        if (actionEditor is null
+            || timeoutEditor is null
+            || violationEditor is null
+            || reasonEditor is null
+            || actionButtons is null)
         {
-            >= 780 => 5,
-            >= 420 => 2,
-            _ => 1,
-        };
-
-        for (var columnIndex = 0; columnIndex < metadataGrid.ColumnDefinitions.Count; columnIndex++)
-        {
-            metadataGrid.ColumnDefinitions[columnIndex].Width =
-                columnIndex >= visibleColumnCount
-                    ? new GridLength(0)
-                    : visibleColumnCount == 5
-                        ? GridLength.Auto
-                        : new GridLength(1, GridUnitType.Star);
+            return;
         }
 
-        var itemIndex = 0;
-        foreach (var child in metadataGrid.Children)
+        if (e.NewSize.Width >= 1120)
         {
-            if (child is not Border border)
-            {
-                continue;
-            }
-
-            Grid.SetColumn(border, itemIndex % visibleColumnCount);
-            Grid.SetRow(border, itemIndex / visibleColumnCount);
-            itemIndex++;
+            SetReviewColumnWidths(
+                reviewGrid,
+                new GridLength(160),
+                new GridLength(145),
+                new GridLength(230),
+                new GridLength(1, GridUnitType.Star),
+                new GridLength(230));
+            PlaceReviewElement(actionEditor, row: 1, column: 0);
+            PlaceReviewElement(timeoutEditor, row: 1, column: 1);
+            PlaceReviewElement(violationEditor, row: 1, column: 2);
+            PlaceReviewElement(reasonEditor, row: 1, column: 3);
+            PlaceReviewElement(actionButtons, row: 1, column: 4);
+            return;
         }
+
+        if (e.NewSize.Width >= 700)
+        {
+            SetReviewColumnWidths(
+                reviewGrid,
+                new GridLength(1, GridUnitType.Star),
+                new GridLength(1, GridUnitType.Star),
+                new GridLength(1, GridUnitType.Star),
+                new GridLength(0),
+                new GridLength(0));
+            PlaceReviewElement(actionEditor, row: 1, column: 0);
+            PlaceReviewElement(timeoutEditor, row: 1, column: 1);
+            PlaceReviewElement(violationEditor, row: 1, column: 2);
+            PlaceReviewElement(reasonEditor, row: 2, column: 0, columnSpan: 2);
+            PlaceReviewElement(actionButtons, row: 2, column: 2);
+            return;
+        }
+
+        SetReviewColumnWidths(
+            reviewGrid,
+            new GridLength(1, GridUnitType.Star),
+            new GridLength(0),
+            new GridLength(0),
+            new GridLength(0),
+            new GridLength(0));
+        PlaceReviewElement(actionEditor, row: 1, column: 0);
+        PlaceReviewElement(timeoutEditor, row: 2, column: 0);
+        PlaceReviewElement(violationEditor, row: 3, column: 0);
+        PlaceReviewElement(reasonEditor, row: 4, column: 0);
+        PlaceReviewElement(actionButtons, row: 5, column: 0);
+    }
+
+    private static T? FindNamedChild<T>(Grid root, string name)
+        where T : FrameworkElement =>
+        root.Children
+            .OfType<T>()
+            .FirstOrDefault(
+                child => string.Equals(
+                    child.Name,
+                    name,
+                    StringComparison.Ordinal));
+
+    private static void SetReviewColumnWidths(
+        Grid reviewGrid,
+        params GridLength[] widths)
+    {
+        for (var index = 0; index < widths.Length; index++)
+        {
+            reviewGrid.ColumnDefinitions[index].Width = widths[index];
+        }
+    }
+
+    private static void PlaceReviewElement(
+        FrameworkElement element,
+        int row,
+        int column,
+        int columnSpan = 1)
+    {
+        Grid.SetRow(element, row);
+        Grid.SetColumn(element, column);
+        Grid.SetColumnSpan(element, columnSpan);
     }
 
     private void UpdateEmptyState()
