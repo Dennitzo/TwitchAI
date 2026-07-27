@@ -273,7 +273,8 @@
                       HorizontalAlignment="Stretch"
                       DisplayMemberPath="DisplayName"
                       ItemsSource="{x:Bind ViolationRuleOptions}"
-                      SelectedItem="{x:Bind SelectedViolationRule, Mode=TwoWay}" />
+                      SelectedValue="{x:Bind RuleCode, Mode=TwoWay}"
+                      SelectedValuePath="Code" />
 
                     <TextBox
                       x:Name="ReasonEditor"

@@ -88,6 +88,15 @@ public sealed partial class WhitelistPage : Page
         AddPhraseButton.HorizontalAlignment = useCompactLayout
             ? HorizontalAlignment.Stretch
             : HorizontalAlignment.Left;
+
+        TableCommandHint.Visibility = useCompactLayout
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        Grid.SetColumn(DeleteRowButton, useCompactLayout ? 0 : 1);
+        Grid.SetColumnSpan(DeleteRowButton, useCompactLayout ? 2 : 1);
+        DeleteRowButton.HorizontalAlignment = useCompactLayout
+            ? HorizontalAlignment.Stretch
+            : HorizontalAlignment.Left;
     }
 
     private async void OnAddPhraseClicked(object sender, RoutedEventArgs e)
@@ -194,6 +203,19 @@ public sealed partial class WhitelistPage : Page
     {
         ViewModel.SelectedPhrase =
             PhraseTable.SelectedItems.OfType<WhitelistPhraseItem>().LastOrDefault();
+    }
+
+    private void OnTableSearchTextChanged(
+        AutoSuggestBox sender,
+        AutoSuggestBoxTextChangedEventArgs e)
+    {
+        if (e.Reason != AutoSuggestionBoxTextChangeReason.UserInput)
+        {
+            return;
+        }
+
+        PhraseTable.SelectedItems.Clear();
+        ViewModel.SelectedPhrase = null;
     }
 
     private async Task ShowDeleteErrorAsync(string message)

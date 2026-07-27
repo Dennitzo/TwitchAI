@@ -117,20 +117,31 @@
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto" />
               <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*" />
               <ColumnDefinition Width="Auto" />
               <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
+            <AutoSuggestBox
+              x:Name="TableSearchBox"
+              Grid.ColumnSpan="3"
+              AutomationProperties.Name="Blacklist-Phrasen durchsuchen"
+              PlaceholderText="Tabelle durchsuchen …"
+              QueryIcon="Find"
+              Text="{x:Bind ViewModel.SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+              TextChanged="OnTableSearchTextChanged" />
             <TextBlock
               x:Name="TableCommandHint"
+              Grid.Row="1"
               VerticalAlignment="Center"
               Foreground="{ThemeResource MutedTextBrush}"
               Text="Eine Zeile auswählen, um sie global zu löschen."
               TextWrapping="Wrap" />
             <ComboBox
               x:Name="CategoryFilterBox"
+              Grid.Row="1"
               Grid.Column="1"
               MinWidth="250"
               Margin="0,0,8,0"
@@ -140,6 +151,7 @@
               SelectedItem="{x:Bind ViewModel.SelectedCategoryFilter, Mode=TwoWay}" />
             <Button
               x:Name="DeleteRowButton"
+              Grid.Row="1"
               Grid.Column="2"
               AutomationProperties.Name="Ausgewählte Blacklist-Zeile löschen"
               Click="OnDeleteSelectedClicked"

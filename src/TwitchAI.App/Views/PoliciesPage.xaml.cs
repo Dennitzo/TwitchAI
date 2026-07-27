@@ -97,10 +97,10 @@ public sealed partial class PoliciesPage : Page
         CategoryFilterBox.HorizontalAlignment = useCompactLayout
             ? HorizontalAlignment.Stretch
             : HorizontalAlignment.Left;
-        Grid.SetRow(CategoryFilterBox, 0);
+        Grid.SetRow(CategoryFilterBox, 1);
         Grid.SetColumn(CategoryFilterBox, useCompactLayout ? 0 : 1);
         Grid.SetColumnSpan(CategoryFilterBox, useCompactLayout ? 3 : 1);
-        Grid.SetRow(DeleteRowButton, useCompactLayout ? 1 : 0);
+        Grid.SetRow(DeleteRowButton, useCompactLayout ? 2 : 1);
         Grid.SetColumn(DeleteRowButton, useCompactLayout ? 0 : 2);
         Grid.SetColumnSpan(DeleteRowButton, useCompactLayout ? 3 : 1);
         DeleteRowButton.HorizontalAlignment = useCompactLayout
@@ -195,6 +195,19 @@ public sealed partial class PoliciesPage : Page
     {
         ViewModel.SelectedPhrase =
             PhraseTable.SelectedItems.OfType<PolicyPhraseItem>().LastOrDefault();
+    }
+
+    private void OnTableSearchTextChanged(
+        AutoSuggestBox sender,
+        AutoSuggestBoxTextChangedEventArgs e)
+    {
+        if (e.Reason != AutoSuggestionBoxTextChangeReason.UserInput)
+        {
+            return;
+        }
+
+        PhraseTable.SelectedItems.Clear();
+        ViewModel.SelectedPhrase = null;
     }
 
     private async void PhraseEnabled_Toggled(object sender, RoutedEventArgs e)

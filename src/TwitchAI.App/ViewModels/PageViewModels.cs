@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Globalization;
 using System.Net;
 using System.Runtime.InteropServices;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -21,6 +22,8 @@ namespace TwitchAI.App.ViewModels;
 
 public sealed partial class ModerationQueueViewModel : ObservableObject
 {
+    private static readonly SemaphoreSlim ViolationRuleLoadGate = new(1, 1);
+
     private readonly AppState _state;
     private readonly ITwitchModerationExecutor _executor;
     private readonly IModerationReviewFeedbackService _feedbackService;
@@ -204,71 +207,82 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
             return;
         }
 
-        var definitions = await _configuration
-            .LoadPolicyRulesAsync(cancellationToken);
-        foreach (var item in items)
+        await ViolationRuleLoadGate
+            .WaitAsync(cancellationToken)
+            .ConfigureAwait(true);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var effectivePolicy = await _policyStore.GetEffectivePolicyAsync(
-                item.ChannelId,
-                item.CategoryId,
-                cancellationToken);
-            var activeCodes = effectivePolicy.Rules
-                .Select(rule => rule.RuleCode)
-                .ToHashSet(StringComparer.Ordinal);
-            var options = definitions
-                .Where(definition => activeCodes.Contains(definition.RuleCode))
-                .Select(
-                    definition => new PolicyRuleOptionItem(
-                        definition.RuleId,
-                        definition.PolicySet,
-                        definition.RuleCode,
-                        definition.DisplayName,
-                        definition.PublicReason,
-                        definition.DefaultAction,
-                        definition.DefaultTimeoutSeconds))
-                .ToArray();
-            var selectedRuleCode = options.FirstOrDefault(
-                    option => !string.IsNullOrWhiteSpace(item.RuleCode)
-                        && string.Equals(
-                            option.Code,
-                            item.RuleCode,
-                            StringComparison.Ordinal))
-                ?.Code;
-            selectedRuleCode ??= options.FirstOrDefault(
-                    option => item.LocalMatchCodes.Contains(
-                        option.Code,
-                        StringComparer.Ordinal))
-                ?.Code;
-            var baseRuleCode = item.PolicySet == "Backseatgaming"
-                ? ModerationRuleCodes.Backseatgaming
-                : ModerationRuleCodes.OtherAbuse;
-            selectedRuleCode ??= options.FirstOrDefault(
-                    option => string.Equals(
-                        option.Code,
-                        baseRuleCode,
-                        StringComparison.Ordinal))
-                ?.Code;
-            selectedRuleCode ??= options.FirstOrDefault(
-                    option => string.Equals(
-                        option.PolicySet,
-                        item.PolicySet,
-                        StringComparison.Ordinal))
-                ?.Code;
-            selectedRuleCode ??= options.FirstOrDefault()?.Code;
-            var applyFallbackDefaults = !string.Equals(
-                selectedRuleCode,
-                item.RuleCode,
-                StringComparison.Ordinal);
-            item.ReplaceViolationRuleOptions(
-                options,
-                selectedRuleCode,
-                applyFallbackDefaults);
-            if (item.SelectedViolationRule is null)
+            var definitions = await _configuration
+                .LoadPolicyRulesAsync(cancellationToken);
+            foreach (var item in items)
             {
-                item.AvailabilityLabel =
-                    "Keine aktive Verstoßkategorie verfügbar";
+                cancellationToken.ThrowIfCancellationRequested();
+                var effectivePolicy = await _policyStore.GetEffectivePolicyAsync(
+                    item.ChannelId,
+                    item.CategoryId,
+                    cancellationToken);
+                var activeCodes = effectivePolicy.Rules
+                    .Select(rule => rule.RuleCode)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var options = definitions
+                    .Where(definition => activeCodes.Contains(definition.RuleCode))
+                    .Select(
+                        definition => new PolicyRuleOptionItem(
+                            definition.RuleId,
+                            definition.PolicySet,
+                            definition.RuleCode,
+                            definition.DisplayName,
+                            definition.PublicReason,
+                            definition.DefaultAction,
+                            definition.DefaultTimeoutSeconds))
+                    .ToArray();
+                var persistedRuleCode = item.RuleCode?.Trim();
+                var selectedRuleCode = options.FirstOrDefault(
+                        option => !string.IsNullOrWhiteSpace(persistedRuleCode)
+                            && string.Equals(
+                                option.Code,
+                                persistedRuleCode,
+                                StringComparison.OrdinalIgnoreCase))
+                    ?.Code;
+                selectedRuleCode ??= options.FirstOrDefault(
+                        option => item.LocalMatchCodes.Contains(
+                            option.Code,
+                            StringComparer.OrdinalIgnoreCase))
+                    ?.Code;
+                var baseRuleCode = item.PolicySet == "Backseatgaming"
+                    ? ModerationRuleCodes.Backseatgaming
+                    : ModerationRuleCodes.OtherAbuse;
+                selectedRuleCode ??= options.FirstOrDefault(
+                        option => string.Equals(
+                            option.Code,
+                            baseRuleCode,
+                            StringComparison.OrdinalIgnoreCase))
+                    ?.Code;
+                selectedRuleCode ??= options.FirstOrDefault(
+                        option => string.Equals(
+                            option.PolicySet,
+                            item.PolicySet,
+                            StringComparison.OrdinalIgnoreCase))
+                    ?.Code;
+                selectedRuleCode ??= options.FirstOrDefault()?.Code;
+                var applyFallbackDefaults = !string.Equals(
+                    selectedRuleCode,
+                    persistedRuleCode,
+                    StringComparison.OrdinalIgnoreCase);
+                item.ReplaceViolationRuleOptions(
+                    options,
+                    selectedRuleCode,
+                    applyFallbackDefaults);
+                if (item.SelectedViolationRule is null)
+                {
+                    item.AvailabilityLabel =
+                        "Keine aktive Verstoßkategorie verfügbar";
+                }
             }
+        }
+        finally
+        {
+            ViolationRuleLoadGate.Release();
         }
     }
 
@@ -434,17 +448,15 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
     private static (PolicySetCode PolicySet, string RuleCode)
         ResolveViolationRule(ModerationCaseItem item)
     {
-        if (item.SelectedViolationRule is { } selected)
+        var selected = item.ViolationRuleOptions.FirstOrDefault(
+            option => string.Equals(
+                option.Code,
+                item.RuleCode,
+                StringComparison.OrdinalIgnoreCase));
+        selected ??= item.SelectedViolationRule;
+        if (selected is not null)
         {
             return (ParsePolicySet(selected.PolicySet), selected.Code);
-        }
-
-        // The ComboBox can briefly lose SelectedItem while its active options
-        // are rebuilt. The validated and persisted rule code remains a safe
-        // fallback and keeps both operator actions available.
-        if (!string.IsNullOrWhiteSpace(item.RuleCode))
-        {
-            return (ParsePolicySet(item.PolicySet), item.RuleCode);
         }
 
         throw new InvalidOperationException(
@@ -614,9 +626,10 @@ public sealed partial class PoliciesViewModel : ObservableObject
 
     public IEnumerable<PolicyPhraseItem> SortedPhrases =>
         ApplySort(
-            SelectedCategoryFilter?.RuleId is { } ruleId
+            (SelectedCategoryFilter?.RuleId is { } ruleId
                 ? Phrases.Where(item => item.RuleId == ruleId)
-                : Phrases);
+                : Phrases)
+            .Where(MatchesSearch));
 
     public IReadOnlyList<string> OverrideOptions { get; } =
         ["Auto", "Aktiv", "Inaktiv"];
@@ -630,6 +643,9 @@ public sealed partial class PoliciesViewModel : ObservableObject
 
     [ObservableProperty]
     public partial string NewPhrase { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial string SearchText { get; set; } = string.Empty;
 
     [ObservableProperty]
     public partial string StatusMessage { get; set; } = string.Empty;
@@ -730,8 +746,17 @@ public sealed partial class PoliciesViewModel : ObservableObject
     partial void OnSelectedRuleChanged(PolicyRuleOptionItem? value) =>
         OnPropertyChanged(nameof(CanAddPhrase));
 
-    partial void OnSelectedCategoryFilterChanged(PolicyCategoryFilterItem? value) =>
+    partial void OnSearchTextChanged(string value)
+    {
+        SelectedPhrase = null;
         OnPropertyChanged(nameof(SortedPhrases));
+    }
+
+    partial void OnSelectedCategoryFilterChanged(PolicyCategoryFilterItem? value)
+    {
+        SelectedPhrase = null;
+        OnPropertyChanged(nameof(SortedPhrases));
+    }
 
     partial void OnIsBusyChanged(bool value)
     {
@@ -1113,6 +1138,32 @@ public sealed record PolicyCategoryFilterItem(
         };
     }
 
+    private bool MatchesSearch(PolicyPhraseItem item)
+    {
+        var query = SearchText.Trim();
+        if (query.Length == 0)
+        {
+            return true;
+        }
+
+        var enabledLabel = item.IsEnabled ? "aktiv" : "inaktiv";
+        return item.PhraseId.ToString(CultureInfo.InvariantCulture).Contains(
+                query,
+                StringComparison.OrdinalIgnoreCase)
+            || item.Phrase.Contains(query, StringComparison.OrdinalIgnoreCase)
+            || item.RuleTitle.Contains(
+                query,
+                StringComparison.OrdinalIgnoreCase)
+            || item.Code.Contains(query, StringComparison.OrdinalIgnoreCase)
+            || item.Override.Contains(
+                query,
+                StringComparison.OrdinalIgnoreCase)
+            || item.FeedbackLabel.Contains(
+                query,
+                StringComparison.OrdinalIgnoreCase)
+            || enabledLabel.Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string ToDisplayOverride(string value)
     {
         return value switch
@@ -1184,7 +1235,8 @@ public sealed partial class WhitelistViewModel : ObservableObject
 
     public ObservableCollection<WhitelistPhraseItem> Phrases { get; }
 
-    public IEnumerable<WhitelistPhraseItem> SortedPhrases => ApplySort(Phrases);
+    public IEnumerable<WhitelistPhraseItem> SortedPhrases =>
+        ApplySort(Phrases.Where(MatchesSearch));
 
     public string SortColumn { get; private set; } = "OriginalPhrase";
 
@@ -1192,6 +1244,9 @@ public sealed partial class WhitelistViewModel : ObservableObject
 
     [ObservableProperty]
     public partial string NewPhrase { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial string SearchText { get; set; } = string.Empty;
 
     [ObservableProperty]
     public partial string StatusMessage { get; set; } = string.Empty;
@@ -1222,6 +1277,12 @@ public sealed partial class WhitelistViewModel : ObservableObject
 
     partial void OnSelectedPhraseChanged(WhitelistPhraseItem? value) =>
         OnPropertyChanged(nameof(CanDeleteSelected));
+
+    partial void OnSearchTextChanged(string value)
+    {
+        SelectedPhrase = null;
+        OnPropertyChanged(nameof(SortedPhrases));
+    }
 
     partial void OnIsBusyChanged(bool value)
     {
@@ -1556,6 +1617,31 @@ public sealed partial class WhitelistViewModel : ObservableObject
                 : source.OrderBy(item => item.IsEnabled),
             _ => source.OrderBy(item => item.OriginalPhrase, textComparer),
         };
+    }
+
+    private bool MatchesSearch(WhitelistPhraseItem item)
+    {
+        var query = SearchText.Trim();
+        if (query.Length == 0)
+        {
+            return true;
+        }
+
+        var enabledLabel = item.IsEnabled ? "aktiv" : "inaktiv";
+        return item.AllowlistId.ToString(CultureInfo.InvariantCulture).Contains(
+                query,
+                StringComparison.OrdinalIgnoreCase)
+            || item.OriginalPhrase.Contains(
+                query,
+                StringComparison.OrdinalIgnoreCase)
+            || item.NormalizedPhrase.Contains(
+                query,
+                StringComparison.OrdinalIgnoreCase)
+            || item.Source.Contains(query, StringComparison.OrdinalIgnoreCase)
+            || item.HitCount.ToString(CultureInfo.InvariantCulture).Contains(
+                query,
+                StringComparison.OrdinalIgnoreCase)
+            || enabledLabel.Contains(query, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string FriendlyError(Exception exception)

@@ -424,6 +424,36 @@ public sealed class ModerationEnvelopeValidatorTests
     }
 
     [Fact]
+    public void Validate_SpamDecisionPreservesSpamCategoryAndUsesGermanFallback()
+    {
+        const string spamRuleCode = "G_SPAM";
+        var batch = SpamBatch();
+        var response = Response(
+            batch,
+            Decision(
+                "m1",
+                "timeout",
+                600,
+                "G",
+                "Repeated spam should be removed under policy G.",
+                ["spam"],
+                0.96,
+                spamRuleCode));
+
+        var result = new ModerationEnvelopeValidator().Validate(response, batch);
+
+        Assert.True(result.IsValid);
+        var decision = Assert.Single(result.Envelope!.Decisions);
+        Assert.Equal(PolicySetCode.General, decision.PolicySet);
+        Assert.Equal(spamRuleCode, decision.RuleCode);
+        Assert.Equal("Wiederholter Spam.", decision.Reason);
+        var activeRule = Assert.Single(
+            batch.Context.EffectivePolicy.ActiveRules,
+            rule => rule.RuleCode == spamRuleCode);
+        Assert.Equal("Spam", activeRule.Title);
+    }
+
+    [Fact]
     public void Validate_NonStringActionReasonUsesConfiguredFallback()
     {
         var batch = Batch(1, includeBackseat: false);
@@ -711,6 +741,38 @@ public sealed class ModerationEnvelopeValidatorTests
         {
             Context = new ModerationBatchContext(channel, policy),
             Messages = [message],
+        };
+    }
+
+    private static ModerationBatch SpamBatch()
+    {
+        const string spamRuleCode = "G_SPAM";
+        var batch = Batch(
+            1,
+            includeBackseat: false,
+            firstMessage: "spam spam spam");
+        var channel = batch.Context.Channel;
+        var rule = new ModerationRuleDefinition(
+            spamRuleCode,
+            PolicySetCode.General,
+            "Spam",
+            "Erkenne wiederholten Spam.",
+            ModerationActionKind.Timeout,
+            600,
+            "Wiederholter Spam.",
+            Priority: 80);
+        var policy = batch.Context.EffectivePolicy with
+        {
+            ActiveRules =
+            [
+                .. batch.Context.EffectivePolicy.ActiveRules,
+                rule,
+            ],
+        };
+
+        return batch with
+        {
+            Context = new ModerationBatchContext(channel, policy),
         };
     }
 

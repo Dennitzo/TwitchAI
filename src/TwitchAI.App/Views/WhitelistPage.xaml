@@ -92,19 +92,37 @@
             <RowDefinition Height="*" />
           </Grid.RowDefinitions>
           <Grid
+            x:Name="TableToolsGrid"
             Padding="12,10"
             Background="{ThemeResource LayerStrongBrush}"
-            ColumnSpacing="12">
+            ColumnSpacing="12"
+            RowSpacing="8">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*" />
               <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
+            <AutoSuggestBox
+              x:Name="TableSearchBox"
+              Grid.ColumnSpan="2"
+              AutomationProperties.Name="Whitelist-Phrasen durchsuchen"
+              PlaceholderText="Tabelle durchsuchen …"
+              QueryIcon="Find"
+              Text="{x:Bind ViewModel.SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+              TextChanged="OnTableSearchTextChanged" />
             <TextBlock
+              x:Name="TableCommandHint"
+              Grid.Row="1"
               VerticalAlignment="Center"
               Foreground="{ThemeResource MutedTextBrush}"
               Text="Eine Zeile auswählen, um sie global zu löschen."
               TextWrapping="Wrap" />
             <Button
+              x:Name="DeleteRowButton"
+              Grid.Row="1"
               Grid.Column="1"
               AutomationProperties.Name="Ausgewählte Whitelist-Zeile löschen"
               Click="OnDeleteSelectedClicked"

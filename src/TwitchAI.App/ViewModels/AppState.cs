@@ -166,8 +166,24 @@ public sealed partial class ModerationCaseItem : ObservableObject
         OnPropertyChanged(nameof(CanDiscard));
     }
 
-    partial void OnRuleCodeChanged(string? value) =>
+    partial void OnRuleCodeChanged(string? value)
+    {
         OnPropertyChanged(nameof(CanExecute));
+        if (_suppressViolationRuleFallback)
+        {
+            return;
+        }
+
+        var matchingOption = ViolationRuleOptions.FirstOrDefault(
+            option => string.Equals(
+                option.Code,
+                value,
+                StringComparison.OrdinalIgnoreCase));
+        if (!ReferenceEquals(SelectedViolationRule, matchingOption))
+        {
+            SelectedViolationRule = matchingOption;
+        }
+    }
 
     partial void OnPolicySetChanged(string value) =>
         OnPropertyChanged(nameof(CanExecute));
@@ -183,7 +199,14 @@ public sealed partial class ModerationCaseItem : ObservableObject
             return;
         }
 
-        RuleCode = value.Code;
+        if (!string.Equals(
+                RuleCode,
+                value.Code,
+                StringComparison.Ordinal))
+        {
+            RuleCode = value.Code;
+        }
+
         if (_suppressViolationRuleFallback)
         {
             return;
@@ -202,24 +225,23 @@ public sealed partial class ModerationCaseItem : ObservableObject
         _suppressViolationRuleFallback = true;
         try
         {
-            ViolationRuleOptions.Clear();
-            foreach (var option in options)
-            {
-                ViolationRuleOptions.Add(option);
-            }
+            SynchronizeViolationRuleOptions(options);
 
-            SelectedViolationRule = ViolationRuleOptions.FirstOrDefault(
+            var selectedOption = ViolationRuleOptions.FirstOrDefault(
                 option => !string.IsNullOrWhiteSpace(selectedRuleCode)
                     && string.Equals(
                         option.Code,
-                        selectedRuleCode,
-                        StringComparison.Ordinal));
+                        selectedRuleCode.Trim(),
+                        StringComparison.OrdinalIgnoreCase));
 
-            if (SelectedViolationRule is null && ViolationRuleOptions.Count > 0)
+            if (selectedOption is null && ViolationRuleOptions.Count > 0)
             {
-                SelectedViolationRule = ViolationRuleOptions[0];
+                selectedOption = ViolationRuleOptions[0];
                 applyFallbackDefaults = true;
             }
+
+            SelectedViolationRule = selectedOption;
+            RuleCode = selectedOption?.Code;
         }
         finally
         {
@@ -232,6 +254,56 @@ public sealed partial class ModerationCaseItem : ObservableObject
             PolicySet = fallback.PolicySet;
             Reason = fallback.PublicReason;
             OnPropertyChanged(nameof(CanExecute));
+        }
+    }
+
+    private void SynchronizeViolationRuleOptions(
+        IReadOnlyList<PolicyRuleOptionItem> options)
+    {
+        var desiredCodes = options
+            .Select(option => option.Code)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        for (var index = ViolationRuleOptions.Count - 1; index >= 0; index--)
+        {
+            if (!desiredCodes.Contains(ViolationRuleOptions[index].Code))
+            {
+                ViolationRuleOptions.RemoveAt(index);
+            }
+        }
+
+        for (var desiredIndex = 0; desiredIndex < options.Count; desiredIndex++)
+        {
+            var desired = options[desiredIndex];
+            var existingIndex = -1;
+            for (var index = 0; index < ViolationRuleOptions.Count; index++)
+            {
+                if (string.Equals(
+                        ViolationRuleOptions[index].Code,
+                        desired.Code,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    existingIndex = index;
+                    break;
+                }
+            }
+
+            if (existingIndex < 0)
+            {
+                ViolationRuleOptions.Insert(desiredIndex, desired);
+                continue;
+            }
+
+            var existing = ViolationRuleOptions[existingIndex];
+            if (existingIndex != desiredIndex)
+            {
+                ViolationRuleOptions.Move(existingIndex, desiredIndex);
+            }
+
+            if (!existing.Equals(desired))
+            {
+                ViolationRuleOptions[desiredIndex] = desired;
+            }
         }
     }
 
