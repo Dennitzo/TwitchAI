@@ -230,6 +230,36 @@ public sealed class UniversalDatabaseEditor : IUniversalDatabaseEditor
             return;
         }
 
+        if (schema.Name == "whitelist_phrases"
+            && (values.ContainsKey("subject_value")
+                || values.ContainsKey("subject_kind")))
+        {
+            var current = await ReadWhitelistSubjectAsync(
+                    connection,
+                    transaction,
+                    schema,
+                    primaryKeyColumn,
+                    primaryKeyValue,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var subjectValue = values.TryGetValue(
+                    "subject_value",
+                    out var changedSubjectValue)
+                ? Convert.ToString(
+                    changedSubjectValue,
+                    CultureInfo.InvariantCulture) ?? string.Empty
+                : current.SubjectValue;
+            var subjectKind = values.TryGetValue(
+                    "subject_kind",
+                    out var changedSubjectKind)
+                ? Convert.ToString(
+                    changedSubjectKind,
+                    CultureInfo.InvariantCulture) ?? string.Empty
+                : current.SubjectKind;
+            values["normalized_value"] =
+                NormalizeWhitelistValue(subjectKind, subjectValue);
+        }
+
         var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
         if (schema.Columns.ContainsKey("updated_utc")
             && !values.ContainsKey("updated_utc"))
@@ -430,10 +460,51 @@ public sealed class UniversalDatabaseEditor : IUniversalDatabaseEditor
             && values.TryGetValue("subject_value", out var whitelist)
             && whitelist is string whitelistText)
         {
-            values["normalized_value"] = whitelistText.ToLowerInvariant();
             AddIfMissing(schema, values, "subject_kind", "exact_message");
+            var subjectKind = Convert.ToString(
+                values["subject_kind"],
+                CultureInfo.InvariantCulture) ?? string.Empty;
+            values["normalized_value"] =
+                NormalizeWhitelistValue(subjectKind, whitelistText);
         }
     }
+
+    private static async Task<(string SubjectKind, string SubjectValue)>
+        ReadWhitelistSubjectAsync(
+            SqliteConnection connection,
+            SqliteTransaction transaction,
+            TableSchema schema,
+            string primaryKeyColumn,
+            object primaryKeyValue,
+            CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            $"""
+             SELECT {Quote("subject_kind")}, {Quote("subject_value")}
+             FROM {Quote(schema.Name)}
+             WHERE {Quote(primaryKeyColumn)} = @primary_key;
+             """;
+        command.Parameters.AddWithValue("@primary_key", primaryKeyValue);
+        await using var reader = await command
+            .ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                $"Die Zeile {schema.Name}/{primaryKeyValue} wurde nicht gefunden.");
+        }
+
+        return (reader.GetString(0), reader.GetString(1));
+    }
+
+    private static string NormalizeWhitelistValue(
+        string subjectKind,
+        string subjectValue) =>
+        string.Equals(subjectKind, "user_id", StringComparison.Ordinal)
+            ? subjectValue
+            : subjectValue.ToLowerInvariant();
 
     private static void AddIfMissing(
         TableSchema schema,

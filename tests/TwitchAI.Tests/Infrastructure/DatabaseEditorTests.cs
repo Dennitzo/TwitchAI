@@ -157,6 +157,101 @@ public sealed class DatabaseEditorTests
     }
 
     [Fact]
+    public async Task Apply_UserLoginWhitelistPreservesOriginalAndDerivesLowercase()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        using var editor = CreateEditor(database);
+
+        var result = await editor.ApplyAsync(
+        [
+            new StagedDatabaseChange(
+                "whitelist_phrases",
+                StagedDatabaseOperation.Insert,
+                null,
+                null,
+                new Dictionary<string, object?>
+                {
+                    ["broadcaster_id"] = GlobalPolicyStorage.BroadcasterId,
+                    ["subject_kind"] = "user_login",
+                    ["subject_value"] = "MixedCase_Login",
+                    ["enabled"] = true,
+                }),
+        ],
+        "User login normalization test");
+        var row = Assert.Single(result.Changes);
+
+        await using var connection = await database.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT subject_kind, subject_value, normalized_value
+            FROM whitelist_phrases
+            WHERE allowlist_id = @id;
+            """;
+        command.Parameters.AddWithValue("@id", row.EntityId);
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("user_login", reader.GetString(0));
+        Assert.Equal("MixedCase_Login", reader.GetString(1));
+        Assert.Equal("mixedcase_login", reader.GetString(2));
+    }
+
+    [Fact]
+    public async Task UniversalEditor_UserLoginUpdateRefreshesDerivedLowercase()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var editor = new UniversalDatabaseEditor(
+            database.ConnectionFactory,
+            new DatabaseCatalog(),
+            []);
+        await editor.SaveRowAsync(
+            "whitelist_phrases",
+            "allowlist_id",
+            primaryKeyValue: null,
+            new Dictionary<string, object?>
+            {
+                ["broadcaster_id"] = GlobalPolicyStorage.BroadcasterId,
+                ["subject_kind"] = "user_login",
+                ["subject_value"] = "First_Login",
+                ["enabled"] = 1L,
+            });
+
+        await using var connection = await database.OpenConnectionAsync();
+        var allowlistId = Convert.ToInt64(
+            await ScalarAsync(
+                connection,
+                """
+                SELECT allowlist_id
+                FROM whitelist_phrases
+                WHERE subject_kind = 'user_login'
+                  AND normalized_value = 'first_login';
+                """),
+            System.Globalization.CultureInfo.InvariantCulture);
+
+        await editor.SaveRowAsync(
+            "whitelist_phrases",
+            "allowlist_id",
+            allowlistId,
+            new Dictionary<string, object?>
+            {
+                ["subject_value"] = "Changed_Login",
+            });
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT subject_value, normalized_value
+            FROM whitelist_phrases
+            WHERE allowlist_id = @id;
+            """;
+        command.Parameters.AddWithValue("@id", allowlistId);
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("Changed_Login", reader.GetString(0));
+        Assert.Equal("changed_login", reader.GetString(1));
+    }
+
+    [Fact]
     public async Task Apply_ProtectsMandatoryPolicySetsAndBaselineRules()
     {
         await using var database = await TestDatabase.CreateAsync();

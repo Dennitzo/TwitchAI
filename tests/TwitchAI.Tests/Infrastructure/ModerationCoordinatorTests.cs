@@ -85,9 +85,47 @@ public sealed class ModerationCoordinatorTests
 
         var pipelineEvent = await skipped.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
-        Assert.Equal("whitelist_exact_match", pipelineEvent.StatusCode);
+        Assert.Equal("whitelist_match", pipelineEvent.StatusCode);
         Assert.Equal("KEKW", pipelineEvent.ChatMessage?.Text.OriginalText);
         Assert.Equal("kekw", pipelineEvent.ChatMessage?.Text.LowerText);
+        Assert.Equal(
+            WhitelistEntryKind.ExactMessage,
+            harness.Whitelist.LastRecordedKind);
+        Assert.Equal(1, harness.Whitelist.RecordedHitCount);
+        Assert.Equal(0, harness.LocalModel.CallCount);
+        Assert.Equal(0, harness.Repair.CallCount);
+        Assert.Equal(0, harness.Cases.AddCallCount);
+    }
+
+    [Fact]
+    public async Task WhitelistedTwitchLoginNeverCallsLocalModel()
+    {
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidEnvelope,
+            whitelistedLogins: Set("targetlogin"));
+        var skipped = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.WhitelistSkipped);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(
+            MessageEvent(
+                1,
+                "ordinary message",
+                login: "TargetLogin",
+                displayName: "Different Display Name"));
+
+        var pipelineEvent = await skipped.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal("whitelist_match", pipelineEvent.StatusCode);
+        Assert.Equal(
+            "TargetLogin",
+            pipelineEvent.ChatMessage?.Identity.Login);
+        Assert.Equal(
+            WhitelistEntryKind.UserLogin,
+            harness.Whitelist.LastRecordedKind);
+        Assert.Equal("targetlogin", harness.Whitelist.LastRecordedValue);
         Assert.Equal(1, harness.Whitelist.RecordedHitCount);
         Assert.Equal(0, harness.LocalModel.CallCount);
         Assert.Equal(0, harness.Repair.CallCount);
@@ -525,17 +563,21 @@ public sealed class ModerationCoordinatorTests
         string text,
         string? userId = null,
         IReadOnlyDictionary<string, string>? badges = null,
-        string? sharedChatSourceChannelId = null)
+        string? sharedChatSourceChannelId = null,
+        string? login = null,
+        string? displayName = null)
     {
         var receivedAt = Baseline.AddMilliseconds(index);
         userId ??= $"user-{index}";
+        login ??= $"login-{userId}";
+        displayName ??= $"User {userId}";
         var identity = ChatMessageIdentityV1.Create(
             $"event-{index}",
             $"message-{index}",
             ChannelId,
             userId,
-            $"login-{userId}",
-            $"User {userId}",
+            login,
+            displayName,
             text,
             receivedAt,
             sharedChatSourceChannelId,
@@ -677,10 +719,13 @@ public sealed class ModerationCoordinatorTests
             IModerationBatcher? batcher = null,
             ITwitchConnectionReadiness? connectionReadiness = null,
             Func<ModerationRequestEnvelopeV3, string>?
-                repairResponseFactory = null)
+                repairResponseFactory = null,
+            IReadOnlySet<string>? whitelistedLogins = null)
         {
             var eventSub = new FakeEventSubClient();
-            var whitelistSource = new FakeWhitelistPhraseSource(whitelist);
+            var whitelistSource = new FakeWhitelistPhraseSource(
+                whitelist,
+                whitelistedLogins ?? Set());
             var policyStore = new FakePolicyStore(generalRevisionForCall ?? (_ => 1));
             var localModel = new FakeLocalModerationClient(modelResponse);
             var repair = new FakeRepairClient(
@@ -818,36 +863,47 @@ public sealed class ModerationCoordinatorTests
         }
     }
 
-    private sealed class FakeWhitelistPhraseSource(IReadOnlySet<string> phrases)
+    private sealed class FakeWhitelistPhraseSource(
+        IReadOnlySet<string> phrases,
+        IReadOnlySet<string> lowerUserLogins)
         : IWhitelistPhraseSource
     {
         private int _getCallCount;
         private int _recordedHitCount;
+        private WhitelistEntryKind? _lastRecordedKind;
+        private string? _lastRecordedValue;
 
         public int GetCallCount => Volatile.Read(ref _getCallCount);
 
         public int RecordedHitCount => Volatile.Read(ref _recordedHitCount);
 
-        public ValueTask<IReadOnlySet<string>> GetActiveLowerPhrasesAsync(
+        public WhitelistEntryKind? LastRecordedKind => _lastRecordedKind;
+
+        public string? LastRecordedValue => _lastRecordedValue;
+
+        public ValueTask<ActiveWhitelistSnapshot> GetActiveEntriesAsync(
             string channelId,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Assert.Equal(ChannelId, channelId);
             Interlocked.Increment(ref _getCallCount);
-            return ValueTask.FromResult(phrases);
+            return ValueTask.FromResult(
+                new ActiveWhitelistSnapshot(phrases, lowerUserLogins));
         }
 
         public ValueTask RecordHitAsync(
             string channelId,
-            string lowerPhrase,
+            WhitelistEntryKind kind,
+            string normalizedValue,
             DateTimeOffset occurredAtUtc,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Assert.Equal(ChannelId, channelId);
-            Assert.Equal("kekw", lowerPhrase);
             Assert.NotEqual(default, occurredAtUtc);
+            _lastRecordedKind = kind;
+            _lastRecordedValue = normalizedValue;
             Interlocked.Increment(ref _recordedHitCount);
             return ValueTask.CompletedTask;
         }

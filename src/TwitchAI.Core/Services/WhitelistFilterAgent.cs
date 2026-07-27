@@ -7,25 +7,44 @@ public sealed class WhitelistFilterAgent(IWhitelistPhraseSource phraseSource)
     : IWhitelistFilterAgent
 {
     public async ValueTask<bool> ShouldSkipAsync(
-        string channelId,
-        ProcessedChatText text,
+        ChatMessageSnapshot message,
         DateTimeOffset observedAtUtc,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
-        ArgumentNullException.ThrowIfNull(text);
+        ArgumentNullException.ThrowIfNull(message);
 
-        var phrases = await phraseSource
-            .GetActiveLowerPhrasesAsync(channelId, cancellationToken)
+        var entries = await phraseSource
+            .GetActiveEntriesAsync(
+                message.Identity.ChannelId,
+                cancellationToken)
             .ConfigureAwait(false);
+        var lowerLogin = message.Identity.Login.ToLowerInvariant();
 
-        if (!phrases.Contains(text.LowerText))
+        if (entries.LowerUserLogins.Contains(lowerLogin))
+        {
+            await phraseSource
+                .RecordHitAsync(
+                    message.Identity.ChannelId,
+                    WhitelistEntryKind.UserLogin,
+                    lowerLogin,
+                    observedAtUtc,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return true;
+        }
+
+        if (!entries.ExactLowerMessages.Contains(message.Text.LowerText))
         {
             return false;
         }
 
         await phraseSource
-            .RecordHitAsync(channelId, text.LowerText, observedAtUtc, cancellationToken)
+            .RecordHitAsync(
+                message.Identity.ChannelId,
+                WhitelistEntryKind.ExactMessage,
+                message.Text.LowerText,
+                observedAtUtc,
+                cancellationToken)
             .ConfigureAwait(false);
         return true;
     }

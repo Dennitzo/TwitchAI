@@ -1302,5 +1302,49 @@ internal static class SchemaMigrations
               AND set_code = 'backseatgaming'
               AND archived_utc IS NULL;
             """),
+        new(
+            10,
+            "Support exact Twitch login entries in the global whitelist",
+            """
+            CREATE TABLE whitelist_phrases_v10 (
+                allowlist_id       INTEGER PRIMARY KEY,
+                broadcaster_id     TEXT NOT NULL,
+                subject_kind       TEXT NOT NULL CHECK(subject_kind IN (
+                    'user_id','user_login','exact_message')),
+                subject_value      TEXT NOT NULL,
+                normalized_value   TEXT NOT NULL,
+                enabled            INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+                hit_count          INTEGER NOT NULL DEFAULT 0 CHECK(hit_count >= 0),
+                last_hit_utc       TEXT,
+                row_version        INTEGER NOT NULL DEFAULT 1 CHECK(row_version > 0),
+                created_utc        TEXT NOT NULL,
+                updated_utc        TEXT NOT NULL,
+                archived_utc       TEXT,
+                UNIQUE(broadcaster_id, subject_kind, normalized_value)
+            ) STRICT;
+
+            INSERT INTO whitelist_phrases_v10(
+                allowlist_id, broadcaster_id, subject_kind,
+                subject_value, normalized_value, enabled,
+                hit_count, last_hit_utc, row_version,
+                created_utc, updated_utc, archived_utc)
+            SELECT
+                allowlist_id, broadcaster_id, subject_kind,
+                subject_value, normalized_value, enabled,
+                hit_count, last_hit_utc, row_version,
+                created_utc, updated_utc, archived_utc
+            FROM whitelist_phrases;
+
+            DROP TABLE whitelist_phrases;
+            ALTER TABLE whitelist_phrases_v10
+                RENAME TO whitelist_phrases;
+
+            CREATE INDEX ix_whitelist_match
+                ON whitelist_phrases(
+                    broadcaster_id, subject_kind, normalized_value)
+                WHERE enabled = 1 AND archived_utc IS NULL;
+            """,
+            RequiresForeignKeysDisabled: true,
+            RequiresBackup: true),
     ];
 }

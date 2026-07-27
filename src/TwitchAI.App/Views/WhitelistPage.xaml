@@ -23,16 +23,16 @@
         <TextBlock Style="{StaticResource PageTitleStyle}" Text="Whitelist" />
         <TextBlock
           Foreground="{ThemeResource MutedTextBrush}"
-          Text="Whitelisted Nachrichten werden lokal aussortiert und niemals an LM Studio gesendet."
+          Text="Whitelisted Nachrichten und User-Logins werden lokal aussortiert und niemals an LM Studio gesendet."
           TextWrapping="Wrap" />
       </StackPanel>
 
       <InfoBar
         IsClosable="False"
         IsOpen="True"
-        Message="Der Vergleich erfolgt nach invariantem Lowercase, bleibt aber ansonsten exakt. KEKW, kekw und KeKw treffen; zusätzliche Leerzeichen oder Satzzeichen nicht."
+        Message="Neue Zeilen sind zunächst exakte Nachrichten. Über die Spalte „User“ lassen sie sich als Twitch-Login behandeln. Der Vergleich erfolgt invariant in Lowercase; die Originaleingabe bleibt erhalten."
         Severity="Informational"
-        Title="Exakter Lowercase-Vergleich" />
+        Title="Nachricht oder User-Login" />
 
       <Border Style="{StaticResource CardStyle}">
         <StackPanel Spacing="12">
@@ -173,24 +173,26 @@
               SortMemberPath="OriginalPhrase"
               Tag="OriginalPhrase"
               Width="2*" />
-            <tv:TableViewTextColumn
-              Binding="{Binding NormalizedPhrase}"
+            <tv:TableViewTemplateColumn
               CanResize="True"
               CanSort="True"
-              Header="Lowercase"
+              Header="User"
               IsReadOnly="True"
-              SortMemberPath="NormalizedPhrase"
-              Tag="NormalizedPhrase"
-              Width="2*" />
-            <tv:TableViewTextColumn
-              Binding="{Binding Source}"
-              CanResize="True"
-              CanSort="True"
-              Header="Quelle"
-              IsReadOnly="True"
-              SortMemberPath="Source"
-              Tag="Source"
-              Width="140" />
+              SortMemberPath="IsUser"
+              Tag="IsUser"
+              Width="90">
+              <tv:TableViewTemplateColumn.CellTemplate>
+                <DataTemplate x:DataType="vm:WhitelistPhraseItem">
+                  <CheckBox
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    AutomationProperties.Name="Whitelist-Eintrag als User-Login behandeln"
+                    Click="PhraseUser_Click"
+                    IsChecked="{x:Bind IsUser, Mode=TwoWay}"
+                    Tag="{x:Bind}" />
+                </DataTemplate>
+              </tv:TableViewTemplateColumn.CellTemplate>
+            </tv:TableViewTemplateColumn>
             <tv:TableViewNumberColumn
               Binding="{Binding HitCount}"
               CanResize="True"

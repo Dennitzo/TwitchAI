@@ -440,8 +440,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
 
         if (await _whitelist
                 .ShouldSkipAsync(
-                    message.Identity.ChannelId,
-                    message.Text,
+                    message,
                     _timeProvider.GetUtcNow(),
                     cancellationToken)
                 .ConfigureAwait(false))
@@ -462,7 +461,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 new(
                     ModerationPipelineEventKind.WhitelistSkipped,
                     "stale_case_now_whitelisted",
-                    "The stale moderation case now matches the exact manual whitelist.",
+                    "The stale moderation case now matches the manual whitelist.",
                     message,
                     caseId: caseId));
             return;
@@ -679,8 +678,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
 
         if (await _whitelist
                 .ShouldSkipAsync(
-                    identity.ChannelId,
-                    processed,
+                    snapshot,
                     identity.ReceivedAtUtc,
                     cancellationToken)
                 .ConfigureAwait(false))
@@ -688,8 +686,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             Publish(
                 new(
                     ModerationPipelineEventKind.WhitelistSkipped,
-                    "whitelist_exact_match",
-                    "The exact lowercase message matched the manual whitelist.",
+                    "whitelist_match",
+                    "The message or Twitch login matched the manual whitelist.",
                     snapshot));
             return;
         }
@@ -914,8 +912,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             // Re-check it immediately before a case becomes actionable.
             if (await _whitelist
                     .ShouldSkipAsync(
-                        message.Identity.ChannelId,
-                        message.Text,
+                        message,
                         _timeProvider.GetUtcNow(),
                         cancellationToken)
                     .ConfigureAwait(false))
@@ -949,7 +946,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     new(
                         ModerationPipelineEventKind.WhitelistSkipped,
                         "message_whitelisted_during_inference",
-                        "The message was added to the exact manual whitelist while the batch was being analyzed.",
+                        "The message or Twitch login was added to the manual whitelist while the batch was being analyzed.",
                         message,
                         decision,
                         caseId: batchMessage.ReanalysisCaseId,

@@ -109,8 +109,7 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
         if (_whitelistFilter is not null &&
             await _whitelistFilter
                 .ShouldSkipAsync(
-                    moderationCase.Message.Identity.ChannelId,
-                    moderationCase.Message.Text,
+                    moderationCase.Message,
                     DateTimeOffset.UtcNow,
                     cancellationToken)
                 .ConfigureAwait(false))

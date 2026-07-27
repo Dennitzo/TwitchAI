@@ -11,13 +11,14 @@ public interface IChatTextNormalizer
 
 public interface IWhitelistPhraseSource
 {
-    ValueTask<IReadOnlySet<string>> GetActiveLowerPhrasesAsync(
+    ValueTask<ActiveWhitelistSnapshot> GetActiveEntriesAsync(
         string channelId,
         CancellationToken cancellationToken = default);
 
     ValueTask RecordHitAsync(
         string channelId,
-        string lowerPhrase,
+        WhitelistEntryKind kind,
+        string normalizedValue,
         DateTimeOffset occurredAtUtc,
         CancellationToken cancellationToken = default);
 }
@@ -25,8 +26,7 @@ public interface IWhitelistPhraseSource
 public interface IWhitelistFilterAgent
 {
     ValueTask<bool> ShouldSkipAsync(
-        string channelId,
-        ProcessedChatText text,
+        ChatMessageSnapshot message,
         DateTimeOffset observedAtUtc,
         CancellationToken cancellationToken = default);
 }

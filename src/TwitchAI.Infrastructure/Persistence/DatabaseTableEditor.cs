@@ -305,7 +305,13 @@ public sealed class DatabaseTableEditor : IDatabaseTableEditor, IDisposable
             var text = (string)subjectValue!;
             values.Add(
                 "normalized_value",
-                subjectKind == "user_id" ? text : _whitelistNormalizer.Normalize(text));
+                subjectKind switch
+                {
+                    "user_id" => text,
+                    "user_login" or "exact_message" or null =>
+                        _whitelistNormalizer.Normalize(text),
+                    _ => _whitelistNormalizer.Normalize(text),
+                });
         }
 
         return values;

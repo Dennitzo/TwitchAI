@@ -155,6 +155,113 @@ public sealed class TwitchModerationExecutorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_WhitelistedLoginBlocksTwitchAction()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        const string channelId = "channel-login-whitelist";
+        var infrastructureNormalizer =
+            new TwitchAI.Infrastructure.Persistence.ChatTextNormalizer();
+        var policyStore = new SqlitePolicyStore(
+            database.ConnectionFactory,
+            infrastructureNormalizer);
+        var persistedPolicy = await policyStore.GetEffectivePolicyAsync(
+            channelId,
+            "509658");
+        var context = new ChannelContextSnapshot(
+            channelId,
+            "509658",
+            "Just Chatting",
+            DateTimeOffset.UtcNow,
+            Revision: 1,
+            IsVerified: true);
+        var corePolicy = new EffectivePolicyResolver().Resolve(
+            context,
+            persistedPolicy.GeneralRevision,
+            backseatgamingRevision: 1);
+        var identity = ChatMessageIdentityV1.Create(
+            "event-login-whitelist",
+            "message-login-whitelist",
+            channelId,
+            "user-login-whitelist",
+            "TargetLogin",
+            "Different Display Name",
+            "ordinary message",
+            DateTimeOffset.UtcNow);
+        var snapshot = new ChatMessageSnapshot(
+            identity,
+            new CoreChatTextNormalizer().Process(identity.OriginalText),
+            context,
+            IngressSequence: 1);
+        var repository = new CoreModerationCaseRepository(
+            database.ConnectionFactory,
+            infrastructureNormalizer);
+        var caseId = await repository.AddAsync(
+            snapshot,
+            new ValidatedModerationDecision(
+                "temporary-login-whitelist",
+                ModerationActionKind.Delete,
+                TimeoutSeconds: null,
+                PolicySetCode.General,
+                "original reason",
+                ["ordinary"],
+                Confidence: 0.9,
+                RuleCode: ModerationRuleCodes.GeneralPhrase),
+            corePolicy.RevisionFingerprint);
+        var helix = new RecordingHelixClient();
+        var whitelistSource = new FixedWhitelistPhraseSource(
+            exactMessages: new HashSet<string>(StringComparer.Ordinal),
+            lowerUserLogins: new HashSet<string>(
+                ["targetlogin"],
+                StringComparer.Ordinal));
+        var executor = new TwitchModerationExecutor(
+            repository,
+            new SqliteMessageAvailabilityStore(
+                database.ConnectionFactory,
+                infrastructureNormalizer),
+            new FixedChannelContextService(context),
+            new EffectivePolicyResolver(),
+            policyStore,
+            database.ConnectionFactory,
+            infrastructureNormalizer,
+            helix,
+            new InfrastructureOptions
+            {
+                DatabasePath = database.Path,
+                TwitchApi = new TwitchApiOptions
+                {
+                    ModeratorUserId = "moderator-1",
+                },
+            },
+            whitelistFilter: new WhitelistFilterAgent(whitelistSource));
+
+        var result = await executor.ExecuteAsync(
+            new ModerationExecutionRequest(
+                caseId,
+                ExpectedRowVersion: 1,
+                ModerationActionKind.Delete,
+                TimeoutSeconds: null,
+                string.Empty,
+                PolicySetCode.General,
+                ["ordinary"],
+                RuleCode: ModerationRuleCodes.GeneralPhrase));
+
+        Assert.Equal(
+            ModerationExecutionOutcome.IntegrityBlocked,
+            result.Outcome);
+        Assert.Equal("message_now_whitelisted", result.StatusCode);
+        Assert.False(result.TwitchExecuted);
+        Assert.Null(helix.Timeout);
+        Assert.Equal(
+            (
+                WhitelistEntryKind.UserLogin,
+                "targetlogin"),
+            whitelistSource.RecordedHit);
+        Assert.Equal(
+            CoreModerationCaseStatus.IntegrityBlocked,
+            (await repository.GetAsync(caseId))?.Status);
+    }
+
+    [Fact]
     public async Task CompleteUnavailableAsync_PersistsDeclinedReviewCompletionAcrossCalls()
     {
         await using var database = await TestDatabase.CreateAsync();
@@ -509,6 +616,37 @@ public sealed class TwitchModerationExecutorTests
         {
             Assert.Equal(context.ChannelId, channelId);
             return ValueTask.FromResult(context);
+        }
+    }
+
+    private sealed class FixedWhitelistPhraseSource(
+        IReadOnlySet<string> exactMessages,
+        IReadOnlySet<string> lowerUserLogins)
+        : IWhitelistPhraseSource
+    {
+        public (WhitelistEntryKind Kind, string Value)? RecordedHit { get; private set; }
+
+        public ValueTask<ActiveWhitelistSnapshot> GetActiveEntriesAsync(
+            string channelId,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(
+                new ActiveWhitelistSnapshot(
+                    exactMessages,
+                    lowerUserLogins));
+        }
+
+        public ValueTask RecordHitAsync(
+            string channelId,
+            WhitelistEntryKind kind,
+            string normalizedValue,
+            DateTimeOffset occurredAtUtc,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            RecordedHit = (kind, normalizedValue);
+            return ValueTask.CompletedTask;
         }
     }
 

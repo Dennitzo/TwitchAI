@@ -14,6 +14,7 @@ public sealed record WhitelistConfigurationRow(
     string BroadcasterId,
     string OriginalPhrase,
     string LowerPhrase,
+    bool IsUser,
     bool IsEnabled,
     int HitCount,
     DateTimeOffset? LastHitAtUtc,
@@ -83,6 +84,7 @@ public interface IConfigurationDataService
         long allowlistId,
         long expectedRowVersion,
         string phrase,
+        bool isUser,
         CancellationToken cancellationToken = default);
 
     Task<long> SetWhitelistEnabledAsync(
@@ -145,6 +147,8 @@ public sealed class ConfigurationDataService : IConfigurationDataService, IDispo
     private const int QueryPageSize = 200;
     private const string GeneralPolicySet = "General";
     private const string BackseatgamingPolicySet = "Backseatgaming";
+    private const string ExactMessageSubjectKind = "exact_message";
+    private const string UserLoginSubjectKind = "user_login";
     private const string GeneralRuleCode = GlobalPolicyStorage.GeneralRuleCode;
     private const string BackseatgamingRuleCode =
         GlobalPolicyStorage.BackseatgamingRuleCode;
@@ -185,7 +189,8 @@ public sealed class ConfigurationDataService : IConfigurationDataService, IDispo
         return rows
             .Where(row =>
                 IsCurrent(row)
-                && Text(row, "subject_kind") == "exact_message"
+                && IsSupportedWhitelistSubjectKind(
+                    Text(row, "subject_kind"))
                 && Text(row, "broadcaster_id")
                     == GlobalPolicyStorage.BroadcasterId)
             .Select(row =>
@@ -197,6 +202,7 @@ public sealed class ConfigurationDataService : IConfigurationDataService, IDispo
                     owner,
                     Text(row, "subject_value"),
                     Text(row, "normalized_value"),
+                    Text(row, "subject_kind") == UserLoginSubjectKind,
                     Boolean(row, "enabled"),
                     checked((int)Integer(row, "hit_count")),
                     NullableTimestamp(row, "last_hit_utc"),
@@ -221,7 +227,7 @@ public sealed class ConfigurationDataService : IConfigurationDataService, IDispo
             cancellationToken).ConfigureAwait(false);
         var duplicate = rows.SingleOrDefault(row =>
             Text(row, "broadcaster_id") == GlobalPolicyStorage.BroadcasterId
-            && Text(row, "subject_kind") == "exact_message"
+            && Text(row, "subject_kind") == ExactMessageSubjectKind
             && Text(row, "normalized_value") == lowerPhrase);
         if (duplicate is not null)
         {
@@ -244,7 +250,7 @@ public sealed class ConfigurationDataService : IConfigurationDataService, IDispo
         var values = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["broadcaster_id"] = GlobalPolicyStorage.BroadcasterId,
-            ["subject_kind"] = "exact_message",
+            ["subject_kind"] = ExactMessageSubjectKind,
             ["subject_value"] = phrase,
             ["enabled"] = true,
         };
@@ -261,6 +267,7 @@ public sealed class ConfigurationDataService : IConfigurationDataService, IDispo
         long allowlistId,
         long expectedRowVersion,
         string phrase,
+        bool isUser,
         CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
@@ -268,20 +275,30 @@ public sealed class ConfigurationDataService : IConfigurationDataService, IDispo
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(expectedRowVersion);
         ArgumentNullException.ThrowIfNull(phrase);
         var lowerPhrase = NormalizeWhitelistPhrase(phrase);
-        var existing = await LoadWhitelistAsync(cancellationToken).ConfigureAwait(false);
-        if (existing.Any(item =>
-                item.AllowlistId != allowlistId
-                && string.Equals(
-                    item.LowerPhrase,
-                    lowerPhrase,
-                    StringComparison.Ordinal)))
+        var subjectKind = isUser
+            ? UserLoginSubjectKind
+            : ExactMessageSubjectKind;
+        var rows = await QueryAllAsync(
+            "whitelist_phrases",
+            "allowlist_id",
+            cancellationToken).ConfigureAwait(false);
+        var duplicate = rows.FirstOrDefault(row =>
+            Integer(row, "allowlist_id") != allowlistId
+            && Text(row, "broadcaster_id")
+                == GlobalPolicyStorage.BroadcasterId
+            && Text(row, "subject_kind") == subjectKind
+            && Text(row, "normalized_value") == lowerPhrase);
+        if (duplicate is not null)
         {
             throw new InvalidOperationException(
-                "Diese exakte Lowercase-Phrase ist bereits in der Whitelist vorhanden.");
+                IsCurrent(duplicate)
+                    ? "Dieser Whitelist-Eintrag ist für den ausgewählten Typ bereits vorhanden."
+                    : "Dieser Whitelist-Eintrag ist für den ausgewählten Typ bereits archiviert.");
         }
 
         var values = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
+            ["subject_kind"] = subjectKind,
             ["subject_value"] = phrase,
         };
         await CommitSingleAsync(
@@ -348,7 +365,8 @@ public sealed class ConfigurationDataService : IConfigurationDataService, IDispo
             item => Integer(item, "allowlist_id") == allowlistId);
         if (row is null
             || Text(row, "broadcaster_id") != GlobalPolicyStorage.BroadcasterId
-            || Text(row, "subject_kind") != "exact_message")
+            || !IsSupportedWhitelistSubjectKind(
+                Text(row, "subject_kind")))
         {
             throw new InvalidOperationException(
                 "Die Whitelist-Phrase wurde nicht gefunden oder gehört nicht zur globalen Nachrichten-Whitelist.");
@@ -985,6 +1003,9 @@ public sealed class ConfigurationDataService : IConfigurationDataService, IDispo
 
         return lowerPhrase;
     }
+
+    private static bool IsSupportedWhitelistSubjectKind(string subjectKind) =>
+        subjectKind is ExactMessageSubjectKind or UserLoginSubjectKind;
 
     private static string ValidateManualOverride(string value)
     {

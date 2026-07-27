@@ -77,6 +77,7 @@ public sealed record BlacklistPhraseRecord(
 public enum AllowlistSubjectKind
 {
     UserId,
+    UserLogin,
     ExactMessage,
 }
 

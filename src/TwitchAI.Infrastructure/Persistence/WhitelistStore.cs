@@ -7,6 +7,7 @@ public interface IWhitelistStore
     Task<WhitelistMatch> MatchAsync(
         string broadcasterId,
         string chatterUserId,
+        string chatterLogin,
         string normalizedMessage,
         CancellationToken cancellationToken = default);
 
@@ -34,11 +35,13 @@ public sealed class SqliteWhitelistStore : IWhitelistStore, IPolicyCacheInvalida
     public async Task<WhitelistMatch> MatchAsync(
         string broadcasterId,
         string chatterUserId,
+        string chatterLogin,
         string normalizedMessage,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(broadcasterId);
         ArgumentException.ThrowIfNullOrWhiteSpace(chatterUserId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(chatterLogin);
         ArgumentNullException.ThrowIfNull(normalizedMessage);
 
         var lazy = _cache.GetOrAdd(
@@ -62,6 +65,18 @@ public sealed class SqliteWhitelistStore : IWhitelistStore, IPolicyCacheInvalida
         {
             await RecordHitAsync(userAllowlistId, cancellationToken).ConfigureAwait(false);
             return new WhitelistMatch(true, userAllowlistId, AllowlistSubjectKind.UserId);
+        }
+
+        var normalizedLogin = chatterLogin.ToLowerInvariant();
+        if (snapshot.UserLogins.TryGetValue(
+                normalizedLogin,
+                out var loginAllowlistId))
+        {
+            await RecordHitAsync(loginAllowlistId, cancellationToken).ConfigureAwait(false);
+            return new WhitelistMatch(
+                true,
+                loginAllowlistId,
+                AllowlistSubjectKind.UserLogin);
         }
 
         var whitelistKey = _normalizer.Normalize(normalizedMessage);
@@ -118,6 +133,7 @@ public sealed class SqliteWhitelistStore : IWhitelistStore, IPolicyCacheInvalida
             GlobalPolicyStorage.BroadcasterId);
 
         var userIds = new Dictionary<string, long>(StringComparer.Ordinal);
+        var userLogins = new Dictionary<string, long>(StringComparer.Ordinal);
         var exactMessages = new Dictionary<string, long>(StringComparer.Ordinal);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -131,6 +147,9 @@ public sealed class SqliteWhitelistStore : IWhitelistStore, IPolicyCacheInvalida
                 case "user_id":
                     userIds.TryAdd(value, id);
                     break;
+                case "user_login":
+                    userLogins.TryAdd(value, id);
+                    break;
                 case "exact_message":
                     exactMessages.TryAdd(value, id);
                     break;
@@ -139,7 +158,7 @@ public sealed class SqliteWhitelistStore : IWhitelistStore, IPolicyCacheInvalida
             }
         }
 
-        return new WhitelistSnapshot(userIds, exactMessages);
+        return new WhitelistSnapshot(userIds, userLogins, exactMessages);
     }
 
     private async Task RecordHitAsync(long allowlistId, CancellationToken cancellationToken)
@@ -169,5 +188,6 @@ public sealed class SqliteWhitelistStore : IWhitelistStore, IPolicyCacheInvalida
 
     private sealed record WhitelistSnapshot(
         IReadOnlyDictionary<string, long> UserIds,
+        IReadOnlyDictionary<string, long> UserLogins,
         IReadOnlyDictionary<string, long> ExactMessages);
 }

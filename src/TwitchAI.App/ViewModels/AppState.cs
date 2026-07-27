@@ -481,6 +481,7 @@ public sealed partial class WhitelistPhraseItem : ObservableObject
         string originalPhrase,
         string normalizedPhrase,
         string source,
+        bool isUser,
         bool isEnabled,
         int hitCount,
         DateTimeOffset? lastHitAt)
@@ -492,6 +493,8 @@ public sealed partial class WhitelistPhraseItem : ObservableObject
         PersistedOriginalPhrase = originalPhrase;
         NormalizedPhrase = normalizedPhrase;
         Source = source;
+        IsUser = isUser;
+        PersistedIsUser = isUser;
         IsEnabled = isEnabled;
         PersistedIsEnabled = isEnabled;
         HitCount = hitCount;
@@ -515,6 +518,11 @@ public sealed partial class WhitelistPhraseItem : ObservableObject
     public string Source { get; }
 
     [ObservableProperty]
+    public partial bool IsUser { get; set; }
+
+    public bool PersistedIsUser { get; private set; }
+
+    [ObservableProperty]
     public partial bool IsEnabled { get; set; }
 
     public bool PersistedIsEnabled { get; private set; }
@@ -535,6 +543,18 @@ public sealed partial class WhitelistPhraseItem : ObservableObject
     public void RestoreEnabled()
     {
         IsEnabled = PersistedIsEnabled;
+    }
+
+    public void AcceptUser(bool isUser, long rowVersion)
+    {
+        RowVersion = rowVersion;
+        PersistedIsUser = isUser;
+        IsUser = isUser;
+    }
+
+    public void RestoreUser()
+    {
+        IsUser = PersistedIsUser;
     }
 
     public bool HasEditableChanges =>

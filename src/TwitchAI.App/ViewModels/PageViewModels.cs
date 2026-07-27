@@ -1207,8 +1207,7 @@ public sealed partial class WhitelistViewModel : ObservableObject
     [
         "AllowlistId",
         "OriginalPhrase",
-        "NormalizedPhrase",
-        "Source",
+        "IsUser",
         "HitCount",
         "IsEnabled",
     ];
@@ -1450,6 +1449,7 @@ public sealed partial class WhitelistViewModel : ObservableObject
                 item.AllowlistId,
                 item.RowVersion,
                 item.OriginalPhrase,
+                item.IsUser,
                 cancellationToken);
             item.AcceptEditableValue(
                 item.OriginalPhrase,
@@ -1468,6 +1468,57 @@ public sealed partial class WhitelistViewModel : ObservableObject
         catch (Exception exception)
         {
             item.RestoreEditableValue();
+            OnPropertyChanged(nameof(SortedPhrases));
+            StatusMessage = FriendlyError(exception);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task SetUserAsync(
+        WhitelistPhraseItem item,
+        bool isUser,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (item.PersistedIsUser == isUser)
+        {
+            return;
+        }
+
+        if (IsBusy)
+        {
+            item.RestoreUser();
+            return;
+        }
+
+        IsBusy = true;
+        try
+        {
+            var rowVersion = await _configuration.UpdateWhitelistPhraseAsync(
+                item.AllowlistId,
+                item.RowVersion,
+                item.OriginalPhrase,
+                isUser,
+                cancellationToken);
+            item.AcceptUser(isUser, rowVersion);
+            OnPropertyChanged(nameof(SortedPhrases));
+            StatusMessage = isUser
+                ? $"„{item.OriginalPhrase}“ wird als User-Login behandelt."
+                : $"„{item.OriginalPhrase}“ wird als exakte Nachricht behandelt.";
+        }
+        catch (DatabaseConcurrencyException)
+        {
+            item.RestoreUser();
+            await ReloadCoreAsync(cancellationToken);
+            StatusMessage =
+                "Die Zeile wurde zwischenzeitlich geändert und deshalb nicht überschrieben. Die SQLite-Daten wurden neu geladen.";
+        }
+        catch (Exception exception)
+        {
+            item.RestoreUser();
             OnPropertyChanged(nameof(SortedPhrases));
             StatusMessage = FriendlyError(exception);
         }
@@ -1579,6 +1630,7 @@ public sealed partial class WhitelistViewModel : ObservableObject
                     row.OriginalPhrase,
                     row.LowerPhrase,
                     "Global",
+                    row.IsUser,
                     row.IsEnabled,
                     row.HitCount,
                     row.LastHitAtUtc));
@@ -1601,14 +1653,9 @@ public sealed partial class WhitelistViewModel : ObservableObject
                     item => item.OriginalPhrase,
                     textComparer)
                 : source.OrderBy(item => item.OriginalPhrase, textComparer),
-            "NormalizedPhrase" => SortDescending
-                ? source.OrderByDescending(
-                    item => item.NormalizedPhrase,
-                    textComparer)
-                : source.OrderBy(item => item.NormalizedPhrase, textComparer),
-            "Source" => SortDescending
-                ? source.OrderByDescending(item => item.Source, textComparer)
-                : source.OrderBy(item => item.Source, textComparer),
+            "IsUser" => SortDescending
+                ? source.OrderByDescending(item => item.IsUser)
+                : source.OrderBy(item => item.IsUser),
             "HitCount" => SortDescending
                 ? source.OrderByDescending(item => item.HitCount)
                 : source.OrderBy(item => item.HitCount),
@@ -1628,19 +1675,19 @@ public sealed partial class WhitelistViewModel : ObservableObject
         }
 
         var enabledLabel = item.IsEnabled ? "aktiv" : "inaktiv";
+        var subjectLabel = item.IsUser
+            ? "user benutzer login"
+            : "nachricht phrase";
         return item.AllowlistId.ToString(CultureInfo.InvariantCulture).Contains(
                 query,
                 StringComparison.OrdinalIgnoreCase)
             || item.OriginalPhrase.Contains(
                 query,
                 StringComparison.OrdinalIgnoreCase)
-            || item.NormalizedPhrase.Contains(
-                query,
-                StringComparison.OrdinalIgnoreCase)
-            || item.Source.Contains(query, StringComparison.OrdinalIgnoreCase)
             || item.HitCount.ToString(CultureInfo.InvariantCulture).Contains(
                 query,
                 StringComparison.OrdinalIgnoreCase)
+            || subjectLabel.Contains(query, StringComparison.OrdinalIgnoreCase)
             || enabledLabel.Contains(query, StringComparison.OrdinalIgnoreCase);
     }
 

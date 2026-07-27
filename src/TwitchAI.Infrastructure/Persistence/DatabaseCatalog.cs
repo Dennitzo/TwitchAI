@@ -58,7 +58,7 @@ public sealed class DatabaseCatalog : IDatabaseCatalog
     private static Dictionary<string, DatabaseTableDefinition> CreateDefinitions()
     {
         var actionValues = Set("delete", "timeout");
-        var subjectValues = Set("user_id", "exact_message");
+        var subjectValues = Set("user_id", "user_login", "exact_message");
         var definitions = new[]
         {
             Editable(

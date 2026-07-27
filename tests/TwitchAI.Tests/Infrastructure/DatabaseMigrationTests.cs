@@ -58,9 +58,174 @@ public sealed class DatabaseMigrationTests
         var journalMode = await ScalarAsync<string>(connection, "PRAGMA journal_mode;");
         var foreignKeys = await ScalarAsync<long>(connection, "PRAGMA foreign_keys;");
 
-        Assert.Equal(9, migrationCount);
+        Assert.Equal(10, migrationCount);
         Assert.Equal("wal", journalMode, ignoreCase: true);
         Assert.Equal(1, foreignKeys);
+    }
+
+    [Fact]
+    public async Task UserLoginWhitelistMigration_PreservesRowsAndForeignKeys()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(9);
+        const long allowlistId = 4242;
+        const string timestamp = "2026-07-27T10:15:30.0000000+00:00";
+        await using (var connection = await database.OpenConnectionAsync())
+        await using (var transaction = connection.BeginTransaction())
+        {
+            await using (var fixture = connection.CreateCommand())
+            {
+                fixture.Transaction = transaction;
+                fixture.CommandText =
+                    """
+                    INSERT INTO whitelist_phrases(
+                        allowlist_id, broadcaster_id, subject_kind,
+                        subject_value, normalized_value, enabled,
+                        hit_count, last_hit_utc, row_version,
+                        created_utc, updated_utc, archived_utc)
+                    VALUES(
+                        @allowlist_id, '*', 'user_id',
+                        '123456789', '123456789', 0,
+                        7, @timestamp, 9,
+                        @timestamp, @timestamp, @timestamp);
+
+                    INSERT INTO chat_message_snapshots(
+                        twitch_message_id, eventsub_notification_id,
+                        broadcaster_id, chatter_user_id,
+                        chatter_login_original, chatter_name_original,
+                        message_text_original, lower_text,
+                        message_text_normalized, normalization_version,
+                        original_sha256, normalized_sha256,
+                        identity_fingerprint, channel_context_revision,
+                        category_is_verified, ingress_sequence,
+                        badges_json, received_utc)
+                    VALUES(
+                        'whitelist-migration-message',
+                        'whitelist-migration-event',
+                        'channel-a', '123456789',
+                        'legacy_login', 'Legacy Login',
+                        'legacy message', 'legacy message',
+                        'legacy message', 1,
+                        'original-hash', 'normalized-hash',
+                        'identity-fingerprint', 1,
+                        1, 1, '{}', @timestamp);
+
+                    INSERT INTO moderation_cases(
+                        twitch_message_id, broadcaster_id, chatter_user_id,
+                        chatter_name_snapshot, message_text_original,
+                        message_text_normalized, effective_policy_hash,
+                        policy_revisions_json, message_snapshot_json,
+                        matched_allowlist_id, model_id, envelope_json,
+                        proposed_action, proposed_timeout_seconds,
+                        violation_rule_code, reason, policy_set,
+                        trigger_phrases_json, confidence, status,
+                        row_version, created_utc, resolved_utc)
+                    VALUES(
+                        'whitelist-migration-message',
+                        'channel-a', '123456789',
+                        'Legacy Login', 'legacy message',
+                        'legacy message', 'policy-hash',
+                        '{}', '{}',
+                        @allowlist_id, 'model', '{}',
+                        'none', NULL,
+                        NULL, '', 'general',
+                        '[]', NULL, 'allowlisted',
+                        1, @timestamp, @timestamp);
+                    """;
+                fixture.Parameters.AddWithValue("@allowlist_id", allowlistId);
+                fixture.Parameters.AddWithValue("@timestamp", timestamp);
+                await fixture.ExecuteNonQueryAsync();
+            }
+
+            await transaction.CommitAsync();
+        }
+
+        await database.Initializer.InitializeAsync();
+
+        await using var migrated = await database.OpenConnectionAsync();
+        await using (var verify = migrated.CreateCommand())
+        {
+            verify.CommandText =
+                """
+                SELECT
+                    broadcaster_id, subject_kind,
+                    subject_value, normalized_value, enabled,
+                    hit_count, last_hit_utc, row_version,
+                    created_utc, updated_utc, archived_utc
+                FROM whitelist_phrases
+                WHERE allowlist_id = @allowlist_id;
+                """;
+            verify.Parameters.AddWithValue("@allowlist_id", allowlistId);
+            await using var reader = await verify.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("*", reader.GetString(0));
+            Assert.Equal("user_id", reader.GetString(1));
+            Assert.Equal("123456789", reader.GetString(2));
+            Assert.Equal("123456789", reader.GetString(3));
+            Assert.Equal(0L, reader.GetInt64(4));
+            Assert.Equal(7L, reader.GetInt64(5));
+            Assert.Equal(timestamp, reader.GetString(6));
+            Assert.Equal(9L, reader.GetInt64(7));
+            Assert.Equal(timestamp, reader.GetString(8));
+            Assert.Equal(timestamp, reader.GetString(9));
+            Assert.Equal(timestamp, reader.GetString(10));
+        }
+
+        Assert.Equal(
+            allowlistId,
+            await ScalarAsync<long>(
+                migrated,
+                """
+                SELECT matched_allowlist_id
+                FROM moderation_cases
+                WHERE twitch_message_id = 'whitelist-migration-message';
+                """));
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                migrated,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                migrated,
+                """
+                SELECT COUNT(*)
+                FROM sqlite_master
+                WHERE type = 'index' AND name = 'ix_whitelist_match';
+                """));
+
+        await using (var insertLogin = migrated.CreateCommand())
+        {
+            insertLogin.CommandText =
+                """
+                INSERT INTO whitelist_phrases(
+                    broadcaster_id, subject_kind,
+                    subject_value, normalized_value,
+                    enabled, row_version, created_utc, updated_utc)
+                VALUES(
+                    '*', 'user_login',
+                    'MixedCaseLogin', 'mixedcaselogin',
+                    1, 1, @timestamp, @timestamp);
+                """;
+            insertLogin.Parameters.AddWithValue("@timestamp", timestamp);
+            Assert.Equal(1, await insertLogin.ExecuteNonQueryAsync());
+        }
+
+        await using var invalidKind = migrated.CreateCommand();
+        invalidKind.CommandText =
+            """
+            INSERT INTO whitelist_phrases(
+                broadcaster_id, subject_kind,
+                subject_value, normalized_value,
+                enabled, row_version, created_utc, updated_utc)
+            VALUES(
+                '*', 'user_name',
+                'invalid', 'invalid',
+                1, 1, @timestamp, @timestamp);
+            """;
+        invalidKind.Parameters.AddWithValue("@timestamp", timestamp);
+        await Assert.ThrowsAsync<SqliteException>(
+            () => invalidKind.ExecuteNonQueryAsync());
     }
 
     [Fact]
@@ -725,7 +890,7 @@ public sealed class DatabaseMigrationTests
         var backups = Directory.GetFiles(
             directory,
             $"{Path.GetFileName(database.Path)}.pre-schema-v*.bak");
-        Assert.Equal(2, backups.Length);
+        Assert.Equal(3, backups.Length);
 
         foreach (var backupPath in backups)
         {

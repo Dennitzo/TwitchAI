@@ -159,6 +159,18 @@ public sealed partial class WhitelistPage : Page
         await ViewModel.SetEnabledAsync(item, isEnabled);
     }
 
+    private async void PhraseUser_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not CheckBox checkBox
+            || checkBox.Tag is not WhitelistPhraseItem item
+            || checkBox.IsChecked is not bool isUser)
+        {
+            return;
+        }
+
+        await ViewModel.SetUserAsync(item, isUser);
+    }
+
     private async void OnDeleteSelectedClicked(
         object sender,
         RoutedEventArgs e)

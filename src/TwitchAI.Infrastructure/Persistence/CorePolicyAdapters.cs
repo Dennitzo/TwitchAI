@@ -17,7 +17,7 @@ public sealed class SqliteWhitelistPhraseSource : IWhitelistPhraseSource
         _writeCoordinator = writeCoordinator ?? SqliteWriteCoordinator.ProcessWide;
     }
 
-    public async ValueTask<IReadOnlySet<string>> GetActiveLowerPhrasesAsync(
+    public async ValueTask<ActiveWhitelistSnapshot> GetActiveEntriesAsync(
         string channelId,
         CancellationToken cancellationToken = default)
     {
@@ -28,10 +28,10 @@ public sealed class SqliteWhitelistPhraseSource : IWhitelistPhraseSource
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
-            SELECT normalized_value
+            SELECT subject_kind, normalized_value
             FROM whitelist_phrases
             WHERE broadcaster_id = @global_scope
-              AND subject_kind = 'exact_message'
+              AND subject_kind IN ('exact_message', 'user_login')
               AND enabled = 1
               AND archived_utc IS NULL;
             """;
@@ -39,25 +39,40 @@ public sealed class SqliteWhitelistPhraseSource : IWhitelistPhraseSource
             "@global_scope",
             GlobalPolicyStorage.BroadcasterId);
 
-        var phrases = new HashSet<string>(StringComparer.Ordinal);
+        var exactMessages = new HashSet<string>(StringComparer.Ordinal);
+        var userLogins = new HashSet<string>(StringComparer.Ordinal);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            phrases.Add(reader.GetString(0));
+            var destination = reader.GetString(0) switch
+            {
+                "exact_message" => exactMessages,
+                "user_login" => userLogins,
+                var unsupported => throw new InvalidDataException(
+                    $"Unsupported whitelist subject kind '{unsupported}'."),
+            };
+            destination.Add(reader.GetString(1));
         }
 
-        return phrases;
+        return new ActiveWhitelistSnapshot(exactMessages, userLogins);
     }
 
     public async ValueTask RecordHitAsync(
         string channelId,
-        string lowerPhrase,
+        WhitelistEntryKind kind,
+        string normalizedValue,
         DateTimeOffset occurredAtUtc,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
-        ArgumentNullException.ThrowIfNull(lowerPhrase);
+        ArgumentNullException.ThrowIfNull(normalizedValue);
+        var subjectKind = kind switch
+        {
+            WhitelistEntryKind.ExactMessage => "exact_message",
+            WhitelistEntryKind.UserLogin => "user_login",
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
+        };
         await using var writeLease = await _writeCoordinator
             .AcquireAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -74,8 +89,8 @@ public sealed class SqliteWhitelistPhraseSource : IWhitelistPhraseSource
                 SELECT allowlist_id
                 FROM whitelist_phrases
                 WHERE broadcaster_id = @global_scope
-                  AND subject_kind = 'exact_message'
-                  AND normalized_value = @lower_phrase
+                  AND subject_kind = @subject_kind
+                  AND normalized_value = @normalized_value
                   AND enabled = 1
                   AND archived_utc IS NULL
                 LIMIT 1
@@ -84,7 +99,8 @@ public sealed class SqliteWhitelistPhraseSource : IWhitelistPhraseSource
         command.Parameters.AddWithValue(
             "@global_scope",
             GlobalPolicyStorage.BroadcasterId);
-        command.Parameters.AddWithValue("@lower_phrase", lowerPhrase);
+        command.Parameters.AddWithValue("@subject_kind", subjectKind);
+        command.Parameters.AddWithValue("@normalized_value", normalizedValue);
         command.Parameters.AddWithValue(
             "@occurred_utc",
             SqliteData.ToDatabaseTimestamp(occurredAtUtc));
