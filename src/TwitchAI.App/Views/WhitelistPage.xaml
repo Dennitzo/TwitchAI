@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+  x:Class="TwitchAI.App.Views.WhitelistPage"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:tv="using:WinUI.TableView"
+  xmlns:vm="using:TwitchAI.App.ViewModels"
+  Background="Transparent"
+  Loaded="Page_Loaded"
+  SizeChanged="OnPageSizeChanged"
+  mc:Ignorable="d">
+  <ScrollViewer
+    HorizontalScrollBarVisibility="Disabled"
+    VerticalScrollBarVisibility="Auto">
+    <StackPanel
+      x:Name="PageContent"
+      Margin="28,24,28,40"
+      HorizontalAlignment="Stretch"
+      Spacing="18">
+      <StackPanel Spacing="6">
+        <TextBlock Style="{StaticResource PageTitleStyle}" Text="Whitelist" />
+        <TextBlock
+          Foreground="{ThemeResource MutedTextBrush}"
+          Text="Whitelisted Nachrichten werden lokal aussortiert und niemals an LM Studio gesendet."
+          TextWrapping="Wrap" />
+      </StackPanel>
+
+      <InfoBar
+        IsClosable="False"
+        IsOpen="True"
+        Message="Der Vergleich erfolgt nach invariantem Lowercase, bleibt aber ansonsten exakt. KEKW, kekw und KeKw treffen; zusätzliche Leerzeichen oder Satzzeichen nicht."
+        Severity="Informational"
+        Title="Exakter Lowercase-Vergleich" />
+
+      <Border Style="{StaticResource CardStyle}">
+        <StackPanel Spacing="12">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Spacing="3">
+              <TextBlock Style="{StaticResource SectionTitleStyle}" Text="Phrase manuell hinzufügen" />
+              <TextBlock
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="{x:Bind ViewModel.BroadcasterStatus, Mode=OneWay}"
+                TextWrapping="Wrap" />
+            </StackPanel>
+            <ProgressRing
+              Grid.Column="1"
+              Width="22"
+              Height="22"
+              IsActive="{x:Bind ViewModel.IsBusy, Mode=OneWay}" />
+          </Grid>
+          <Grid
+            x:Name="PhraseForm"
+            ColumnSpacing="10"
+            RowSpacing="10">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition x:Name="PhraseFormPrimaryColumn" Width="*" />
+              <ColumnDefinition x:Name="PhraseFormActionColumn" Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBox
+              x:Name="NewPhraseInput"
+              Header="Neue Whitelist-Phrase"
+              MaxLength="500"
+              PlaceholderText="Exakt, z. B. KEKW"
+              Text="{x:Bind ViewModel.NewPhrase, Mode=TwoWay}" />
+            <Button
+              x:Name="AddPhraseButton"
+              Grid.Column="1"
+              VerticalAlignment="Bottom"
+              Click="OnAddPhraseClicked"
+              Content="Zeile hinzufügen"
+              IsEnabled="{x:Bind ViewModel.CanAddPhrase, Mode=OneWay}"
+              Style="{StaticResource AccentButtonStyle}" />
+          </Grid>
+        </StackPanel>
+      </Border>
+
+      <Border Padding="0" Style="{StaticResource CardStyle}">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+          </Grid.RowDefinitions>
+          <Grid
+            Padding="12,10"
+            Background="{ThemeResource LayerStrongBrush}"
+            ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock
+              VerticalAlignment="Center"
+              Foreground="{ThemeResource MutedTextBrush}"
+              Text="Eine Zeile auswählen, um sie global zu löschen."
+              TextWrapping="Wrap" />
+            <Button
+              Grid.Column="1"
+              AutomationProperties.Name="Ausgewählte Whitelist-Zeile löschen"
+              Click="OnDeleteSelectedClicked"
+              Foreground="{ThemeResource DangerBrush}"
+              IsEnabled="{x:Bind ViewModel.CanDeleteSelected, Mode=OneWay}"
+              Style="{StaticResource SubtleButtonStyle}">
+              <StackPanel Orientation="Horizontal" Spacing="7">
+                <SymbolIcon Symbol="Delete" />
+                <TextBlock Text="Zeile löschen" />
+              </StackPanel>
+            </Button>
+          </Grid>
+          <tv:TableView
+            x:Name="PhraseTable"
+            Grid.Row="1"
+            Height="420"
+            AutomationProperties.Name="Sortierbare Whitelist-Phrasen"
+            AutoGenerateColumns="False"
+            CellEditEnded="OnPhraseCellEditEnded"
+            CanFilterColumns="False"
+            CanReorderColumns="False"
+            CanResizeColumns="True"
+            CanSortColumns="True"
+            IsReadOnly="False"
+            ItemsSource="{x:Bind ViewModel.SortedPhrases, Mode=OneWay}"
+            MaxColumnWidth="900"
+            MinColumnWidth="72"
+            SelectionChanged="OnPhraseSelectionChanged"
+            SelectionMode="Multiple"
+            ShowExportOptions="False"
+            Sorting="OnPhraseTableSorting">
+          <tv:TableView.Columns>
+            <tv:TableViewNumberColumn
+              Binding="{Binding AllowlistId}"
+              CanResize="True"
+              CanSort="True"
+              Header="ID"
+              IsReadOnly="True"
+              SortMemberPath="AllowlistId"
+              Tag="AllowlistId"
+              Width="90" />
+            <tv:TableViewTextColumn
+              Binding="{Binding OriginalPhrase, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+              CanResize="True"
+              CanSort="True"
+              Header="Original"
+              IsReadOnly="False"
+              SortMemberPath="OriginalPhrase"
+              Tag="OriginalPhrase"
+              Width="2*" />
+            <tv:TableViewTextColumn
+              Binding="{Binding NormalizedPhrase}"
+              CanResize="True"
+              CanSort="True"
+              Header="Lowercase"
+              IsReadOnly="True"
+              SortMemberPath="NormalizedPhrase"
+              Tag="NormalizedPhrase"
+              Width="2*" />
+            <tv:TableViewTextColumn
+              Binding="{Binding Source}"
+              CanResize="True"
+              CanSort="True"
+              Header="Quelle"
+              IsReadOnly="True"
+              SortMemberPath="Source"
+              Tag="Source"
+              Width="140" />
+            <tv:TableViewNumberColumn
+              Binding="{Binding HitCount}"
+              CanResize="True"
+              CanSort="True"
+              Header="Treffer"
+              IsReadOnly="True"
+              SortMemberPath="HitCount"
+              Tag="HitCount"
+              Width="105" />
+            <tv:TableViewTemplateColumn
+              CanResize="True"
+              CanSort="True"
+              Header="Aktiv"
+              IsReadOnly="True"
+              SortMemberPath="IsEnabled"
+              Tag="IsEnabled"
+              Width="100">
+              <tv:TableViewTemplateColumn.CellTemplate>
+                <DataTemplate x:DataType="vm:WhitelistPhraseItem">
+                  <ToggleSwitch
+                    AutomationProperties.Name="Whitelist-Phrase aktivieren oder deaktivieren"
+                    IsOn="{x:Bind IsEnabled, Mode=TwoWay}"
+                    OffContent=""
+                    OnContent=""
+                    Tag="{x:Bind}"
+                    Toggled="PhraseEnabled_Toggled" />
+                </DataTemplate>
+              </tv:TableViewTemplateColumn.CellTemplate>
+            </tv:TableViewTemplateColumn>
+          </tv:TableView.Columns>
+          </tv:TableView>
+        </Grid>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</Page>

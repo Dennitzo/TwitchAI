@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+  x:Class="TwitchAI.App.Views.BackseatgamingPage"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:tv="using:WinUI.TableView"
+  xmlns:vm="using:TwitchAI.App.ViewModels"
+  Background="Transparent"
+  Loaded="Page_Loaded"
+  SizeChanged="OnPageSizeChanged"
+  mc:Ignorable="d">
+  <ScrollViewer
+    HorizontalScrollBarVisibility="Disabled"
+    VerticalScrollBarVisibility="Auto">
+    <StackPanel
+      x:Name="PageContent"
+      Margin="28,24,28,40"
+      HorizontalAlignment="Stretch"
+      Spacing="18">
+      <StackPanel Spacing="6">
+        <TextBlock Style="{StaticResource PageTitleStyle}" Text="Backseatgaming" />
+        <TextBlock
+          Foreground="{ThemeResource MutedTextBrush}"
+          Text="Kategorieabhängige Phrasen für unaufgeforderte Spielhinweise, Lösungen und Spoiler."
+          TextWrapping="Wrap" />
+      </StackPanel>
+
+      <InfoBar
+        IsClosable="False"
+        IsOpen="True"
+        Message="Backseatgaming ist bei jeder bekannten Twitch-Kategorie außer Just Chatting aktiv."
+        Severity="Informational"
+        Title="Kategorieabhängiges Regelset" />
+
+      <Border Style="{StaticResource CardStyle}">
+        <StackPanel Spacing="12">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Spacing="3">
+              <TextBlock Style="{StaticResource SectionTitleStyle}" Text="Phrase manuell hinzufügen" />
+              <TextBlock
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="{x:Bind ViewModel.BroadcasterStatus, Mode=OneWay}"
+                TextWrapping="Wrap" />
+            </StackPanel>
+            <ProgressRing
+              Grid.Column="1"
+              Width="22"
+              Height="22"
+              IsActive="{x:Bind ViewModel.IsBusy, Mode=OneWay}" />
+          </Grid>
+          <Grid
+            x:Name="PhraseForm"
+            ColumnSpacing="10"
+            RowSpacing="10">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition x:Name="PhraseFormPrimaryColumn" Width="*" />
+              <ColumnDefinition x:Name="PhraseFormActionColumn" Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBox
+              x:Name="NewPhraseInput"
+              Header="Neue Backseatgaming-Phrase"
+              MaxLength="500"
+              PlaceholderText="Wird in Lowercase normalisiert"
+              Text="{x:Bind ViewModel.NewPhrase, Mode=TwoWay}" />
+            <Button
+              x:Name="AddPhraseButton"
+              Grid.Column="1"
+              VerticalAlignment="Bottom"
+              Click="OnAddPhraseClicked"
+              Content="Zeile hinzufügen"
+              IsEnabled="{x:Bind ViewModel.CanAddPhrase, Mode=OneWay}"
+              Style="{StaticResource AccentButtonStyle}" />
+          </Grid>
+        </StackPanel>
+      </Border>
+
+      <Border Padding="0" Style="{StaticResource CardStyle}">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+          </Grid.RowDefinitions>
+          <Grid
+            Padding="12,10"
+            Background="{ThemeResource LayerStrongBrush}"
+            ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock
+              VerticalAlignment="Center"
+              Foreground="{ThemeResource MutedTextBrush}"
+              Text="Eine Zeile auswählen, um sie global zu löschen."
+              TextWrapping="Wrap" />
+            <Button
+              Grid.Column="1"
+              AutomationProperties.Name="Ausgewählte Backseatgaming-Zeile löschen"
+              Click="OnDeleteSelectedClicked"
+              Foreground="{ThemeResource DangerBrush}"
+              IsEnabled="{x:Bind ViewModel.CanDeleteSelected, Mode=OneWay}"
+              Style="{StaticResource SubtleButtonStyle}">
+              <StackPanel Orientation="Horizontal" Spacing="7">
+                <SymbolIcon Symbol="Delete" />
+                <TextBlock Text="Zeile löschen" />
+              </StackPanel>
+            </Button>
+          </Grid>
+          <tv:TableView
+            x:Name="PhraseTable"
+            Grid.Row="1"
+            Height="420"
+            AutomationProperties.Name="Sortierbare Backseatgaming-Blacklist-Phrasen"
+            AutoGenerateColumns="False"
+            CellEditEnded="OnPhraseCellEditEnded"
+            CanFilterColumns="False"
+            CanReorderColumns="False"
+            CanResizeColumns="True"
+            CanSortColumns="True"
+            IsReadOnly="False"
+            ItemsSource="{x:Bind ViewModel.SortedPhrases, Mode=OneWay}"
+            MaxColumnWidth="900"
+            MinColumnWidth="72"
+            SelectionChanged="OnPhraseSelectionChanged"
+            SelectionMode="Multiple"
+            ShowExportOptions="False"
+            Sorting="OnPhraseTableSorting">
+          <tv:TableView.Columns>
+            <tv:TableViewNumberColumn
+              Binding="{Binding PhraseId}"
+              CanResize="True"
+              CanSort="True"
+              Header="ID"
+              IsReadOnly="True"
+              SortMemberPath="PhraseId"
+              Tag="PhraseId"
+              Width="90" />
+            <tv:TableViewTextColumn
+              Binding="{Binding Phrase, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+              CanResize="True"
+              CanSort="True"
+              Header="Lowercase-Phrase"
+              IsReadOnly="False"
+              SortMemberPath="Phrase"
+              Tag="Phrase"
+              Width="2*" />
+            <tv:TableViewTextColumn
+              Binding="{Binding RuleTitle}"
+              CanResize="True"
+              CanSort="True"
+              Header="Kategorie"
+              IsReadOnly="True"
+              SortMemberPath="Code"
+              Tag="Code"
+              Width="280" />
+            <tv:TableViewComboBoxColumn
+              CanResize="True"
+              CanSort="True"
+              Header="Override"
+              IsEditable="False"
+              IsReadOnly="False"
+              ItemsSource="{x:Bind ViewModel.OverrideOptions, Mode=OneWay}"
+              SelectedValueBinding="{Binding Override, Mode=TwoWay}"
+              SortMemberPath="Override"
+              Tag="Override"
+              Width="120" />
+            <tv:TableViewTextColumn
+              Binding="{Binding FeedbackLabel}"
+              CanResize="True"
+              CanSort="True"
+              Header="+ / − Feedback"
+              IsReadOnly="True"
+              SortMemberPath="Feedback"
+              Tag="Feedback"
+              Width="140" />
+            <tv:TableViewTemplateColumn
+              CanResize="True"
+              CanSort="True"
+              Header="Aktiv"
+              IsReadOnly="True"
+              SortMemberPath="IsEnabled"
+              Tag="IsEnabled"
+              Width="100">
+              <tv:TableViewTemplateColumn.CellTemplate>
+                <DataTemplate x:DataType="vm:PolicyPhraseItem">
+                  <ToggleSwitch
+                    AutomationProperties.Name="Backseatgaming-Phrase aktivieren oder deaktivieren"
+                    IsOn="{x:Bind IsEnabled, Mode=TwoWay}"
+                    OffContent=""
+                    OnContent=""
+                    Tag="{x:Bind}"
+                    Toggled="PhraseEnabled_Toggled" />
+                </DataTemplate>
+              </tv:TableViewTemplateColumn.CellTemplate>
+            </tv:TableViewTemplateColumn>
+          </tv:TableView.Columns>
+          </tv:TableView>
+        </Grid>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</Page>

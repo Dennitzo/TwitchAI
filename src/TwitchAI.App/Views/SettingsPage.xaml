@@ -1,0 +1,286 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+  x:Class="TwitchAI.App.Views.SettingsPage"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  Background="Transparent"
+  Loaded="OnPageLoaded"
+  SizeChanged="OnPageSizeChanged"
+  mc:Ignorable="d">
+
+  <ScrollViewer
+    HorizontalScrollBarVisibility="Disabled"
+    VerticalScrollBarVisibility="Auto">
+    <StackPanel
+      x:Name="PageContent"
+      Margin="28,24,28,48"
+      HorizontalAlignment="Stretch"
+      Spacing="18">
+      <StackPanel Spacing="6">
+        <TextBlock Style="{StaticResource PageTitleStyle}" Text="Einstellungen" />
+        <TextBlock
+          Foreground="{ThemeResource MutedTextBrush}"
+          Text="Verbindungen, lokale Modellparameter und Darstellung konfigurieren."
+          TextWrapping="Wrap" />
+      </StackPanel>
+
+      <InfoBar
+        IsClosable="False"
+        IsOpen="True"
+        Message="Tokens bleiben im Windows Credential Locker und werden nicht in SQLite gespeichert."
+        Severity="Informational"
+        Title="Sichere Konfiguration" />
+
+      <Border Style="{StaticResource CardStyle}">
+        <StackPanel Spacing="16">
+          <Grid x:Name="TwitchHeader" RowSpacing="8">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition x:Name="TwitchHeaderStatusColumn" Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Spacing="3">
+              <TextBlock Style="{StaticResource SectionTitleStyle}" Text="Twitch" />
+              <TextBlock
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="Device Code OAuth ohne Client Secret" />
+            </StackPanel>
+            <Border
+              x:Name="TwitchStatus"
+              Grid.Column="1"
+              HorizontalAlignment="Right"
+              Style="{StaticResource StatusPillStyle}">
+              <TextBlock Text="{x:Bind ViewModel.TwitchConnectionStatus, Mode=OneWay}" />
+            </Border>
+          </Grid>
+          <Grid
+            x:Name="TwitchCredentials"
+            ColumnSpacing="12"
+            RowSpacing="10">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition x:Name="TwitchChannelColumn" Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBox
+              x:Name="TwitchClientIdInput"
+              Description="{x:Bind ViewModel.TwitchClientIdPersistenceStatus, Mode=OneWay}"
+              Header="Twitch Client-ID"
+              LostFocus="OnTwitchClientIdLostFocus"
+              PlaceholderText="Öffentliche Client-ID deiner Twitch-Anwendung"
+              Text="{x:Bind ViewModel.TwitchClientId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+            <TextBox
+              x:Name="ChannelLoginInput"
+              Grid.Column="1"
+              Header="Kanal"
+              PlaceholderText="channel_login"
+              Text="{x:Bind ViewModel.ChannelLogin, Mode=TwoWay}" />
+          </Grid>
+          <Grid
+            x:Name="TwitchActions"
+            ColumnSpacing="10"
+            RowSpacing="10">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto" />
+              <ColumnDefinition x:Name="TwitchCheckActionColumn" Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Button
+              x:Name="ConnectTwitchButton"
+              Click="OnConnectTwitchClicked"
+              Content="Mit Twitch verbinden"
+              Style="{StaticResource AccentButtonStyle}" />
+            <Button
+              x:Name="CheckTwitchButton"
+              Grid.Column="1"
+              Click="OnCheckTwitchClicked"
+              Content="Verbindung prüfen"
+              Style="{StaticResource SubtleButtonStyle}" />
+          </Grid>
+          <TextBlock
+            FontSize="12"
+            Foreground="{ThemeResource MutedTextBrush}"
+            Text="Scopes: user:read:chat · user:read:moderated_channels · moderator:manage:chat_messages · moderator:manage:banned_users"
+            TextWrapping="Wrap" />
+        </StackPanel>
+      </Border>
+
+      <Border Style="{StaticResource CardStyle}">
+        <StackPanel Spacing="16">
+          <Grid x:Name="LmStudioHeader" RowSpacing="8">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition x:Name="LmStudioHeaderStatusColumn" Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Spacing="3">
+              <TextBlock Style="{StaticResource SectionTitleStyle}" Text="LM Studio" />
+              <TextBlock
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="OpenAI-kompatibler lokaler Endpunkt" />
+            </StackPanel>
+            <Border
+              x:Name="LmStudioStatus"
+              Grid.Column="1"
+              HorizontalAlignment="Right"
+              Style="{StaticResource StatusPillStyle}">
+              <TextBlock Text="{x:Bind ViewModel.LmStudioConnectionStatus, Mode=OneWay}" />
+            </Border>
+          </Grid>
+          <Grid
+            x:Name="LmStudioEndpointFields"
+            ColumnSpacing="12"
+            RowSpacing="10">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition x:Name="LmStudioModelColumn" Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBox
+              Header="Basis-URL"
+              Text="{x:Bind ViewModel.LmStudioBaseUrl, Mode=TwoWay}" />
+            <TextBox
+              x:Name="LmStudioModelInput"
+              Grid.Column="1"
+              Header="Modell"
+              Text="{x:Bind ViewModel.LmStudioModel, Mode=TwoWay}" />
+          </Grid>
+          <Grid
+            x:Name="LmStudioTokenFields"
+            ColumnSpacing="12"
+            RowSpacing="10">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition x:Name="LmStudioTokenActionsColumn" Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <PasswordBox
+              x:Name="LmStudioTokenBox"
+              AutomationProperties.Name="Optionaler LM-Studio API-Token"
+              Header="API-Token (optional)"
+              PasswordRevealMode="Peek"
+              PlaceholderText="Leer lassen, wenn LM Studio keine Authentifizierung verlangt" />
+            <StackPanel
+              x:Name="LmStudioTokenActions"
+              Grid.Column="1"
+              VerticalAlignment="Bottom"
+              Orientation="Horizontal"
+              Spacing="8">
+              <Button
+                Click="OnSaveLmStudioTokenClicked"
+                Content="Token sicher speichern"
+                Style="{StaticResource SubtleButtonStyle}" />
+              <Button
+                Click="OnDeleteLmStudioTokenClicked"
+                Content="Token entfernen"
+                Style="{StaticResource SubtleButtonStyle}" />
+            </StackPanel>
+          </Grid>
+          <TextBlock
+            FontSize="12"
+            Foreground="{ThemeResource MutedTextBrush}"
+            Text="{x:Bind ViewModel.LmStudioCredentialStatus, Mode=OneWay}"
+            TextWrapping="Wrap" />
+          <Grid
+            x:Name="BatchSettings"
+            ColumnSpacing="12"
+            RowSpacing="10">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition x:Name="BatchWaitColumn" Width="*" />
+              <ColumnDefinition x:Name="BatchQueueColumn" Width="*" />
+            </Grid.ColumnDefinitions>
+            <NumberBox
+              Header="Batchgrenze"
+              IsEnabled="False"
+              Value="20" />
+            <NumberBox
+              x:Name="BatchWaitInput"
+              Grid.Column="1"
+              Header="Maximale Wartezeit"
+              IsEnabled="False"
+              Value="10" />
+            <NumberBox
+              x:Name="BatchQueueInput"
+              Grid.Column="2"
+              Header="Queuegrenze"
+              IsEnabled="False"
+              Value="500" />
+          </Grid>
+          <Button
+            HorizontalAlignment="Left"
+            Click="OnTestLmStudioClicked"
+            Content="Modellstatus prüfen"
+            Style="{StaticResource SubtleButtonStyle}" />
+        </StackPanel>
+      </Border>
+
+      <Border Style="{StaticResource CardStyle}">
+        <StackPanel Spacing="14">
+          <TextBlock Style="{StaticResource SectionTitleStyle}" Text="Darstellung" />
+          <ComboBox
+            Header="App-Design"
+            SelectedValue="{x:Bind ViewModel.SelectedTheme, Mode=TwoWay}"
+            SelectedValuePath="Content">
+            <ComboBoxItem Content="System" />
+            <ComboBoxItem Content="Hell" />
+            <ComboBoxItem Content="Dunkel" />
+          </ComboBox>
+          <TextBlock
+            FontSize="12"
+            Foreground="{ThemeResource MutedTextBrush}"
+            Text="Kontrast, Textskalierung und reduzierte Animationen folgen zusätzlich den Windows-Barrierefreiheitseinstellungen."
+            TextWrapping="Wrap" />
+        </StackPanel>
+      </Border>
+
+      <Grid x:Name="SaveFooter" RowSpacing="10">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition x:Name="SaveActionColumn" Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <TextBlock
+          x:Name="SaveStatusText"
+          VerticalAlignment="Center"
+          Foreground="{ThemeResource MutedTextBrush}"
+          Text="{x:Bind ViewModel.SaveStatus, Mode=OneWay}"
+          TextWrapping="Wrap" />
+        <Button
+          x:Name="SaveSettingsButton"
+          Grid.Column="1"
+          Click="OnSaveClicked"
+          Content="Einstellungen speichern"
+          Style="{StaticResource AccentButtonStyle}" />
+      </Grid>
+    </StackPanel>
+  </ScrollViewer>
+</Page>

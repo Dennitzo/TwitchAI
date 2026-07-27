@@ -1,0 +1,241 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+  x:Class="TwitchAI.App.MainWindow"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+  xmlns:local="using:TwitchAI.App"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:primitives="using:Microsoft.UI.Xaml.Controls.Primitives"
+  Title="TwitchAI"
+  mc:Ignorable="d">
+
+  <Window.SystemBackdrop>
+    <MicaBackdrop Kind="BaseAlt" />
+  </Window.SystemBackdrop>
+
+  <Grid Background="{ThemeResource AppBackgroundBrush}">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="56" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+
+    <Grid
+      x:Name="AppTitleBar"
+      Grid.Row="0"
+      Padding="16,0,152,0"
+      Background="Transparent"
+      ColumnSpacing="12">
+      <VisualStateManager.VisualStateGroups>
+        <VisualStateGroup>
+          <VisualState x:Name="ExpandedTitleBar">
+            <VisualState.StateTriggers>
+              <AdaptiveTrigger MinWindowWidth="900" />
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter Target="WorkspaceSubtitle.Visibility" Value="Visible" />
+            </VisualState.Setters>
+          </VisualState>
+          <VisualState x:Name="CompactTitleBar">
+            <VisualState.StateTriggers>
+              <AdaptiveTrigger MinWindowWidth="0" />
+            </VisualState.StateTriggers>
+            <VisualState.Setters>
+              <Setter Target="WorkspaceSubtitle.Visibility" Value="Collapsed" />
+            </VisualState.Setters>
+          </VisualState>
+        </VisualStateGroup>
+      </VisualStateManager.VisualStateGroups>
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto" />
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+
+      <Border
+        Width="32"
+        Height="32"
+        VerticalAlignment="Center"
+        CornerRadius="8">
+        <Image
+          Source="Assets/Square44x44Logo.scale-200.png"
+          Stretch="Uniform"
+          ToolTipService.ToolTip="TwitchAI" />
+      </Border>
+
+      <Grid
+        Grid.Column="1"
+        MinWidth="0"
+        VerticalAlignment="Center"
+        ColumnSpacing="8">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <TextBlock
+          VerticalAlignment="Center"
+          FontWeight="SemiBold"
+          Text="TwitchAI" />
+        <TextBlock
+          x:Name="WorkspaceSubtitle"
+          Grid.Column="1"
+          MaxLines="1"
+          VerticalAlignment="Center"
+          Foreground="{ThemeResource MutedTextBrush}"
+          Text="Local moderation workspace"
+          TextTrimming="CharacterEllipsis" />
+      </Grid>
+
+      <Button
+        Grid.Column="2"
+        VerticalAlignment="Center"
+        HorizontalAlignment="Right"
+        Command="{x:Bind ViewModel.ToggleAnalysisCommand}"
+        Style="{StaticResource SubtleButtonStyle}"
+        ToolTipService.ToolTip="{x:Bind ViewModel.AnalysisToolTip, Mode=OneWay}">
+        <TextBlock
+          MaxWidth="132"
+          MaxLines="1"
+          Text="{x:Bind ViewModel.AnalysisLabel, Mode=OneWay}"
+          TextTrimming="CharacterEllipsis" />
+      </Button>
+    </Grid>
+
+    <NavigationView
+      x:Name="RootNavigation"
+      Grid.Row="1"
+      AlwaysShowHeader="False"
+      HorizontalContentAlignment="Stretch"
+      IsBackButtonVisible="Collapsed"
+      IsPaneOpen="False"
+      IsSettingsVisible="False"
+      IsTitleBarAutoPaddingEnabled="False"
+      Loaded="OnNavigationLoaded"
+      OpenPaneLength="320"
+      PaneClosed="OnNavigationPaneClosed"
+      PaneDisplayMode="Auto"
+      PaneOpened="OnNavigationPaneOpened"
+      PointerCanceled="OnNavigationPointerCanceled"
+      PointerCaptureLost="OnNavigationPointerCaptureLost"
+      PointerMoved="OnNavigationPointerMoved"
+      PointerPressed="OnNavigationPointerPressed"
+      PointerReleased="OnNavigationPointerReleased"
+      SelectionChanged="OnSelectionChanged"
+      SizeChanged="OnNavigationSizeChanged">
+
+      <NavigationView.PaneHeader>
+        <Grid
+          x:Name="PaneHeaderLayout"
+          MinHeight="126"
+          Margin="12,2,0,20">
+          <StackPanel
+            Margin="0,0,16,0"
+            Spacing="16">
+            <TextBlock
+              FontSize="18"
+              FontWeight="SemiBold"
+              Text="Moderation" />
+            <StackPanel Spacing="5">
+              <TextBlock
+                FontSize="12"
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="AKTUELLER KANAL" />
+              <TextBlock
+                MaxLines="1"
+                FontSize="16"
+                FontWeight="SemiBold"
+                Text="{x:Bind ViewModel.ChannelDisplayName, Mode=OneWay}"
+                TextTrimming="CharacterEllipsis" />
+              <TextBlock
+                MaxLines="2"
+                FontSize="12"
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="{x:Bind ViewModel.CategorySummary, Mode=OneWay}"
+                TextTrimming="CharacterEllipsis"
+                TextWrapping="WrapWholeWords" />
+            </StackPanel>
+          </StackPanel>
+          <primitives:Thumb
+            x:Name="PaneResizeThumb"
+            Width="12"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Stretch"
+            AutomationProperties.HelpText="Mit den Pfeiltasten oder durch Ziehen die Breite ändern."
+            AutomationProperties.Name="Breite der Seitenleiste ändern"
+            Background="Transparent"
+            BorderBrush="{ThemeResource CardStrokeBrush}"
+            BorderThickness="0,0,1,0"
+            DragCompleted="OnPaneResizeDragCompleted"
+            DragDelta="OnPaneResizeDragDelta"
+            IsTabStop="True"
+            KeyDown="OnPaneResizeKeyDown"
+            Visibility="Collapsed" />
+        </Grid>
+      </NavigationView.PaneHeader>
+
+      <NavigationView.MenuItems>
+        <NavigationViewItem Content="Moderationswarteschlange" Tag="queue">
+          <NavigationViewItem.Icon>
+            <FontIcon Glyph="&#xE7BA;" />
+          </NavigationViewItem.Icon>
+          <NavigationViewItem.InfoBadge>
+            <InfoBadge Value="{x:Bind ViewModel.PendingCount, Mode=OneWay}" />
+          </NavigationViewItem.InfoBadge>
+        </NavigationViewItem>
+        <NavigationViewItem Content="Blacklist" Tag="blacklist">
+          <NavigationViewItem.Icon>
+            <FontIcon Glyph="&#xE733;" />
+          </NavigationViewItem.Icon>
+        </NavigationViewItem>
+        <NavigationViewItem Content="Backseatgaming" Tag="backseatgaming">
+          <NavigationViewItem.Icon>
+            <FontIcon Glyph="&#xE7FC;" />
+          </NavigationViewItem.Icon>
+        </NavigationViewItem>
+        <NavigationViewItem Content="Whitelist" Tag="whitelist">
+          <NavigationViewItem.Icon>
+            <FontIcon Glyph="&#xE73E;" />
+          </NavigationViewItem.Icon>
+        </NavigationViewItem>
+        <NavigationViewItemSeparator />
+        <NavigationViewItem Content="Datenbank" Tag="database">
+          <NavigationViewItem.Icon>
+            <FontIcon Glyph="&#xE8EF;" />
+          </NavigationViewItem.Icon>
+        </NavigationViewItem>
+        <NavigationViewItem Content="Ausführungslog" Tag="audit">
+          <NavigationViewItem.Icon>
+            <FontIcon Glyph="&#xE9D5;" />
+          </NavigationViewItem.Icon>
+        </NavigationViewItem>
+      </NavigationView.MenuItems>
+
+      <NavigationView.FooterMenuItems>
+        <NavigationViewItem Content="Einstellungen" Tag="settings">
+          <NavigationViewItem.Icon>
+            <FontIcon Glyph="&#xE713;" />
+          </NavigationViewItem.Icon>
+        </NavigationViewItem>
+      </NavigationView.FooterMenuItems>
+
+      <ScrollViewer
+        x:Name="ApplicationScrollViewer"
+        AutomationProperties.Name="Anwendungsinhalt"
+        HorizontalContentAlignment="Stretch"
+        HorizontalAlignment="Stretch"
+        HorizontalScrollBarVisibility="Disabled"
+        HorizontalScrollMode="Disabled"
+        VerticalScrollBarVisibility="Visible"
+        VerticalScrollMode="Enabled">
+        <Frame
+          x:Name="ContentFrame"
+          MinHeight="{Binding ActualHeight, ElementName=ApplicationScrollViewer}"
+          MinWidth="0"
+          Background="Transparent"
+          HorizontalContentAlignment="Stretch"
+          Navigated="OnNavigated"
+          VerticalContentAlignment="Stretch" />
+      </ScrollViewer>
+    </NavigationView>
+  </Grid>
+</Window>

@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/TwitchAI.App/TwitchAI.App.csproj" />
+  <Project Path="src/TwitchAI.Core/TwitchAI.Core.csproj" />
+  <Project Path="src/TwitchAI.Infrastructure/TwitchAI.Infrastructure.csproj" />
+  <Project Path="tests/TwitchAI.Tests/TwitchAI.Tests.csproj" />
+</Solution>
+

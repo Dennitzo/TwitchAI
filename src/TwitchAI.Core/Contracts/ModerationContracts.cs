@@ -1,0 +1,242 @@
+using TwitchAI.Core.Models;
+
+namespace TwitchAI.Core.Contracts;
+
+public interface IChatTextNormalizer
+{
+    int NormalizationVersion { get; }
+
+    ProcessedChatText Process(string originalText);
+}
+
+public interface IWhitelistPhraseSource
+{
+    ValueTask<IReadOnlySet<string>> GetActiveLowerPhrasesAsync(
+        string channelId,
+        CancellationToken cancellationToken = default);
+
+    ValueTask RecordHitAsync(
+        string channelId,
+        string lowerPhrase,
+        DateTimeOffset occurredAtUtc,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IWhitelistFilterAgent
+{
+    ValueTask<bool> ShouldSkipAsync(
+        string channelId,
+        ProcessedChatText text,
+        DateTimeOffset observedAtUtc,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IEffectivePolicyResolver
+{
+    EffectivePolicySnapshot Resolve(
+        ChannelContextSnapshot channelContext,
+        long generalRevision,
+        long backseatgamingRevision);
+}
+
+public interface IPhraseRuleSource
+{
+    ValueTask<IReadOnlyList<PhraseRule>> GetRulesAsync(
+        string channelId,
+        EffectivePolicySnapshot policy,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IBlacklistMatcher
+{
+    IReadOnlyList<BlacklistMatch> Match(
+        ProcessedChatText text,
+        EffectivePolicySnapshot policy,
+        IReadOnlyList<PhraseRule> rules);
+}
+
+public interface IModerationEnvelopeValidator
+{
+    EnvelopeValidationResult Validate(
+        string rawJson,
+        ModerationBatch batch);
+
+    EnvelopeValidationResult ValidateWithMissingRuleFallback(
+        string rawJson,
+        ModerationBatch batch);
+}
+
+public interface IModerationBatcher
+{
+    int WaitingMessageCount { get; }
+
+    DateTimeOffset? NextDeadlineUtc { get; }
+
+    BatchIngressResult Enqueue(
+        ModerationBatchMessage message,
+        ModerationBatchContext context,
+        DateTimeOffset nowUtc);
+
+    ModerationBatch? SealIfDue(DateTimeOffset nowUtc);
+
+    ModerationBatch? Flush(DateTimeOffset nowUtc);
+
+    bool TryDequeue(out ModerationBatch? batch);
+}
+
+public interface IMessageAvailabilityRegistry
+{
+    void Observe(ChatMessageSnapshot message);
+
+    void MarkDeletedExact(
+        string eventSubNotificationId,
+        string channelId,
+        string twitchMessageId,
+        string twitchUserId,
+        DateTimeOffset occurredAtUtc,
+        DateTimeOffset receivedAtUtc);
+
+    void MarkUserCleared(
+        string eventSubNotificationId,
+        string channelId,
+        string twitchUserId,
+        DateTimeOffset throughReceivedAtUtc);
+
+    void MarkRoomCleared(
+        string eventSubNotificationId,
+        string channelId,
+        DateTimeOffset throughReceivedAtUtc);
+
+    void MarkUnknownGap(string channelId, DateTimeOffset throughReceivedAtUtc);
+
+    void MarkOutcomeUnknown(string twitchMessageId, DateTimeOffset occurredAtUtc);
+
+    MessageAvailabilityAssessment Assess(
+        ChatMessageIdentityV1 identity,
+        DateTimeOffset nowUtc);
+}
+
+public interface IChannelContextService
+{
+    ValueTask<ChannelContextSnapshot> GetCurrentAsync(
+        string channelId,
+        CancellationToken cancellationToken = default);
+}
+
+public interface ITwitchEventSubClient
+{
+    IAsyncEnumerable<TwitchChatEvent> ReadEventsAsync(CancellationToken cancellationToken);
+}
+
+public interface ILocalModerationClient
+{
+    ValueTask<string> ModerateAsync(
+        ModerationRequestEnvelopeV3 request,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IModerationCaseRepository
+{
+    ValueTask<ModerationCase?> GetAsync(
+        long caseId,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<long> AddAsync(
+        ChatMessageSnapshot message,
+        ValidatedModerationDecision decision,
+        string policyRevisionFingerprint,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<long> AddAsync(
+        ChatMessageSnapshot message,
+        ValidatedModerationDecision decision,
+        string policyRevisionFingerprint,
+        ModerationCaseCreationMetadata metadata,
+        CancellationToken cancellationToken = default) =>
+        AddAsync(
+            message,
+            decision,
+            policyRevisionFingerprint,
+            cancellationToken);
+
+    async ValueTask<ModerationCaseAddResult> AddIfNoActiveDuplicateAsync(
+        ChatMessageSnapshot message,
+        ValidatedModerationDecision decision,
+        string policyRevisionFingerprint,
+        ModerationCaseCreationMetadata metadata,
+        CancellationToken cancellationToken = default)
+    {
+        var caseId = await AddAsync(
+                message,
+                decision,
+                policyRevisionFingerprint,
+                metadata,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return new ModerationCaseAddResult(caseId, IsCreated: true);
+    }
+
+    ValueTask<bool> TryTransitionAsync(
+        long caseId,
+        long expectedRowVersion,
+        ModerationCaseStatus fromStatus,
+        ModerationCaseStatus toStatus,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<bool> TryCompleteReanalysisWithoutActionAsync(
+        long caseId,
+        long expectedRowVersion,
+        bool wasWhitelisted,
+        CancellationToken cancellationToken = default) =>
+        ValueTask.FromResult(false);
+}
+
+public interface ITwitchModerationExecutor
+{
+    ValueTask<ModerationExecutionResult> ExecuteAsync(
+        ModerationExecutionRequest request,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IDatabaseTableCatalog
+{
+    IReadOnlyList<DatabaseTableDescriptor> GetTables();
+
+    DatabaseTableDescriptor GetTable(string tableName);
+}
+
+public interface IDatabaseEditorService
+{
+    ValueTask<DatabasePage> QueryAsync(
+        string tableName,
+        string? searchText,
+        string? sortColumn,
+        bool descending,
+        int offset,
+        int pageSize,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<DatabaseCommitResult> CommitAsync(
+        DatabaseChangeSet changeSet,
+        CancellationToken cancellationToken = default);
+}
+
+public enum TwitchChatEventKind
+{
+    Message,
+    MessageDeleted,
+    UserMessagesCleared,
+    RoomCleared,
+    ChannelUpdated,
+    EventGap,
+}
+
+public sealed record TwitchChatEvent(
+    TwitchChatEventKind Kind,
+    string EventSubNotificationId,
+    DateTimeOffset ReceivedAtUtc,
+    ChatMessageIdentityV1? Message,
+    string ChannelId,
+    string? TargetMessageId,
+    string? TargetUserId,
+    ChannelContextSnapshot? ChannelContext);

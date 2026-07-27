@@ -1,0 +1,168 @@
+using TwitchAI.Infrastructure.Persistence;
+
+namespace TwitchAI.Tests.Infrastructure;
+
+public sealed class PolicyStoreTests
+{
+    [Fact]
+    public async Task JustChatting_UsesGeneralPolicyOnly()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var sut = CreateStore(database);
+
+        var policy = await sut.GetEffectivePolicyAsync("channel-1", "509658");
+
+        Assert.Equal(2, policy.GeneralRevision);
+        Assert.Equal(0, policy.CategoryRevision);
+        Assert.Null(policy.CategoryId);
+        Assert.Equal(17, policy.Rules.Count);
+        Assert.Contains(
+            policy.Rules,
+            rule => rule.RuleCode == GlobalPolicyStorage.GeneralRuleCode);
+        Assert.DoesNotContain(
+            policy.Rules,
+            rule => string.Equals(
+                rule.RuleCode,
+                GlobalPolicyStorage.BackseatgamingRuleCode,
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task KnownGame_AddsGeneralBackseatgamingPolicy()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var sut = CreateStore(database);
+
+        var policy = await sut.GetEffectivePolicyAsync("channel-1", "32982");
+
+        Assert.Equal("32982", policy.CategoryId);
+        Assert.Equal(2, policy.GeneralRevision);
+        Assert.Equal(3, policy.CategoryRevision);
+        Assert.Equal(18, policy.Rules.Count);
+        var rule = Assert.Single(
+            policy.Rules,
+            item => item.RuleCode == GlobalPolicyStorage.BackseatgamingRuleCode);
+        Assert.Contains(
+            policy.Rules,
+            item => item.RuleCode == GlobalPolicyStorage.GeneralRuleCode);
+        Assert.Equal(GlobalPolicyStorage.BackseatgamingRuleCode, rule.RuleCode);
+        Assert.Equal(ModerationRuleAction.Timeout, rule.DefaultAction);
+        Assert.Equal(600, rule.DefaultTimeoutSeconds);
+        Assert.Equal(
+            TwitchAI.Core.Models.ModerationRuleCodes.BackseatgamingPromptInstruction,
+            rule.PromptInstruction);
+        Assert.NotEmpty(policy.Phrases);
+    }
+
+    [Fact]
+    public async Task UnknownCategory_FallsBackToGeneralOnly()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var sut = CreateStore(database);
+
+        var policy = await sut.GetEffectivePolicyAsync("channel-1", "unknown");
+
+        Assert.Null(policy.CategoryId);
+        Assert.Equal(0, policy.CategoryRevision);
+        Assert.Equal(17, policy.Rules.Count);
+        Assert.Contains(
+            policy.Rules,
+            rule => rule.RuleCode == GlobalPolicyStorage.GeneralRuleCode);
+        Assert.All(
+            policy.Rules,
+            rule => Assert.StartsWith("G_", rule.RuleCode, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task BroadcasterSeed_IsIdempotent()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var sut = CreateStore(database);
+
+        await sut.EnsureBroadcasterSeededAsync("channel-1");
+        await sut.EnsureBroadcasterSeededAsync("channel-1");
+
+        await using var connection = await database.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT COUNT(*) FROM policy_sets WHERE broadcaster_id = '*';";
+        var result = await command.ExecuteScalarAsync();
+
+        Assert.Equal(2L, Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    public async Task GlobalPolicy_IsSharedAcrossChannelsAndGlobalInvalidationClearsEveryCacheKey()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var sut = CreateStore(database);
+
+        var channelOne = await sut.GetEffectivePolicyAsync("channel-1", "32982");
+        var channelTwo = await sut.GetEffectivePolicyAsync("channel-2", "32982");
+
+        Assert.Equal("channel-1", channelOne.BroadcasterId);
+        Assert.Equal("channel-2", channelTwo.BroadcasterId);
+        Assert.Equal(channelOne.PolicyHash, channelTwo.PolicyHash);
+
+        await using (var connection = await database.OpenConnectionAsync())
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                UPDATE blacklist_rules
+                SET prompt_instruction = prompt_instruction || ' global-change'
+                WHERE scope_id IN (
+                    SELECT scope_id
+                    FROM policy_sets
+                    WHERE broadcaster_id = '*'
+                );
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        sut.Invalidate(
+            new PolicyChangeSet(
+                GlobalPolicyStorage.BroadcasterId,
+                ScopeKind: null,
+                CategoryId: null,
+                AllowlistChanged: false,
+                NewRevision: null));
+
+        var refreshedOne = await sut.GetEffectivePolicyAsync("channel-1", "32982");
+        var refreshedTwo = await sut.GetEffectivePolicyAsync("channel-2", "32982");
+        Assert.NotEqual(channelOne.PolicyHash, refreshedOne.PolicyHash);
+        Assert.NotEqual(channelTwo.PolicyHash, refreshedTwo.PolicyHash);
+        Assert.Equal(refreshedOne.PolicyHash, refreshedTwo.PolicyHash);
+    }
+
+    [Fact]
+    public async Task EveryKnownNonJustChattingCategory_UsesBackseatgaming()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        await using (var connection = await database.OpenConnectionAsync())
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                INSERT INTO twitch_categories(
+                    category_id, display_name, last_seen_utc)
+                VALUES('custom-game', 'Custom Game', @now);
+                """;
+            command.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString("O"));
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var policy = await CreateStore(database)
+            .GetEffectivePolicyAsync("any-channel", "custom-game");
+
+        Assert.Equal("custom-game", policy.CategoryId);
+        Assert.Contains(
+            policy.Rules,
+            item => item.RuleCode == GlobalPolicyStorage.BackseatgamingRuleCode);
+    }
+
+    private static SqlitePolicyStore CreateStore(TestDatabase database)
+    {
+        return new SqlitePolicyStore(database.ConnectionFactory, new ChatTextNormalizer());
+    }
+}

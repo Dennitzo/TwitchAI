@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ResourceDictionary
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <ResourceDictionary.ThemeDictionaries>
+    <ResourceDictionary x:Key="Default">
+      <Color x:Key="AppBackgroundColor">#17131F</Color>
+      <Color x:Key="LayerColor">#CC241E30</Color>
+      <Color x:Key="LayerStrongColor">#F02D263B</Color>
+      <Color x:Key="CardStrokeColor">#38FFFFFF</Color>
+      <Color x:Key="MutedTextColor">#B7AFC3</Color>
+      <Color x:Key="TwitchAccentColor">#A970FF</Color>
+      <Color x:Key="WarningColor">#F4B860</Color>
+      <Color x:Key="SuccessColor">#42D392</Color>
+      <Color x:Key="DangerColor">#FF667A</Color>
+    </ResourceDictionary>
+    <ResourceDictionary x:Key="Light">
+      <Color x:Key="AppBackgroundColor">#F5F2FA</Color>
+      <Color x:Key="LayerColor">#EFFFFFFF</Color>
+      <Color x:Key="LayerStrongColor">#FFFFFFFF</Color>
+      <Color x:Key="CardStrokeColor">#1F241D2F</Color>
+      <Color x:Key="MutedTextColor">#62596C</Color>
+      <Color x:Key="TwitchAccentColor">#6D28D9</Color>
+      <Color x:Key="WarningColor">#A35D00</Color>
+      <Color x:Key="SuccessColor">#087A52</Color>
+      <Color x:Key="DangerColor">#C62843</Color>
+    </ResourceDictionary>
+    <ResourceDictionary x:Key="HighContrast">
+      <Color x:Key="AppBackgroundColor">#000000</Color>
+      <Color x:Key="LayerColor">#000000</Color>
+      <Color x:Key="LayerStrongColor">#000000</Color>
+      <Color x:Key="CardStrokeColor">#FFFFFF</Color>
+      <Color x:Key="MutedTextColor">#FFFFFF</Color>
+      <Color x:Key="TwitchAccentColor">#FFFF00</Color>
+      <Color x:Key="WarningColor">#FFFF00</Color>
+      <Color x:Key="SuccessColor">#00FF00</Color>
+      <Color x:Key="DangerColor">#FF8080</Color>
+    </ResourceDictionary>
+  </ResourceDictionary.ThemeDictionaries>
+
+  <SolidColorBrush x:Key="AppBackgroundBrush" Color="{ThemeResource AppBackgroundColor}" />
+  <SolidColorBrush x:Key="LayerBrush" Color="{ThemeResource LayerColor}" />
+  <SolidColorBrush x:Key="LayerStrongBrush" Color="{ThemeResource LayerStrongColor}" />
+  <SolidColorBrush x:Key="CardStrokeBrush" Color="{ThemeResource CardStrokeColor}" />
+  <SolidColorBrush x:Key="MutedTextBrush" Color="{ThemeResource MutedTextColor}" />
+  <SolidColorBrush x:Key="TwitchAccentBrush" Color="{ThemeResource TwitchAccentColor}" />
+  <SolidColorBrush x:Key="WarningBrush" Color="{ThemeResource WarningColor}" />
+  <SolidColorBrush x:Key="SuccessBrush" Color="{ThemeResource SuccessColor}" />
+  <SolidColorBrush x:Key="DangerBrush" Color="{ThemeResource DangerColor}" />
+
+  <Style x:Key="PageTitleStyle" TargetType="TextBlock">
+    <Setter Property="FontFamily" Value="Segoe UI Variable Display" />
+    <Setter Property="FontSize" Value="28" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="TextWrapping" Value="Wrap" />
+  </Style>
+
+  <Style x:Key="SectionTitleStyle" TargetType="TextBlock">
+    <Setter Property="FontFamily" Value="Segoe UI Variable Display" />
+    <Setter Property="FontSize" Value="18" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+  </Style>
+
+  <Style x:Key="CardStyle" TargetType="Border">
+    <Setter Property="Background" Value="{ThemeResource LayerBrush}" />
+    <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="12" />
+    <Setter Property="Padding" Value="20" />
+  </Style>
+
+  <Style x:Key="StatusPillStyle" TargetType="Border">
+    <Setter Property="Background" Value="{ThemeResource LayerStrongBrush}" />
+    <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="8" />
+    <Setter Property="MinHeight" Value="32" />
+    <Setter Property="Padding" Value="12,6" />
+  </Style>
+
+  <Style x:Key="SubtleButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+    <Setter Property="CornerRadius" Value="8" />
+    <Setter Property="Padding" Value="14,8" />
+  </Style>
+</ResourceDictionary>
