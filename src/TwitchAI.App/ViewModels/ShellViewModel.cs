@@ -1,4 +1,5 @@
 using System.Collections.Specialized;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -58,6 +59,9 @@ public sealed partial class ShellViewModel : ObservableObject
             : "Zuerst Twitch in den Einstellungen erfolgreich verbinden";
 
     public int PendingCount => _state.ModerationCases.Count(item => item.Status == "Pending");
+
+    public ObservableCollection<LocalAiRunItem> QueuedLocalAiRuns =>
+        _state.QueuedLocalAiRuns;
 
     public string LocalAiRunStateLabel =>
         _state.CurrentLocalAiRun.IsPresent

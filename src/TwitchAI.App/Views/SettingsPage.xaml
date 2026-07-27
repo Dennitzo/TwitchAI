@@ -232,6 +232,17 @@
               IsEnabled="False"
               Value="500" />
           </Grid>
+          <ToggleSwitch
+            AutomationProperties.Name="Identische Nachrichten aus der AI-Warteschlange entfernen"
+            Header="Identische Warteschlangennachrichten entfernen"
+            IsOn="{x:Bind ViewModel.RemoveIdenticalAiQueueMessages, Mode=TwoWay}"
+            OffContent="Inaktiv"
+            OnContent="Aktiv" />
+          <TextBlock
+            FontSize="12"
+            Foreground="{ThemeResource MutedTextBrush}"
+            Text="Identische Lowercase-Nachrichten verschiedener Nutzer werden nur einmal an die lokale AI gesendet. Nachfolgende unterschiedliche Nachrichten füllen den Batch weiter bis zur Batchgrenze auf."
+            TextWrapping="Wrap" />
           <Button
             HorizontalAlignment="Left"
             Click="OnTestLmStudioClicked"

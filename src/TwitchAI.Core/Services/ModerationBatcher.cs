@@ -7,6 +7,7 @@ public sealed class ModerationBatcher : IModerationBatcher
 {
     private readonly object _gate = new();
     private readonly ModerationBatcherOptions _options;
+    private readonly IModerationQueueRuntimeSettings _runtimeSettings;
     private readonly LinkedList<ModerationBatch> _ready = [];
     private readonly List<ModerationBatchMessage> _current = [];
     private ModerationBatchContext? _currentContext;
@@ -15,13 +16,29 @@ public sealed class ModerationBatcher : IModerationBatcher
     private int _waitingMessageCount;
 
     public ModerationBatcher()
-        : this(ModerationBatcherOptions.Default)
+        : this(
+            ModerationBatcherOptions.Default,
+            new ModerationQueueRuntimeSettings())
     {
     }
 
     public ModerationBatcher(ModerationBatcherOptions options)
+        : this(options, new ModerationQueueRuntimeSettings())
+    {
+    }
+
+    public ModerationBatcher(
+        IModerationQueueRuntimeSettings runtimeSettings)
+        : this(ModerationBatcherOptions.Default, runtimeSettings)
+    {
+    }
+
+    public ModerationBatcher(
+        ModerationBatcherOptions options,
+        IModerationQueueRuntimeSettings runtimeSettings)
     {
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(runtimeSettings);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.MaximumMessages, 1);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(
             options.MaximumCollectionDelay,
@@ -31,6 +48,7 @@ public sealed class ModerationBatcher : IModerationBatcher
             options.MaximumQueuedMessages,
             options.MaximumMessages);
         _options = options;
+        _runtimeSettings = runtimeSettings;
     }
 
     public int WaitingMessageCount
@@ -74,7 +92,6 @@ public sealed class ModerationBatcher : IModerationBatcher
         {
             var now = nowUtc.ToUniversalTime();
             var sealedBatches = new List<ModerationBatch>(2);
-            var dropped = MakeRoomForOneMessage();
 
             if (_current.Count > 0 && !HasSameContext(_currentContext!, context))
             {
@@ -84,11 +101,52 @@ public sealed class ModerationBatcher : IModerationBatcher
                 sealedBatches.Add(SealCurrent(now, reason));
             }
 
+            if (TryFindQueuedDuplicate(
+                    message,
+                    context,
+                    out var duplicateTemporaryMessageId))
+            {
+                return new BatchIngressResult(
+                    BatchIngressDisposition.DuplicateSuppressed,
+                    sealedBatches,
+                    DroppedOldestMessages: 0,
+                    NextDeadlineUtc: NextDeadlineUtc)
+                {
+                    DuplicateOfTemporaryMessageId =
+                        duplicateTemporaryMessageId,
+                };
+            }
+
+            var dropped = MakeRoomForOneMessage();
+
             if (_current.Count > 0
                 && _currentCharacters + message.PromptCharacterCount >
                     _options.MaximumMessageCharacters)
             {
                 sealedBatches.Add(SealCurrent(now, BatchSealReason.CharacterLimit));
+            }
+
+            // A sealed tail is still waiting and therefore safe to extend.
+            // Keeping its batch ID prevents one slow inference from producing
+            // a long queue of tiny, separately displayed AI runs.
+            if (_current.Count == 0
+                && TryAppendToReadyTail(
+                    message,
+                    context,
+                    now,
+                    out var updatedQueuedBatch))
+            {
+                return new BatchIngressResult(
+                    sealedBatches.Count == 0
+                        ? BatchIngressDisposition.Accepted
+                        : BatchIngressDisposition.AcceptedAndSealed,
+                    sealedBatches,
+                    dropped.Count,
+                    NextDeadlineUtc: null)
+                {
+                    DroppedMessages = dropped,
+                    UpdatedQueuedBatches = [updatedQueuedBatch],
+                };
             }
 
             if (_current.Count == 0)
@@ -197,6 +255,116 @@ public sealed class ModerationBatcher : IModerationBatcher
         _openedAtUtc = null;
         _currentCharacters = 0;
         return batch;
+    }
+
+    private bool TryAppendToReadyTail(
+        ModerationBatchMessage message,
+        ModerationBatchContext context,
+        DateTimeOffset nowUtc,
+        out ModerationBatch updatedBatch)
+    {
+        var tailNode = _ready.Last;
+        if (tailNode is null
+            || !HasSameContext(tailNode.Value.Context, context)
+            || tailNode.Value.Messages.Count >= _options.MaximumMessages)
+        {
+            updatedBatch = null!;
+            return false;
+        }
+
+        var tail = tailNode.Value;
+        var tailCharacters = tail.Messages.Sum(item => item.PromptCharacterCount);
+        var updatedCharacters = tailCharacters + message.PromptCharacterCount;
+        if (updatedCharacters > _options.MaximumMessageCharacters)
+        {
+            updatedBatch = null!;
+            return false;
+        }
+
+        if (tail.Messages.Any(item =>
+                string.Equals(
+                    item.TemporaryMessageId,
+                    message.TemporaryMessageId,
+                    StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException(
+                $"Temporary message ID '{message.TemporaryMessageId}' is duplicated in a batch.");
+        }
+
+        var messages = tail.Messages.Append(message).ToArray();
+        var sealReason = messages.Length == _options.MaximumMessages
+            ? BatchSealReason.MessageLimit
+            : updatedCharacters == _options.MaximumMessageCharacters
+                ? BatchSealReason.CharacterLimit
+                : tail.SealReason;
+        updatedBatch = tail with
+        {
+            Messages = messages,
+            SealedAtUtc = nowUtc,
+            SealReason = sealReason,
+        };
+        tailNode.Value = updatedBatch;
+        _waitingMessageCount++;
+        return true;
+    }
+
+    private bool TryFindQueuedDuplicate(
+        ModerationBatchMessage message,
+        ModerationBatchContext context,
+        out string duplicateTemporaryMessageId)
+    {
+        if (!_runtimeSettings.RemoveIdenticalMessages
+            || message.ReanalysisCaseId.HasValue)
+        {
+            duplicateTemporaryMessageId = string.Empty;
+            return false;
+        }
+
+        foreach (var batch in _ready)
+        {
+            if (!HasSameContext(batch.Context, context))
+            {
+                continue;
+            }
+
+            foreach (var candidate in batch.Messages)
+            {
+                if (IsDuplicateCandidate(candidate, message))
+                {
+                    duplicateTemporaryMessageId =
+                        candidate.TemporaryMessageId;
+                    return true;
+                }
+            }
+        }
+
+        if (_currentContext is not null
+            && HasSameContext(_currentContext, context))
+        {
+            foreach (var candidate in _current)
+            {
+                if (IsDuplicateCandidate(candidate, message))
+                {
+                    duplicateTemporaryMessageId =
+                        candidate.TemporaryMessageId;
+                    return true;
+                }
+            }
+        }
+
+        duplicateTemporaryMessageId = string.Empty;
+        return false;
+    }
+
+    private static bool IsDuplicateCandidate(
+        ModerationBatchMessage candidate,
+        ModerationBatchMessage incoming)
+    {
+        return !candidate.ReanalysisCaseId.HasValue
+            && string.Equals(
+                candidate.Message.Text.LowerText,
+                incoming.Message.Text.LowerText,
+                StringComparison.Ordinal);
     }
 
     private List<ModerationBatchMessage> MakeRoomForOneMessage()

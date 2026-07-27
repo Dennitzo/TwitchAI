@@ -1863,6 +1863,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly ISqliteWriteCoordinator _writeCoordinator;
     private readonly IPolicyStore _policyStore;
     private readonly ILocalAppStorage _localStorage;
+    private readonly ModerationQueueRuntimeSettings _queueRuntimeSettings;
     private readonly SemaphoreSlim _twitchSessionGate = new(1, 1);
 
     public SettingsViewModel(
@@ -1877,7 +1878,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ISqliteConnectionFactory connectionFactory,
         ISqliteWriteCoordinator writeCoordinator,
         IPolicyStore policyStore,
-        ILocalAppStorage localStorage)
+        ILocalAppStorage localStorage,
+        ModerationQueueRuntimeSettings queueRuntimeSettings)
     {
         _state = state;
         _options = options;
@@ -1891,6 +1893,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _writeCoordinator = writeCoordinator;
         _policyStore = policyStore;
         _localStorage = localStorage;
+        _queueRuntimeSettings = queueRuntimeSettings;
         TwitchClientId = _localStorage.GetString("TwitchClientId")
             ?? options.TwitchOAuth.ClientId;
         ChannelLogin = _localStorage.GetString("ChannelLogin") ?? string.Empty;
@@ -1899,6 +1902,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         LmStudioModel = _localStorage.GetString("LmStudioModel")
             ?? options.LmStudio.Model;
         SelectedTheme = _localStorage.GetString("Theme") ?? "System";
+        _removeIdenticalAiQueueMessages = _localStorage.GetBooleanOrDefault(
+            LocalAppSettingKeys.RemoveIdenticalAiQueueMessages,
+            defaultValue: true);
+        _queueRuntimeSettings.RemoveIdenticalMessages =
+            _removeIdenticalAiQueueMessages;
     }
 
     [ObservableProperty]
@@ -1919,6 +1927,37 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     public partial string SelectedTheme { get; set; } = "System";
+
+    private bool _removeIdenticalAiQueueMessages = true;
+
+    public bool RemoveIdenticalAiQueueMessages
+    {
+        get => _removeIdenticalAiQueueMessages;
+        set
+        {
+            if (!SetProperty(ref _removeIdenticalAiQueueMessages, value))
+            {
+                return;
+            }
+
+            _queueRuntimeSettings.RemoveIdenticalMessages = value;
+            try
+            {
+                _localStorage.SetString(
+                    LocalAppSettingKeys.RemoveIdenticalAiQueueMessages,
+                    value.ToString());
+                SaveStatus =
+                    "AI-Warteschlangenfilter automatisch gespeichert";
+            }
+            catch (Exception exception)
+                when (exception is IOException or UnauthorizedAccessException)
+            {
+                SaveStatus =
+                    "AI-Warteschlangenfilter ist sofort aktiv, konnte aber "
+                    + $"nicht gespeichert werden: {exception.Message}";
+            }
+        }
+    }
 
     [ObservableProperty]
     public partial string SaveStatus { get; set; } = "Noch nicht gespeichert";
@@ -1960,6 +1999,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             _options.LmStudio.BaseAddress.ToString());
         _localStorage.SetString("LmStudioModel", _options.LmStudio.Model);
         _localStorage.SetString("Theme", SelectedTheme);
+        _localStorage.SetString(
+            LocalAppSettingKeys.RemoveIdenticalAiQueueMessages,
+            RemoveIdenticalAiQueueMessages.ToString());
         SaveStatus = "Lokal gespeichert · Verbindungsänderungen gelten nach App-Neustart";
     }
 

@@ -187,6 +187,48 @@ public sealed class ModerationCoordinatorTests
     }
 
     [Fact]
+    public async Task IdenticalQueuedLowerTextIsSkippedBeforeLocalModel()
+    {
+        var batcher = new RecordingModerationBatcher();
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidEnvelope,
+            batcher: batcher);
+        var events = new ConcurrentQueue<ModerationPipelineEventArgs>();
+        harness.Coordinator.EventReceived += (_, args) => events.Enqueue(args);
+        var skipped = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind ==
+                ModerationPipelineEventKind.QueueDuplicateSkipped);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(
+            MessageEvent(1, "Gemeinsam SPAMMEN", userId: "user-one"));
+        harness.EventSub.Publish(
+            MessageEvent(2, "gemeinsam spammen", userId: "user-two"));
+
+        var pipelineEvent = await skipped.Task.WaitAsync(
+            TimeSpan.FromSeconds(3));
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+        Assert.Equal(
+            "duplicate_lower_text_queued",
+            pipelineEvent.StatusCode);
+        Assert.Equal(
+            "message-2",
+            pipelineEvent.ChatMessage?.Identity.TwitchMessageId);
+        Assert.Equal(2, batcher.EnqueueCallCount);
+        Assert.Equal(1, batcher.WaitingMessageCount);
+        Assert.Single(
+            events,
+            item => item.Kind == ModerationPipelineEventKind.ChatQueued);
+        Assert.Equal(0, harness.LocalModel.CallCount);
+        Assert.DoesNotContain(
+            harness.AiRunActivities,
+            item => item.State == LocalAiRunState.Queued);
+    }
+
+    [Fact]
     public async Task IdenticalCategoryReconciliationDoesNotSealTwoMessageBatch()
     {
         await using var harness = CoordinatorHarness.Create(

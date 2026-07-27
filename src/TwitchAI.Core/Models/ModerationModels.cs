@@ -69,6 +69,7 @@ public enum BatchIngressDisposition
 {
     Accepted,
     AcceptedAndSealed,
+    DuplicateSuppressed,
 }
 
 public sealed record BatchIngressResult(
@@ -78,6 +79,10 @@ public sealed record BatchIngressResult(
     DateTimeOffset? NextDeadlineUtc)
 {
     public IReadOnlyList<ModerationBatchMessage> DroppedMessages { get; init; } = [];
+
+    public IReadOnlyList<ModerationBatch> UpdatedQueuedBatches { get; init; } = [];
+
+    public string? DuplicateOfTemporaryMessageId { get; init; }
 }
 
 public sealed record RetrievalExample(

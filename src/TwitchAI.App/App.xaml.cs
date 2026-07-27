@@ -83,6 +83,14 @@ public partial class App : Application
                 services.AddSingleton<IWhitelistPhraseSource, SqliteWhitelistPhraseSource>();
                 services.AddSingleton<IWhitelistFilterAgent, WhitelistFilterAgent>();
                 services.AddSingleton<IPhraseRuleSource, SqlitePhraseRuleSource>();
+                services.AddSingleton(
+                    new ModerationQueueRuntimeSettings(
+                        _localStorage.GetBooleanOrDefault(
+                            LocalAppSettingKeys.RemoveIdenticalAiQueueMessages,
+                            defaultValue: true)));
+                services.AddSingleton<IModerationQueueRuntimeSettings>(
+                    provider => provider.GetRequiredService<
+                        ModerationQueueRuntimeSettings>());
                 services.AddSingleton<IModerationBatcher, ModerationBatcher>();
                 services.AddSingleton<IModerationEnvelopeValidator, ModerationEnvelopeValidator>();
                 services.AddSingleton<HelixChannelContextService>();

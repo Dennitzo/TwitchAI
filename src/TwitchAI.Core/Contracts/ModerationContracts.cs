@@ -84,6 +84,11 @@ public interface IModerationBatcher
     bool TryDequeue(out ModerationBatch? batch);
 }
 
+public interface IModerationQueueRuntimeSettings
+{
+    bool RemoveIdenticalMessages { get; }
+}
+
 public interface IMessageAvailabilityRegistry
 {
     void Observe(ChatMessageSnapshot message);

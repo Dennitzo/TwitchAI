@@ -18,6 +18,7 @@ public enum ModerationPipelineEventKind
     Stopped,
     CategoryChanged,
     ChatQueued,
+    QueueDuplicateSkipped,
     WhitelistSkipped,
     Allowed,
     CaseCreated,
@@ -502,10 +503,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 "The blocked moderation case was queued with the current policy revision.",
                 message,
                 caseId: caseId));
-        if (ingress.NewlySealedBatches.Count > 0)
-        {
-            SignalSealedBatches(ingress.NewlySealedBatches);
-        }
+        PublishBatchIngressUpdates(ingress);
     }
 
     public async ValueTask DisposeAsync()
@@ -716,16 +714,20 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     dropped.Message));
         }
 
+        if (ingress.Disposition == BatchIngressDisposition.DuplicateSuppressed)
+        {
+            PublishQueueDuplicateSkipped(snapshot);
+            PublishBatchIngressUpdates(ingress);
+            return;
+        }
+
         Publish(
             new(
                 ModerationPipelineEventKind.ChatQueued,
                 "queued_for_ai",
                 "The lowercase message was queued for local moderation.",
                 snapshot));
-        if (ingress.NewlySealedBatches.Count > 0)
-        {
-            SignalSealedBatches(ingress.NewlySealedBatches);
-        }
+        PublishBatchIngressUpdates(ingress);
     }
 
     private async Task SealDeadlinesAsync(CancellationTokenSource source)
@@ -1046,10 +1048,12 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                         dropped.Message));
             }
 
-            if (result.NewlySealedBatches.Count > 0)
+            if (result.Disposition == BatchIngressDisposition.DuplicateSuppressed)
             {
-                SignalSealedBatches(result.NewlySealedBatches);
+                PublishQueueDuplicateSkipped(refreshed.Message);
             }
+
+            PublishBatchIngressUpdates(result);
         }
 
         Publish(
@@ -1208,6 +1212,29 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         }
 
         _inferenceSignal.Release();
+    }
+
+    private void PublishBatchIngressUpdates(BatchIngressResult ingress)
+    {
+        foreach (var batch in ingress.UpdatedQueuedBatches)
+        {
+            PublishQueuedAiRun(batch);
+        }
+
+        if (ingress.NewlySealedBatches.Count > 0)
+        {
+            SignalSealedBatches(ingress.NewlySealedBatches);
+        }
+    }
+
+    private void PublishQueueDuplicateSkipped(ChatMessageSnapshot message)
+    {
+        Publish(
+            new(
+                ModerationPipelineEventKind.QueueDuplicateSkipped,
+                "duplicate_lower_text_queued",
+                "An identical lowercase message is already waiting for local moderation.",
+                message));
     }
 
     private void PublishQueuedAiRun(ModerationBatch batch)

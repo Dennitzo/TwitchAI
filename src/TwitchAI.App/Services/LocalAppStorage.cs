@@ -14,6 +14,26 @@ public interface ILocalAppStorage
     void SetStrings(IReadOnlyDictionary<string, string> values);
 }
 
+internal static class LocalAppSettingKeys
+{
+    public const string RemoveIdenticalAiQueueMessages =
+        "RemoveIdenticalAiQueueMessages";
+}
+
+internal static class LocalAppStorageExtensions
+{
+    public static bool GetBooleanOrDefault(
+        this ILocalAppStorage storage,
+        string key,
+        bool defaultValue)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+        return bool.TryParse(storage.GetString(key), out var storedValue)
+            ? storedValue
+            : defaultValue;
+    }
+}
+
 /// <summary>
 /// Package-independent local storage for both MSIX and unpackaged builds.
 /// Secrets remain in the Windows credential vault and are never written here.

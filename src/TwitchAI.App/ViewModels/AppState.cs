@@ -11,6 +11,8 @@ public sealed partial class AppState : ObservableObject
 
     public LocalAiRunItem CurrentLocalAiRun { get; } = new();
 
+    public ObservableCollection<LocalAiRunItem> QueuedLocalAiRuns { get; } = [];
+
     public ObservableCollection<PolicyPhraseItem> PolicyPhrases { get; } = [];
 
     public ObservableCollection<WhitelistPhraseItem> WhitelistPhrases { get; } = [];

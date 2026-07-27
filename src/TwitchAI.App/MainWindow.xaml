@@ -249,7 +249,7 @@
       <Grid
         x:Name="LocalAiFooterLayout"
         MinWidth="0"
-        ColumnSpacing="12">
+        ColumnSpacing="8">
         <VisualStateManager.VisualStateGroups>
           <VisualStateGroup x:Name="LocalAiFooterStates">
             <VisualState x:Name="WideLocalAiFooter">
@@ -258,8 +258,6 @@
               </VisualState.StateTriggers>
               <VisualState.Setters>
                 <Setter Target="LocalAiFooterMeta.Visibility" Value="Visible" />
-                <Setter Target="LocalAiQueueFullLabel.Visibility" Value="Visible" />
-                <Setter Target="LocalAiQueueCompactLabel.Visibility" Value="Collapsed" />
               </VisualState.Setters>
             </VisualState>
             <VisualState x:Name="MediumLocalAiFooter">
@@ -268,8 +266,6 @@
               </VisualState.StateTriggers>
               <VisualState.Setters>
                 <Setter Target="LocalAiFooterMeta.Visibility" Value="Collapsed" />
-                <Setter Target="LocalAiQueueFullLabel.Visibility" Value="Visible" />
-                <Setter Target="LocalAiQueueCompactLabel.Visibility" Value="Collapsed" />
               </VisualState.Setters>
             </VisualState>
             <VisualState x:Name="CompactLocalAiFooter">
@@ -278,8 +274,6 @@
               </VisualState.StateTriggers>
               <VisualState.Setters>
                 <Setter Target="LocalAiFooterMeta.Visibility" Value="Collapsed" />
-                <Setter Target="LocalAiQueueFullLabel.Visibility" Value="Collapsed" />
-                <Setter Target="LocalAiQueueCompactLabel.Visibility" Value="Visible" />
               </VisualState.Setters>
             </VisualState>
           </VisualStateGroup>
@@ -288,139 +282,211 @@
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto" />
           <ColumnDefinition Width="*" />
-          <ColumnDefinition Width="Auto" />
-          <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
 
         <Border
-          Width="36"
-          Height="36"
-          VerticalAlignment="Center"
-          Background="#249146FF"
-          CornerRadius="8">
-          <Grid>
-            <FontIcon
-              HorizontalAlignment="Center"
-              VerticalAlignment="Center"
-              FontSize="16"
-              Foreground="{ThemeResource TwitchAccentBrush}"
-              Glyph="&#xE950;"
-              Visibility="{x:Bind ViewModel.LocalAiRunIdleVisibility, Mode=OneWay}" />
-            <FontIcon
-              HorizontalAlignment="Center"
-              VerticalAlignment="Center"
-              FontSize="15"
-              Foreground="{ThemeResource MutedTextBrush}"
-              Glyph="&#xE823;"
-              Visibility="{x:Bind ViewModel.LocalAiRunQueuedVisibility, Mode=OneWay}" />
-            <ProgressRing
-              Width="18"
-              Height="18"
-              HorizontalAlignment="Center"
-              VerticalAlignment="Center"
-              AutomationProperties.Name="Lokale AI verarbeitet Nachrichten"
-              IsActive="{x:Bind ViewModel.IsLocalAiRunRunning, Mode=OneWay}"
-              IsTabStop="False"
-              Visibility="{x:Bind ViewModel.LocalAiRunRunningVisibility, Mode=OneWay}" />
-            <FontIcon
-              HorizontalAlignment="Center"
-              VerticalAlignment="Center"
-              FontSize="15"
-              Foreground="{ThemeResource SuccessBrush}"
-              Glyph="&#xE73E;"
-              Visibility="{x:Bind ViewModel.LocalAiRunSucceededVisibility, Mode=OneWay}" />
-            <FontIcon
-              HorizontalAlignment="Center"
-              VerticalAlignment="Center"
-              FontSize="15"
-              Foreground="{ThemeResource DangerBrush}"
-              Glyph="&#xEA39;"
-              Visibility="{x:Bind ViewModel.LocalAiRunFailedVisibility, Mode=OneWay}" />
-          </Grid>
-        </Border>
-
-        <StackPanel
-          Grid.Column="1"
-          MinWidth="0"
-          VerticalAlignment="Center"
-          Spacing="1">
-          <StackPanel Orientation="Horizontal" Spacing="6">
-            <TextBlock
-              FontSize="12"
-              FontWeight="SemiBold"
-              Text="Lokale AI" />
-            <TextBlock
-              AutomationProperties.LiveSetting="Polite"
-              FontSize="12"
-              Foreground="{ThemeResource TwitchAccentBrush}"
-              Text="{x:Bind ViewModel.LocalAiRunStateLabel, Mode=OneWay}" />
-          </StackPanel>
-          <TextBlock
-            MaxLines="1"
-            FontSize="11"
-            Foreground="{ThemeResource MutedTextBrush}"
-            Text="{x:Bind ViewModel.LocalAiRunBatchLabel, Mode=OneWay}"
-            TextTrimming="CharacterEllipsis" />
-        </StackPanel>
-
-        <StackPanel
-          x:Name="LocalAiFooterMeta"
-          Grid.Column="2"
-          MaxWidth="420"
-          VerticalAlignment="Center"
-          HorizontalAlignment="Right"
-          Spacing="1"
-          Visibility="Collapsed">
-          <TextBlock
-            MaxLines="1"
-            HorizontalAlignment="Right"
-            FontSize="11"
-            FontWeight="SemiBold"
-            Text="{x:Bind ViewModel.LocalAiRunTokenLabel, Mode=OneWay}"
-            TextTrimming="CharacterEllipsis" />
-          <TextBlock
-            MaxLines="1"
-            HorizontalAlignment="Right"
-            FontSize="10"
-            Foreground="{ThemeResource MutedTextBrush}"
-            Text="{x:Bind ViewModel.LocalAiRunMetaLabel, Mode=OneWay}"
-            TextTrimming="CharacterEllipsis" />
-        </StackPanel>
-
-        <Border
-          Grid.Column="3"
-          MaxWidth="250"
-          MinHeight="32"
-          Padding="10,5"
+          MinHeight="42"
+          Padding="8,4"
           VerticalAlignment="Center"
           Background="{ThemeResource LayerStrongBrush}"
           BorderBrush="{ThemeResource CardStrokeBrush}"
           BorderThickness="1"
-          CornerRadius="6"
-          Visibility="{x:Bind ViewModel.LocalAiQueueVisibility, Mode=OneWay}">
-          <StackPanel Orientation="Horizontal" Spacing="6">
-            <FontIcon
+          CornerRadius="8">
+          <Grid ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="Auto" />
+              <ColumnDefinition Width="Auto" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <Border
+              Width="34"
+              Height="34"
               VerticalAlignment="Center"
-              FontSize="12"
-              Foreground="{ThemeResource TwitchAccentBrush}"
-              Glyph="&#xE823;" />
-            <TextBlock
-              x:Name="LocalAiQueueFullLabel"
-              MaxLines="1"
+              Background="#249146FF"
+              CornerRadius="7">
+              <Grid>
+                <FontIcon
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  FontSize="16"
+                  Foreground="{ThemeResource TwitchAccentBrush}"
+                  Glyph="&#xE950;"
+                  Visibility="{x:Bind ViewModel.LocalAiRunIdleVisibility, Mode=OneWay}" />
+                <FontIcon
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  FontSize="15"
+                  Foreground="{ThemeResource MutedTextBrush}"
+                  Glyph="&#xE823;"
+                  Visibility="{x:Bind ViewModel.LocalAiRunQueuedVisibility, Mode=OneWay}" />
+                <ProgressRing
+                  Width="18"
+                  Height="18"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  AutomationProperties.Name="Lokale AI verarbeitet Nachrichten"
+                  IsActive="{x:Bind ViewModel.IsLocalAiRunRunning, Mode=OneWay}"
+                  IsTabStop="False"
+                  Visibility="{x:Bind ViewModel.LocalAiRunRunningVisibility, Mode=OneWay}" />
+                <FontIcon
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  FontSize="15"
+                  Foreground="{ThemeResource SuccessBrush}"
+                  Glyph="&#xE73E;"
+                  Visibility="{x:Bind ViewModel.LocalAiRunSucceededVisibility, Mode=OneWay}" />
+                <FontIcon
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  FontSize="15"
+                  Foreground="{ThemeResource DangerBrush}"
+                  Glyph="&#xEA39;"
+                  Visibility="{x:Bind ViewModel.LocalAiRunFailedVisibility, Mode=OneWay}" />
+              </Grid>
+            </Border>
+
+            <StackPanel
+              Grid.Column="1"
+              MaxWidth="250"
+              MinWidth="0"
               VerticalAlignment="Center"
-              FontSize="11"
-              Text="{x:Bind ViewModel.LocalAiQueueLabel, Mode=OneWay}"
-              TextTrimming="CharacterEllipsis"
-              Visibility="Collapsed" />
-            <TextBlock
-              x:Name="LocalAiQueueCompactLabel"
-              MaxLines="1"
+              Spacing="1">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <TextBlock
+                  FontSize="12"
+                  FontWeight="SemiBold"
+                  Text="Lokale AI" />
+                <TextBlock
+                  AutomationProperties.LiveSetting="Polite"
+                  FontSize="12"
+                  Foreground="{ThemeResource TwitchAccentBrush}"
+                  Text="{x:Bind ViewModel.LocalAiRunStateLabel, Mode=OneWay}" />
+              </StackPanel>
+              <TextBlock
+                MaxLines="1"
+                FontSize="11"
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="{x:Bind ViewModel.LocalAiRunBatchLabel, Mode=OneWay}"
+                TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+
+            <StackPanel
+              x:Name="LocalAiFooterMeta"
+              Grid.Column="2"
+              MaxWidth="360"
               VerticalAlignment="Center"
-              FontSize="11"
-              Text="{x:Bind ViewModel.LocalAiQueueCompactLabel, Mode=OneWay}"
-              TextTrimming="CharacterEllipsis" />
-          </StackPanel>
+              HorizontalAlignment="Right"
+              Spacing="1"
+              Visibility="Collapsed">
+              <TextBlock
+                MaxLines="1"
+                HorizontalAlignment="Right"
+                FontSize="11"
+                FontWeight="SemiBold"
+                Text="{x:Bind ViewModel.LocalAiRunTokenLabel, Mode=OneWay}"
+                TextTrimming="CharacterEllipsis" />
+              <TextBlock
+                MaxLines="1"
+                HorizontalAlignment="Right"
+                FontSize="10"
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="{x:Bind ViewModel.LocalAiRunMetaLabel, Mode=OneWay}"
+                TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+          </Grid>
         </Border>
+
+        <ScrollViewer
+          Grid.Column="1"
+          MinWidth="0"
+          VerticalAlignment="Center"
+          HorizontalScrollBarVisibility="Auto"
+          HorizontalScrollMode="Enabled"
+          VerticalScrollBarVisibility="Disabled"
+          VerticalScrollMode="Disabled"
+          Visibility="{x:Bind ViewModel.LocalAiQueueVisibility, Mode=OneWay}">
+          <ItemsRepeater
+            ItemsSource="{x:Bind ViewModel.QueuedLocalAiRuns, Mode=OneWay}">
+            <ItemsRepeater.Layout>
+              <StackLayout Orientation="Horizontal" Spacing="8" />
+            </ItemsRepeater.Layout>
+            <ItemsRepeater.ItemTemplate>
+              <DataTemplate>
+                <Border
+                  MinWidth="220"
+                  MinHeight="42"
+                  Padding="8,4"
+                  Background="{ThemeResource LayerStrongBrush}"
+                  BorderBrush="{ThemeResource CardStrokeBrush}"
+                  BorderThickness="1"
+                  CornerRadius="8">
+                  <Grid ColumnSpacing="8">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="Auto" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Border
+                      Width="34"
+                      Height="34"
+                      VerticalAlignment="Center"
+                      Background="#249146FF"
+                      CornerRadius="7">
+                      <FontIcon
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        FontSize="15"
+                        Foreground="{ThemeResource MutedTextBrush}"
+                        Glyph="&#xE823;" />
+                    </Border>
+                    <StackPanel
+                      Grid.Column="1"
+                      MinWidth="0"
+                      VerticalAlignment="Center"
+                      Spacing="1">
+                      <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBlock
+                          FontSize="12"
+                          FontWeight="SemiBold"
+                          Text="Lokale AI" />
+                        <TextBlock
+                          FontSize="12"
+                          Foreground="{ThemeResource TwitchAccentBrush}"
+                          Text="{Binding StateLabel, Mode=OneWay}" />
+                      </StackPanel>
+                      <Grid MinWidth="0" ColumnSpacing="3">
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="Auto" />
+                          <ColumnDefinition Width="Auto" />
+                          <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock
+                          MaxWidth="104"
+                          MaxLines="1"
+                          FontSize="11"
+                          Foreground="{ThemeResource MutedTextBrush}"
+                          Text="{Binding RunLabel, Mode=OneWay}"
+                          TextTrimming="CharacterEllipsis" />
+                        <TextBlock
+                          Grid.Column="1"
+                          FontSize="11"
+                          Foreground="{ThemeResource MutedTextBrush}"
+                          Text="·" />
+                        <TextBlock
+                          Grid.Column="2"
+                          MaxLines="1"
+                          FontSize="11"
+                          Foreground="{ThemeResource MutedTextBrush}"
+                          Text="{Binding MessageCountLabel, Mode=OneWay}"
+                          TextTrimming="CharacterEllipsis" />
+                      </Grid>
+                    </StackPanel>
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ItemsRepeater.ItemTemplate>
+          </ItemsRepeater>
+        </ScrollViewer>
       </Grid>
     </Border>
   </Grid>

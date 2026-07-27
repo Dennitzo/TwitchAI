@@ -331,10 +331,15 @@ public sealed class ModerationUiBridge : IDisposable
     private void ApplyAiRunSnapshot(
         LocalAiRunActivity[] activities)
     {
-        _state.QueuedLocalAiRunCount = activities.Count(
-            activity => activity.State == LocalAiRunState.Queued);
-        _state.QueuedLocalAiMessageCount = activities
+        // _aiRunOrder is newest-first. Reverse the queued projection so the
+        // footer presents the batches in their actual FIFO execution order.
+        var queuedActivities = activities
             .Where(activity => activity.State == LocalAiRunState.Queued)
+            .Reverse()
+            .ToArray();
+        SynchronizeQueuedAiRuns(queuedActivities);
+        _state.QueuedLocalAiRunCount = queuedActivities.Length;
+        _state.QueuedLocalAiMessageCount = queuedActivities
             .Sum(activity => activity.MessageCount);
 
         var activity = activities.FirstOrDefault(
@@ -345,6 +350,12 @@ public sealed class ModerationUiBridge : IDisposable
         if (activity is null)
         {
             _state.CurrentLocalAiRun.Clear();
+            if (queuedActivities.FirstOrDefault() is { } waiting)
+            {
+                _state.LmStudioStatus =
+                    $"AI wartet · {waiting.MessageCount:N0} Nachrichten";
+            }
+
             return;
         }
 
@@ -363,6 +374,57 @@ public sealed class ModerationUiBridge : IDisposable
                 ? "AI-Lauf abgebrochen"
                 : $"AI-Fehler · {activity.ErrorCode ?? "unbekannt"}",
         };
+    }
+
+    private void SynchronizeQueuedAiRuns(
+        LocalAiRunActivity[] queuedActivities)
+    {
+        var desiredIds = queuedActivities
+            .Select(activity => activity.CorrelationId)
+            .ToHashSet(StringComparer.Ordinal);
+
+        for (var index = _state.QueuedLocalAiRuns.Count - 1; index >= 0; index--)
+        {
+            if (!desiredIds.Contains(
+                    _state.QueuedLocalAiRuns[index].CorrelationId))
+            {
+                _state.QueuedLocalAiRuns.RemoveAt(index);
+            }
+        }
+
+        for (var desiredIndex = 0;
+             desiredIndex < queuedActivities.Length;
+             desiredIndex++)
+        {
+            var activity = queuedActivities[desiredIndex];
+            var existingIndex = -1;
+            for (var index = 0; index < _state.QueuedLocalAiRuns.Count; index++)
+            {
+                if (string.Equals(
+                        _state.QueuedLocalAiRuns[index].CorrelationId,
+                        activity.CorrelationId,
+                        StringComparison.Ordinal))
+                {
+                    existingIndex = index;
+                    break;
+                }
+            }
+
+            if (existingIndex < 0)
+            {
+                _state.QueuedLocalAiRuns.Insert(
+                    desiredIndex,
+                    new LocalAiRunItem(activity));
+                continue;
+            }
+
+            var item = _state.QueuedLocalAiRuns[existingIndex];
+            item.Apply(activity);
+            if (existingIndex != desiredIndex)
+            {
+                _state.QueuedLocalAiRuns.Move(existingIndex, desiredIndex);
+            }
+        }
     }
 
     private void PruneCompletedAiRuns()
