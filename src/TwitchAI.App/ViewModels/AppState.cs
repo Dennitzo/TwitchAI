@@ -65,6 +65,21 @@ public sealed partial class ModerationCaseItem : ObservableObject
 
     public required long CaseId { get; init; }
 
+    public bool IsChatReply { get; init; }
+
+    public string ReplyMessage { get; init; } = string.Empty;
+
+    public string ReviewTitle =>
+        IsChatReply
+            ? "Vorschlag prüfen · Chat-Antwort"
+            : "Vorschlag prüfen";
+
+    public Visibility ModerationEditorVisibility =>
+        IsChatReply ? Visibility.Collapsed : Visibility.Visible;
+
+    public Visibility ChatReplyEditorVisibility =>
+        IsChatReply ? Visibility.Visible : Visibility.Collapsed;
+
     public required string ChannelId { get; init; }
 
     public required string UserName { get; init; }
@@ -146,10 +161,13 @@ public sealed partial class ModerationCaseItem : ObservableObject
 
     public bool CanExecute =>
         !IsBusy
-        && HasUsableViolationRule
+        && (IsChatReply || HasUsableViolationRule)
         && Status is "Pending" or "Extern erledigt · Lernentscheidung offen";
 
-    public bool CanDiscard => !IsBusy && Status == "Pending";
+    public bool CanDiscard =>
+        !IsBusy
+        && (Status == "Pending"
+            || (IsChatReply && Status == "Fehlgeschlagen"));
 
     private bool HasUsableViolationRule =>
         SelectedViolationRule is not null

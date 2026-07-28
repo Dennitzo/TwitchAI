@@ -36,6 +36,12 @@ public sealed record TwitchUserInfo(
     string Login,
     string DisplayName);
 
+public sealed record TwitchSendChatMessageResult(
+    string MessageId,
+    bool IsSent,
+    string? DropCode,
+    string? DropMessage);
+
 public sealed record TwitchEventSubSubscriptionRequest(
     string Type,
     string Version,
@@ -93,6 +99,13 @@ public interface ITwitchHelixClient
         string userId,
         int durationSeconds,
         string reason,
+        CancellationToken cancellationToken = default);
+
+    Task<TwitchSendChatMessageResult> SendChatMessageAsync(
+        string broadcasterId,
+        string senderId,
+        string message,
+        string? replyParentMessageId = null,
         CancellationToken cancellationToken = default);
 
     Task CreateEventSubSubscriptionAsync(
@@ -342,6 +355,70 @@ public sealed class TwitchHelixClient : ITwitchHelixClient
             },
             cancellationToken).ConfigureAwait(false);
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<TwitchSendChatMessageResult> SendChatMessageAsync(
+        string broadcasterId,
+        string senderId,
+        string message,
+        string? replyParentMessageId = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(broadcasterId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(senderId);
+        ArgumentNullException.ThrowIfNull(message);
+        if (string.IsNullOrWhiteSpace(message) || message.Length > 500)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(message),
+                message.Length,
+                "Twitch chat messages must contain between 1 and 500 characters.");
+        }
+
+        // A chat send is mutating. It is never retried after an ambiguous
+        // transport failure; SendAuthenticatedAsync only repeats a definite
+        // 401 response after refreshing the token.
+        using var response = await SendAuthenticatedAsync(
+            () =>
+            {
+                var request = new HttpRequestMessage(HttpMethod.Post, "chat/messages");
+                var body = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["broadcaster_id"] = broadcasterId,
+                    ["sender_id"] = senderId,
+                    ["message"] = message,
+                };
+                if (!string.IsNullOrWhiteSpace(replyParentMessageId))
+                {
+                    body["reply_parent_message_id"] = replyParentMessageId;
+                }
+
+                request.Content = JsonContent.Create(body);
+                return request;
+            },
+            cancellationToken).ConfigureAwait(false);
+        using var document = await ReadSuccessJsonAsync(response, cancellationToken)
+            .ConfigureAwait(false);
+        var item = FirstDataItem(document.RootElement)
+            ?? throw new InvalidDataException(
+                "Twitch Send Chat Message returned no result.");
+        var isSent = item.TryGetProperty("is_sent", out var isSentProperty)
+            && isSentProperty.ValueKind is JsonValueKind.True or JsonValueKind.False
+            && isSentProperty.GetBoolean();
+        string? dropCode = null;
+        string? dropMessage = null;
+        if (item.TryGetProperty("drop_reason", out var dropReason)
+            && dropReason.ValueKind == JsonValueKind.Object)
+        {
+            dropCode = OptionalString(dropReason, "code");
+            dropMessage = OptionalString(dropReason, "message");
+        }
+
+        return new TwitchSendChatMessageResult(
+            OptionalString(item, "message_id") ?? string.Empty,
+            isSent,
+            dropCode,
+            dropMessage);
     }
 
     public async Task CreateEventSubSubscriptionAsync(

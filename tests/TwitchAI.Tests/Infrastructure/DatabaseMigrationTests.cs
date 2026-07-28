@@ -28,6 +28,8 @@ public sealed class DatabaseMigrationTests
         Assert.Contains("configuration_audit", tables);
         Assert.Contains("message_availability_events", tables);
         Assert.Contains("message_clear_watermarks", tables);
+        Assert.Contains("chat_reply_templates", tables);
+        Assert.Contains("chat_reply_proposals", tables);
         Assert.Equal(["32982", "509658"], categories);
 
         await using var seedCommand = connection.CreateCommand();
@@ -58,9 +60,36 @@ public sealed class DatabaseMigrationTests
         var journalMode = await ScalarAsync<string>(connection, "PRAGMA journal_mode;");
         var foreignKeys = await ScalarAsync<long>(connection, "PRAGMA foreign_keys;");
 
-        Assert.Equal(10, migrationCount);
+        Assert.Equal(11, migrationCount);
         Assert.Equal("wal", journalMode, ignoreCase: true);
         Assert.Equal(1, foreignKeys);
+    }
+
+    [Fact]
+    public async Task ChatReplyMigration_UpgradesVersion10AndCreatesBothTables()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(10);
+
+        await database.Initializer.InitializeAsync();
+
+        await using var connection = await database.OpenConnectionAsync();
+        var migrationVersion = await ScalarAsync<long>(
+            connection,
+            "SELECT MAX(version) FROM schema_migrations;");
+        var tables = await ReadStringsAsync(
+            connection,
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN ('chat_reply_templates','chat_reply_proposals')
+            ORDER BY name;
+            """);
+
+        Assert.Equal(11, migrationVersion);
+        Assert.Equal(
+            ["chat_reply_proposals", "chat_reply_templates"],
+            tables);
     }
 
     [Fact]

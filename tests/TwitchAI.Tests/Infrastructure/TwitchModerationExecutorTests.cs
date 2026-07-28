@@ -718,6 +718,17 @@ public sealed class TwitchModerationExecutorTests
             return Task.CompletedTask;
         }
 
+        public Task<TwitchSendChatMessageResult> SendChatMessageAsync(
+            string broadcasterId,
+            string senderId,
+            string message,
+            string? replyParentMessageId = null,
+            CancellationToken cancellationToken = default)
+        {
+            throw new InvalidOperationException(
+                "Moderation tests must not send chat messages.");
+        }
+
         public Task CreateEventSubSubscriptionAsync(
             TwitchEventSubSubscriptionRequest subscription,
             CancellationToken cancellationToken = default)

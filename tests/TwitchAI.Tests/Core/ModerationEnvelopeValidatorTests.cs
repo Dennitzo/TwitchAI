@@ -178,6 +178,127 @@ public sealed class ModerationEnvelopeValidatorTests
             Assert.Single(result.Envelope!.Decisions).Action);
     }
 
+    [Fact]
+    public void Validate_KnownReplyTemplateForNoneReturnsTypedReference()
+    {
+        var batch = Batch(1, includeBackseat: false) with
+        {
+            ReplyTemplates =
+            [
+                new ChatReplyTemplatePrompt(
+                    "r1",
+                    "wie lange geht das event noch?"),
+            ],
+        };
+        var response = Response(
+            batch,
+            Decision(
+                "m1",
+                "none",
+                null,
+                null,
+                "",
+                [],
+                0.1,
+                replyTemplateId: "r1",
+                replyConfidence: 0.94));
+
+        var result = new ModerationEnvelopeValidator().Validate(response, batch);
+
+        Assert.True(result.IsValid);
+        var decision = Assert.Single(result.Envelope!.Decisions);
+        Assert.Equal("r1", decision.ReplyTemplateId);
+        Assert.Equal(0.94, decision.ReplyConfidence);
+    }
+
+    [Fact]
+    public void Validate_UnknownReplyTemplateRejectsWholeBatch()
+    {
+        var batch = Batch(1, includeBackseat: false);
+        var response = Response(
+            batch,
+            Decision(
+                "m1",
+                "none",
+                null,
+                null,
+                "",
+                [],
+                0.1,
+                replyTemplateId: "unknown",
+                replyConfidence: 0.8));
+
+        AssertInvalid(response, batch, "reply_template_unknown");
+    }
+
+    [Fact]
+    public void Validate_ModerationActionCannotAlsoSelectReply()
+    {
+        var batch = Batch(1, includeBackseat: false) with
+        {
+            ReplyTemplates =
+            [
+                new ChatReplyTemplatePrompt("r1", "event"),
+            ],
+        };
+        var response = Response(
+            batch,
+            Decision(
+                "m1",
+                "delete",
+                null,
+                "G",
+                "Spam.",
+                ["bad"],
+                0.9,
+                replyTemplateId: "r1",
+                replyConfidence: 0.8));
+
+        AssertInvalid(response, batch, "reply_for_moderation_action");
+    }
+
+    [Fact]
+    public void Validate_ReplyConfidenceRequiresSelectedTemplateAndValidRange()
+    {
+        var batch = Batch(1, includeBackseat: false) with
+        {
+            ReplyTemplates =
+            [
+                new ChatReplyTemplatePrompt("r1", "event"),
+            ],
+        };
+
+        AssertInvalid(
+            Response(
+                batch,
+                Decision(
+                    "m1",
+                    "none",
+                    null,
+                    null,
+                    "",
+                    [],
+                    0.1,
+                    replyConfidence: 0.8)),
+            batch,
+            "reply_confidence_without_template");
+        AssertInvalid(
+            Response(
+                batch,
+                Decision(
+                    "m1",
+                    "none",
+                    null,
+                    null,
+                    "",
+                    [],
+                    0.1,
+                    replyTemplateId: "r1",
+                    replyConfidence: 1.1)),
+            batch,
+            "reply_confidence_invalid");
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1_209_601)]
@@ -597,7 +718,9 @@ public sealed class ModerationEnvelopeValidatorTests
         string reason,
         string[] triggerPhrases,
         double confidence,
-        string? ruleCode = null)
+        string? ruleCode = null,
+        string? replyTemplateId = null,
+        double? replyConfidence = null)
     {
         return new Dictionary<string, object?>
         {
@@ -614,6 +737,8 @@ public sealed class ModerationEnvelopeValidatorTests
             ["reason"] = reason,
             ["triggerPhrases"] = triggerPhrases,
             ["confidence"] = confidence,
+            ["replyTemplateId"] = replyTemplateId,
+            ["replyConfidence"] = replyConfidence,
         };
     }
 

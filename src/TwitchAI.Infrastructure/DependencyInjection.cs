@@ -48,6 +48,9 @@ public static class DependencyInjection
             provider => provider.GetRequiredService<SqliteWhitelistStore>());
         services.AddSingleton<IPolicyCacheInvalidator>(
             provider => provider.GetRequiredService<SqliteWhitelistStore>());
+        services.AddSingleton<SqliteChatReplyStore>();
+        services.AddSingleton<IChatReplyStore>(
+            provider => provider.GetRequiredService<SqliteChatReplyStore>());
 
         services.AddSingleton<IDatabaseCatalog, DatabaseCatalog>();
         services.AddSingleton<IDatabaseTableReader, DatabaseTableReader>();
@@ -104,6 +107,7 @@ public static class DependencyInjection
         services.AddSingleton<
             CoreContracts.ITwitchModerationExecutor,
             TwitchModerationExecutor>();
+        services.AddSingleton<ITwitchChatReplyExecutor, TwitchChatReplyExecutor>();
 
         services.AddSingleton<ILlmRunMetricsStore, SqliteLlmRunMetricsStore>();
         services.AddSingleton<

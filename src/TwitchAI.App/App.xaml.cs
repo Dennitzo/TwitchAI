@@ -112,6 +112,7 @@ public partial class App : Application
                 services.AddSingleton<ModerationQueueViewModel>();
                 services.AddTransient<PoliciesViewModel>();
                 services.AddSingleton<WhitelistViewModel>();
+                services.AddSingleton<ChatViewModel>();
                 services.AddSingleton<DatabaseViewModel>();
                 services.AddSingleton<AuditViewModel>();
                 services.AddSingleton<SettingsViewModel>();

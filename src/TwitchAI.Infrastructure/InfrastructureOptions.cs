@@ -27,6 +27,7 @@ public sealed class TwitchOAuthOptions
     public string[] Scopes { get; set; } =
     [
         "user:read:chat",
+        "user:write:chat",
         "user:read:moderated_channels",
         "moderator:manage:chat_messages",
         "moderator:manage:banned_users",

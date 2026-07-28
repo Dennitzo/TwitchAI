@@ -40,6 +40,8 @@ public sealed partial class DatabaseViewModel : ObservableObject
             ["blacklist_rules"] = "Blacklist-Regeln",
             ["channel_context"] = "Kanalkontext",
             ["chat_message_snapshots"] = "Nachrichten-Snapshots",
+            ["chat_reply_proposals"] = "Chat-Antwortvorschläge",
+            ["chat_reply_templates"] = "Chat-Antwortvorlagen",
             ["configuration_audit"] = "Konfigurationsaudit",
             ["data_deletion_audit"] = "Lösch-Audit",
             ["message_availability_events"] = "Verfügbarkeitsereignisse",

@@ -1114,6 +1114,17 @@ public sealed class ModerationPersistenceRegressionTests
                 : Task.FromException(TimeoutFailure);
         }
 
+        public Task<TwitchSendChatMessageResult> SendChatMessageAsync(
+            string broadcasterId,
+            string senderId,
+            string message,
+            string? replyParentMessageId = null,
+            CancellationToken cancellationToken = default)
+        {
+            throw new InvalidOperationException(
+                "Moderation persistence tests must not send chat messages.");
+        }
+
         public Task CreateEventSubSubscriptionAsync(
             TwitchEventSubSubscriptionRequest subscription,
             CancellationToken cancellationToken = default)

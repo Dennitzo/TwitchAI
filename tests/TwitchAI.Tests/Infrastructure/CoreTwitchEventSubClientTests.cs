@@ -366,6 +366,21 @@ public sealed class CoreTwitchEventSubClientTests
             return Task.CompletedTask;
         }
 
+        public Task<TwitchSendChatMessageResult> SendChatMessageAsync(
+            string broadcasterId,
+            string senderId,
+            string message,
+            string? replyParentMessageId = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(
+                new TwitchSendChatMessageResult(
+                    "sent-message",
+                    IsSent: true,
+                    DropCode: null,
+                    DropMessage: null));
+        }
+
         public Task CreateEventSubSubscriptionAsync(
             TwitchEventSubSubscriptionRequest subscription,
             CancellationToken cancellationToken = default)

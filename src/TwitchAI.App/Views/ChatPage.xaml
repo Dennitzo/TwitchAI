@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+  x:Class="TwitchAI.App.Views.ChatPage"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:tv="using:WinUI.TableView"
+  xmlns:vm="using:TwitchAI.App.ViewModels"
+  Background="Transparent"
+  Loaded="Page_Loaded"
+  SizeChanged="OnPageSizeChanged"
+  mc:Ignorable="d">
+  <ScrollViewer
+    HorizontalScrollBarVisibility="Disabled"
+    VerticalScrollBarVisibility="Auto">
+    <StackPanel
+      x:Name="PageContent"
+      Margin="28,24,28,40"
+      HorizontalAlignment="Stretch"
+      Spacing="18">
+      <StackPanel Spacing="6">
+        <TextBlock Style="{StaticResource PageTitleStyle}" Text="Chat" />
+        <TextBlock
+          Foreground="{ThemeResource MutedTextBrush}"
+          Text="Semantisch ähnliche Chatnachrichten können eine vorgefertigte Antwort zur manuellen Prüfung vorschlagen."
+          TextWrapping="Wrap" />
+      </StackPanel>
+
+      <InfoBar
+        IsClosable="False"
+        IsOpen="True"
+        Message="Die lokale AI wählt nur eine passende Vorlage aus. Der gespeicherte Antworttext bleibt unverändert; @Username wird lokal durch den Twitch-Login ersetzt. Gesendet wird erst nach „Ausführen“."
+        Severity="Informational"
+        Title="Antworten bleiben unter deiner Kontrolle" />
+
+      <Border Style="{StaticResource CardStyle}">
+        <StackPanel Spacing="12">
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Spacing="3">
+              <TextBlock
+                Style="{StaticResource SectionTitleStyle}"
+                Text="Chat-Vorlage hinzufügen" />
+              <TextBlock
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+                TextWrapping="Wrap" />
+            </StackPanel>
+            <ProgressRing
+              Grid.Column="1"
+              Width="22"
+              Height="22"
+              IsActive="{x:Bind ViewModel.IsBusy, Mode=OneWay}" />
+          </Grid>
+
+          <Grid
+            x:Name="TemplateForm"
+            ColumnSpacing="10"
+            RowSpacing="10">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition x:Name="ChatMessageFormColumn" Width="*" />
+              <ColumnDefinition x:Name="ResponseMessageFormColumn" Width="*" />
+              <ColumnDefinition x:Name="TemplateFormActionColumn" Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBox
+              x:Name="NewChatMessageInput"
+              Header="Chatnachricht"
+              MaxLength="500"
+              PlaceholderText="Wie lange geht das Event noch?"
+              Text="{x:Bind ViewModel.NewChatMessage, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+            <TextBox
+              x:Name="NewResponseMessageInput"
+              Grid.Column="1"
+              Header="Antwortnachricht"
+              MaxLength="500"
+              PlaceholderText="!event @Username"
+              Text="{x:Bind ViewModel.NewResponseMessage, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+            <Button
+              x:Name="AddTemplateButton"
+              Grid.Column="2"
+              VerticalAlignment="Bottom"
+              AutomationProperties.Name="Chat-Vorlage hinzufügen"
+              Click="OnAddTemplateClicked"
+              Content="Zeile hinzufügen"
+              IsEnabled="{x:Bind ViewModel.CanAdd, Mode=OneWay}"
+              Style="{StaticResource AccentButtonStyle}" />
+          </Grid>
+        </StackPanel>
+      </Border>
+
+      <Border Padding="0" Style="{StaticResource CardStyle}">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+          </Grid.RowDefinitions>
+          <Grid
+            x:Name="TableToolsGrid"
+            Padding="12,10"
+            Background="{ThemeResource LayerStrongBrush}"
+            ColumnSpacing="12"
+            RowSpacing="8">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <AutoSuggestBox
+              x:Name="TableSearchBox"
+              Grid.ColumnSpan="2"
+              AutomationProperties.Name="Chat-Vorlagen durchsuchen"
+              PlaceholderText="Tabelle durchsuchen …"
+              QueryIcon="Find"
+              Text="{x:Bind ViewModel.SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+              TextChanged="OnTableSearchTextChanged" />
+            <TextBlock
+              x:Name="TableCommandHint"
+              Grid.Row="1"
+              VerticalAlignment="Center"
+              Foreground="{ThemeResource MutedTextBrush}"
+              Text="Mehrere Zeilen können gemeinsam ausgewählt und gelöscht werden."
+              TextWrapping="Wrap" />
+            <Button
+              x:Name="DeleteRowButton"
+              Grid.Row="1"
+              Grid.Column="1"
+              AutomationProperties.Name="Ausgewählte Chat-Zeilen löschen"
+              Click="OnDeleteSelectedClicked"
+              Foreground="{ThemeResource DangerBrush}"
+              IsEnabled="{x:Bind ViewModel.CanDeleteSelected, Mode=OneWay}"
+              Style="{StaticResource SubtleButtonStyle}">
+              <StackPanel Orientation="Horizontal" Spacing="7">
+                <SymbolIcon Symbol="Delete" />
+                <TextBlock Text="Zeile löschen" />
+              </StackPanel>
+            </Button>
+          </Grid>
+
+          <tv:TableView
+            x:Name="TemplateTable"
+            Grid.Row="1"
+            Height="440"
+            AutomationProperties.Name="Sortierbare Chat-Antwortvorlagen"
+            AutoGenerateColumns="False"
+            CellEditEnded="OnTemplateCellEditEnded"
+            CanFilterColumns="False"
+            CanReorderColumns="False"
+            CanResizeColumns="True"
+            CanSortColumns="True"
+            IsReadOnly="False"
+            ItemsSource="{x:Bind ViewModel.SortedTemplates, Mode=OneWay}"
+            MaxColumnWidth="1200"
+            MinColumnWidth="72"
+            SelectionChanged="OnTemplateSelectionChanged"
+            SelectionMode="Multiple"
+            ShowExportOptions="False"
+            Sorting="OnTemplateTableSorting">
+            <tv:TableView.Columns>
+              <tv:TableViewNumberColumn
+                Binding="{Binding TemplateId}"
+                CanResize="True"
+                CanSort="True"
+                Header="ID"
+                IsReadOnly="True"
+                SortMemberPath="TemplateId"
+                Tag="TemplateId"
+                Width="90" />
+              <tv:TableViewTextColumn
+                Binding="{Binding ChatMessage, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                CanResize="True"
+                CanSort="True"
+                Header="Chatnachricht"
+                IsReadOnly="False"
+                SortMemberPath="ChatMessage"
+                Tag="ChatMessage"
+                Width="2*" />
+              <tv:TableViewTextColumn
+                Binding="{Binding ResponseMessage, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                CanResize="True"
+                CanSort="True"
+                Header="Antwortnachricht"
+                IsReadOnly="False"
+                SortMemberPath="ResponseMessage"
+                Tag="ResponseMessage"
+                Width="2*" />
+              <tv:TableViewNumberColumn
+                Binding="{Binding HitCount}"
+                CanResize="True"
+                CanSort="True"
+                Header="Treffer"
+                IsReadOnly="True"
+                SortMemberPath="HitCount"
+                Tag="HitCount"
+                Width="105" />
+              <tv:TableViewTemplateColumn
+                CanResize="True"
+                CanSort="True"
+                Header="Aktiv"
+                IsReadOnly="True"
+                SortMemberPath="IsEnabled"
+                Tag="IsEnabled"
+                Width="100">
+                <tv:TableViewTemplateColumn.CellTemplate>
+                  <DataTemplate x:DataType="vm:ChatReplyTemplateItem">
+                    <ToggleSwitch
+                      AutomationProperties.Name="Chat-Vorlage aktivieren oder deaktivieren"
+                      IsOn="{x:Bind IsEnabled, Mode=TwoWay}"
+                      OffContent=""
+                      OnContent=""
+                      Tag="{x:Bind}"
+                      Toggled="TemplateEnabled_Toggled" />
+                  </DataTemplate>
+                </tv:TableViewTemplateColumn.CellTemplate>
+              </tv:TableViewTemplateColumn>
+            </tv:TableView.Columns>
+          </tv:TableView>
+        </Grid>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</Page>

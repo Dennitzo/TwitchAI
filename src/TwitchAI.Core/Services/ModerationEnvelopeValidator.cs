@@ -6,7 +6,7 @@ namespace TwitchAI.Core.Services;
 
 public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
 {
-    public const string ResponseEnvelopeVersion = "twitchai.moderation.response.v3";
+    public const string ResponseEnvelopeVersion = "twitchai.moderation.response.v4";
     private const int MaximumRawResponseCharacters = 262_144;
     private const int MaximumTriggerPhrases = 3;
 
@@ -22,7 +22,9 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             "ruleCode",
             "reason",
             "triggerPhrases",
-            "confidence");
+            "confidence",
+            "replyTemplateId",
+            "replyConfidence");
 
     public EnvelopeValidationResult Validate(string rawJson, ModerationBatch batch) =>
         ValidateCore(rawJson, batch, allowMissingRuleFallback: false);
@@ -88,6 +90,19 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             var sourceById = batch.Messages.ToDictionary(
                 item => item.TemporaryMessageId,
                 StringComparer.Ordinal);
+            var replyTemplatesById = new Dictionary<string, ChatReplyTemplatePrompt>(
+                StringComparer.Ordinal);
+            foreach (var template in batch.ReplyTemplates)
+            {
+                if (string.IsNullOrWhiteSpace(template.TemplateId)
+                    || !replyTemplatesById.TryAdd(template.TemplateId, template))
+                {
+                    return Error(
+                        "reply_template_snapshot_invalid",
+                        "Reply-template IDs in the batch must be non-empty and unique.");
+                }
+            }
+
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var validated = new List<ValidatedModerationDecision>(sourceById.Count);
 
@@ -97,6 +112,7 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                     decisionElement,
                     sourceById,
                     batch.Context.EffectivePolicy,
+                    replyTemplatesById,
                     seen,
                     allowMissingRuleFallback);
                 if (decisionResult.Error is not null)
@@ -132,6 +148,7 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
         JsonElement element,
         Dictionary<string, ModerationBatchMessage> sourceById,
         EffectivePolicySnapshot activePolicy,
+        IReadOnlyDictionary<string, ChatReplyTemplatePrompt> replyTemplatesById,
         HashSet<string> seen,
         bool allowMissingRuleFallback)
     {
@@ -289,6 +306,18 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 $"Decision '{messageId}' has an invalid confidence.");
         }
 
+        var replyResult = ParseReplyTemplate(
+            element.GetProperty("replyTemplateId"),
+            element.GetProperty("replyConfidence"),
+            action,
+            replyTemplatesById);
+        if (replyResult.Error is not null)
+        {
+            return DecisionValidationResult.Invalid(
+                replyResult.Error.Code,
+                $"Decision '{messageId}': {replyResult.Error.Message}");
+        }
+
         return DecisionValidationResult.Valid(
             new ValidatedModerationDecision(
                 messageId,
@@ -298,7 +327,78 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 reason,
                 triggerResult.TriggerPhrases!,
                 confidence,
-                ruleResult.Rule?.RuleCode));
+                ruleResult.Rule?.RuleCode,
+                replyResult.TemplateId,
+                replyResult.Confidence));
+    }
+
+    private static ReplyTemplateParseResult ParseReplyTemplate(
+        JsonElement templateIdElement,
+        JsonElement confidenceElement,
+        ModerationActionKind action,
+        IReadOnlyDictionary<string, ChatReplyTemplatePrompt> replyTemplatesById)
+    {
+        if (action != ModerationActionKind.None)
+        {
+            return templateIdElement.ValueKind == JsonValueKind.Null
+                && confidenceElement.ValueKind == JsonValueKind.Null
+                    ? new(null, null, null)
+                    : new(
+                        null,
+                        null,
+                        new(
+                            "reply_for_moderation_action",
+                            "A delete or timeout decision cannot select a reply template."));
+        }
+
+        if (templateIdElement.ValueKind == JsonValueKind.Null)
+        {
+            return confidenceElement.ValueKind == JsonValueKind.Null
+                ? new(null, null, null)
+                : new(
+                    null,
+                    null,
+                    new(
+                        "reply_confidence_without_template",
+                        "replyConfidence must be null when no reply template is selected."));
+        }
+
+        if (templateIdElement.ValueKind != JsonValueKind.String
+            || string.IsNullOrWhiteSpace(templateIdElement.GetString()))
+        {
+            return new(
+                null,
+                null,
+                new(
+                    "reply_template_invalid",
+                    "replyTemplateId must be null or a non-empty temporary template ID."));
+        }
+
+        var templateId = templateIdElement.GetString()!;
+        if (!replyTemplatesById.ContainsKey(templateId))
+        {
+            return new(
+                null,
+                null,
+                new(
+                    "reply_template_unknown",
+                    "The selected replyTemplateId is not present in this batch."));
+        }
+
+        if (confidenceElement.ValueKind != JsonValueKind.Number
+            || !confidenceElement.TryGetDouble(out var confidence)
+            || !double.IsFinite(confidence)
+            || confidence is < 0 or > 1)
+        {
+            return new(
+                null,
+                null,
+                new(
+                    "reply_confidence_invalid",
+                    "A selected reply template requires replyConfidence from 0 to 1."));
+        }
+
+        return new(templateId, confidence, null);
     }
 
     private static PolicyParseResult ParsePolicySet(
@@ -589,5 +689,10 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
 
     private sealed record TriggerParseResult(
         IReadOnlyList<string>? TriggerPhrases,
+        EnvelopeValidationError? Error);
+
+    private sealed record ReplyTemplateParseResult(
+        string? TemplateId,
+        double? Confidence,
         EnvelopeValidationError? Error);
 }

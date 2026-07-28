@@ -12,7 +12,7 @@ public sealed class LmStudioLiveActivityTests
     public async Task CompleteModerationAsync_PublishesRealUsageAfterMetricWasStored()
     {
         const string envelope =
-            """{"envelopeVersion":"twitchai.moderation.response.v3","batchId":"batch","decisions":[]}""";
+            """{"envelopeVersion":"twitchai.moderation.response.v4","batchId":"batch","decisions":[]}""";
         var responseBody = JsonSerializer.Serialize(
             new
             {
@@ -138,7 +138,7 @@ public sealed class LmStudioLiveActivityTests
                         message = new
                         {
                             content =
-                                """{"envelopeVersion":"twitchai.moderation.response.v3","batchId":"batch-1","decisions":[]}""",
+                                """{"envelopeVersion":"twitchai.moderation.response.v4","batchId":"batch-1","decisions":[]}""",
                         },
                         finish_reason = "stop",
                     },
@@ -153,7 +153,7 @@ public sealed class LmStudioLiveActivityTests
             CreateOptions());
 
         await sut.CompleteModerationAsync(
-            Request(["G_INSULT", "G_PERSONAL_DATA"]));
+            Request(["G_INSULT", "G_PERSONAL_DATA"], ["r1", "r2"]));
 
         using var document = JsonDocument.Parse(handler.RequestBody!);
         var schema = document.RootElement
@@ -161,7 +161,7 @@ public sealed class LmStudioLiveActivityTests
             .GetProperty("json_schema")
             .GetProperty("schema");
         Assert.Equal(
-            "twitchai.moderation.response.v3",
+            "twitchai.moderation.response.v4",
             schema
                 .GetProperty("properties")
                 .GetProperty("envelopeVersion")
@@ -182,17 +182,34 @@ public sealed class LmStudioLiveActivityTests
             item => Assert.Equal("G_INSULT", item),
             item => Assert.Equal("G_PERSONAL_DATA", item),
             Assert.Null);
+        var replyTemplateEnum = schema
+            .GetProperty("properties")
+            .GetProperty("decisions")
+            .GetProperty("items")
+            .GetProperty("properties")
+            .GetProperty("replyTemplateId")
+            .GetProperty("enum")
+            .EnumerateArray()
+            .Select(item => item.ValueKind == JsonValueKind.Null ? null : item.GetString())
+            .ToArray();
+        Assert.Collection(
+            replyTemplateEnum,
+            item => Assert.Equal("r1", item),
+            item => Assert.Equal("r2", item),
+            Assert.Null);
     }
 
     private static LmStudioModerationRequest Request(
-        IReadOnlyList<string>? activeRuleCodes = null) =>
+        IReadOnlyList<string>? activeRuleCodes = null,
+        IReadOnlyList<string>? replyTemplateIds = null) =>
         new(
             "batch-1",
             "G:1",
             MessageCount: 3,
             "system",
             """{"messages":[]}""",
-            activeRuleCodes);
+            activeRuleCodes,
+            replyTemplateIds);
 
     private static HttpClient CreateHttpClient(HttpMessageHandler handler) =>
         new(handler)

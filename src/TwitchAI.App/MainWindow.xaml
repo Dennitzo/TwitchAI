@@ -198,6 +198,11 @@
             <FontIcon Glyph="&#xE73E;" />
           </NavigationViewItem.Icon>
         </NavigationViewItem>
+        <NavigationViewItem Content="Chat" Tag="chat">
+          <NavigationViewItem.Icon>
+            <FontIcon Glyph="&#xE8BD;" />
+          </NavigationViewItem.Icon>
+        </NavigationViewItem>
         <NavigationViewItemSeparator />
         <NavigationViewItem Content="Datenbank" Tag="database">
           <NavigationViewItem.Icon>

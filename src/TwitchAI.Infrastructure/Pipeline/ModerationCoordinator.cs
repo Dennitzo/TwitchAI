@@ -22,6 +22,7 @@ public enum ModerationPipelineEventKind
     WhitelistSkipped,
     Allowed,
     CaseCreated,
+    ChatReplyCreated,
     DuplicateProposalSuppressed,
     DroppedOverload,
     BatchRejected,
@@ -47,7 +48,8 @@ public sealed class ModerationPipelineEventArgs : EventArgs
         IReadOnlyList<string>? localMatchCodes = null,
         long? aiLatencyMilliseconds = null,
         IReadOnlyList<PolicySetCode>? activePolicySets = null,
-        Exception? exception = null)
+        Exception? exception = null,
+        ChatReplyProposalRecord? chatReplyProposal = null)
     {
         Kind = kind;
         StatusCode = statusCode;
@@ -64,6 +66,7 @@ public sealed class ModerationPipelineEventArgs : EventArgs
         AiLatencyMilliseconds = aiLatencyMilliseconds;
         ActivePolicySets = activePolicySets ?? [];
         Exception = exception;
+        ChatReplyProposal = chatReplyProposal;
     }
 
     public ModerationPipelineEventKind Kind { get; }
@@ -95,6 +98,8 @@ public sealed class ModerationPipelineEventArgs : EventArgs
     public IReadOnlyList<PolicySetCode> ActivePolicySets { get; }
 
     public Exception? Exception { get; }
+
+    public ChatReplyProposalRecord? ChatReplyProposal { get; }
 }
 
 public interface IModerationCoordinator
@@ -115,6 +120,8 @@ public interface IModerationCoordinator
 public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDisposable
 {
     private static readonly TimeSpan DeadlineResolution = TimeSpan.FromMilliseconds(100);
+    private const int MaximumReplyTemplatesPerBatch = 32;
+    private const int MaximumReplyTemplateCharacters = 2_400;
 
     private readonly object _lifecycleGate = new();
     private readonly object _contextGate = new();
@@ -136,6 +143,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
     private readonly IMessageAvailabilityStore? _availabilityStore;
     private readonly ILocalAiRunActivityMonitor? _aiRunActivityMonitor;
     private readonly ITwitchConnectionReadiness? _connectionReadiness;
+    private readonly IChatReplyStore? _chatReplyStore;
     private readonly InfrastructureOptions _options;
     private readonly TimeProvider _timeProvider;
     private readonly ConcurrentDictionary<string, IReadOnlyList<PhraseRule>> _ruleCache =
@@ -168,7 +176,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         IMessageAvailabilityStore? availabilityStore = null,
         ILocalAiRunActivityMonitor? aiRunActivityMonitor = null,
         TimeProvider? timeProvider = null,
-        ITwitchConnectionReadiness? connectionReadiness = null)
+        ITwitchConnectionReadiness? connectionReadiness = null,
+        IChatReplyStore? chatReplyStore = null)
     {
         _eventSubClient = eventSubClient;
         _channelContextService = channelContextService;
@@ -188,6 +197,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         _availabilityStore = availabilityStore;
         _aiRunActivityMonitor = aiRunActivityMonitor;
         _connectionReadiness = connectionReadiness;
+        _chatReplyStore = chatReplyStore;
         _options = options;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -794,12 +804,24 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 batch.Context.EffectivePolicy,
                 cancellationToken)
             .ConfigureAwait(false);
-        var prompt = ModerationRequestFactory.Create(batch, retrievalExamples);
+        var replyTemplateMap = await CreateReplyTemplateSnapshotAsync(
+                batch,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var analysisBatch = batch with
+        {
+            ReplyTemplates = replyTemplateMap
+                .Select(item => new ChatReplyTemplatePrompt(
+                    item.Key,
+                    item.Value.NormalizedExample))
+                .ToArray(),
+        };
+        var prompt = ModerationRequestFactory.Create(analysisBatch, retrievalExamples);
         var inferenceStarted = Stopwatch.GetTimestamp();
         var rawResponse = await _localModerationClient
             .ModerateAsync(prompt.Envelope, cancellationToken)
             .ConfigureAwait(false);
-        var validation = _envelopeValidator.Validate(rawResponse, batch);
+        var validation = _envelopeValidator.Validate(rawResponse, analysisBatch);
         if (!validation.IsValid)
         {
             // One bounded repair request includes the validator errors. No third request is issued.
@@ -810,7 +832,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     validation.Errors,
                     cancellationToken)
                 .ConfigureAwait(false);
-            validation = _envelopeValidator.Validate(rawResponse, batch);
+            validation = _envelopeValidator.Validate(rawResponse, analysisBatch);
         }
 
         if (!validation.IsValid
@@ -825,7 +847,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             // an omitted category to a matching local hit or the policy's base
             // rule. Unknown/inactive explicit codes remain invalid.
             validation = _envelopeValidator
-                .ValidateWithMissingRuleFallback(rawResponse, batch);
+                .ValidateWithMissingRuleFallback(rawResponse, analysisBatch);
         }
 
         if (!validation.IsValid)
@@ -892,6 +914,107 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                                 caseId: reanalysisCaseId));
                         continue;
                     }
+                }
+
+                if (decision.ReplyTemplateId is { } replyTemplateId
+                    && replyTemplateMap.TryGetValue(
+                        replyTemplateId,
+                        out var replyTemplate)
+                    && _chatReplyStore is not null)
+                {
+                    if (await _whitelist
+                            .ShouldSkipAsync(
+                                message,
+                                _timeProvider.GetUtcNow(),
+                                cancellationToken)
+                            .ConfigureAwait(false))
+                    {
+                        Publish(
+                            new(
+                                ModerationPipelineEventKind.WhitelistSkipped,
+                                "message_whitelisted_during_reply_inference",
+                                "The message or Twitch login was added to the manual whitelist while the reply was being evaluated.",
+                                message,
+                                decision,
+                                caseId: batchMessage.ReanalysisCaseId,
+                                localMatchCodes: localMatchCodes,
+                                aiLatencyMilliseconds: aiLatencyMilliseconds));
+                        continue;
+                    }
+
+                    string renderedResponse;
+                    try
+                    {
+                        renderedResponse = SqliteChatReplyStore.RenderResponse(
+                            replyTemplate.ResponseMessage,
+                            message.Identity.Login);
+                    }
+                    catch (ArgumentException exception)
+                    {
+                        Publish(
+                            new(
+                                ModerationPipelineEventKind.BatchRejected,
+                                "chat_reply_render_invalid",
+                                exception.Message,
+                                message,
+                                decision,
+                                localMatchCodes: localMatchCodes,
+                                aiLatencyMilliseconds: aiLatencyMilliseconds));
+                        continue;
+                    }
+
+                    var replyAddResult = await _chatReplyStore
+                        .AddProposalAsync(
+                            message,
+                            replyTemplate,
+                            renderedResponse,
+                            decision.ReplyConfidence ?? decision.Confidence,
+                            batch.BatchId,
+                            aiLatencyMilliseconds,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    if (replyAddResult is { IsCreated: true })
+                    {
+                        Publish(
+                            new(
+                                ModerationPipelineEventKind.ChatReplyCreated,
+                                "chat_reply_proposal_created",
+                                "A semantic chat reply match awaits human review.",
+                                message,
+                                decision,
+                                caseId: replyAddResult.Proposal.ProposalId,
+                                caseRowVersion: replyAddResult.Proposal.RowVersion,
+                                localMatchCodes: localMatchCodes,
+                                aiLatencyMilliseconds: aiLatencyMilliseconds,
+                                chatReplyProposal: replyAddResult.Proposal));
+                    }
+                    else if (replyAddResult is { IsCreated: false })
+                    {
+                        Publish(
+                            new(
+                                ModerationPipelineEventKind.DuplicateProposalSuppressed,
+                                "active_duplicate_chat_reply",
+                                "This Twitch message already has a chat reply proposal.",
+                                message,
+                                decision,
+                                caseId: replyAddResult.Proposal.ProposalId,
+                                localMatchCodes: localMatchCodes,
+                                aiLatencyMilliseconds: aiLatencyMilliseconds));
+                    }
+                    else
+                    {
+                        Publish(
+                            new(
+                                ModerationPipelineEventKind.Allowed,
+                                "chat_reply_template_changed",
+                                "The selected chat reply template changed during inference.",
+                                message,
+                                decision,
+                                localMatchCodes: localMatchCodes,
+                                aiLatencyMilliseconds: aiLatencyMilliseconds));
+                    }
+
+                    continue;
                 }
 
                 Publish(
@@ -1009,6 +1132,93 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     localMatchCodes: localMatchCodes,
                     aiLatencyMilliseconds: aiLatencyMilliseconds));
         }
+    }
+
+    private async Task<IReadOnlyDictionary<string, ChatReplyTemplateRecord>>
+        CreateReplyTemplateSnapshotAsync(
+            ModerationBatch batch,
+            CancellationToken cancellationToken)
+    {
+        if (_chatReplyStore is null)
+        {
+            return new Dictionary<string, ChatReplyTemplateRecord>(
+                StringComparer.Ordinal);
+        }
+
+        var templates = await _chatReplyStore
+            .LoadActiveTemplatesAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (templates.Count == 0)
+        {
+            return new Dictionary<string, ChatReplyTemplateRecord>(
+                StringComparer.Ordinal);
+        }
+
+        var messageTokens = batch.Messages
+            .SelectMany(message => Tokenize(message.Message.Text.LowerText))
+            .ToHashSet(StringComparer.Ordinal);
+        var candidates = templates
+            .Select(
+                template => new
+                {
+                    Template = template,
+                    Score = Tokenize(template.NormalizedExample)
+                        .Count(messageTokens.Contains),
+                })
+            .OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Template.TemplateId)
+            .ToArray();
+
+        var result = new Dictionary<string, ChatReplyTemplateRecord>(
+            StringComparer.Ordinal);
+        var characterCount = 0;
+        foreach (var candidate in candidates)
+        {
+            if (result.Count >= MaximumReplyTemplatesPerBatch)
+            {
+                break;
+            }
+
+            var candidateCharacters = candidate.Template.NormalizedExample.Length;
+            if (characterCount + candidateCharacters
+                > MaximumReplyTemplateCharacters)
+            {
+                continue;
+            }
+
+            var temporaryId = $"r{result.Count + 1}";
+            result.Add(temporaryId, candidate.Template);
+            characterCount += candidateCharacters;
+        }
+
+        return result;
+    }
+
+    private static List<string> Tokenize(string value)
+    {
+        var tokens = new List<string>();
+        var token = new System.Text.StringBuilder();
+        foreach (var character in value)
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                token.Append(char.ToLowerInvariant(character));
+                continue;
+            }
+
+            if (token.Length > 0)
+            {
+                tokens.Add(token.ToString());
+                token.Clear();
+            }
+        }
+
+        if (token.Length > 0)
+        {
+            tokens.Add(token.ToString());
+        }
+
+        return tokens;
     }
 
     private async Task RequeueForPolicyAsync(

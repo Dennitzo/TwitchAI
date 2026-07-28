@@ -1346,5 +1346,71 @@ internal static class SchemaMigrations
             """,
             RequiresForeignKeysDisabled: true,
             RequiresBackup: true),
+        new(
+            11,
+            "Add semantic chat reply templates and reviewable reply proposals",
+            """
+            CREATE TABLE chat_reply_templates (
+                template_id             INTEGER PRIMARY KEY,
+                broadcaster_id          TEXT NOT NULL DEFAULT '*',
+                example_message         TEXT NOT NULL CHECK(
+                                            length(example_message) BETWEEN 1 AND 500),
+                normalized_example      TEXT NOT NULL CHECK(
+                                            length(normalized_example) BETWEEN 1 AND 500),
+                response_message        TEXT NOT NULL CHECK(
+                                            length(response_message) BETWEEN 1 AND 500),
+                enabled                 INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+                hit_count               INTEGER NOT NULL DEFAULT 0 CHECK(hit_count >= 0),
+                last_hit_utc            TEXT,
+                row_version             INTEGER NOT NULL DEFAULT 1 CHECK(row_version > 0),
+                created_utc             TEXT NOT NULL,
+                updated_utc             TEXT NOT NULL,
+                UNIQUE(broadcaster_id, normalized_example)
+            ) STRICT;
+
+            CREATE INDEX ix_chat_reply_templates_active
+                ON chat_reply_templates(broadcaster_id, template_id)
+                WHERE enabled = 1;
+
+            CREATE TABLE chat_reply_proposals (
+                proposal_id             INTEGER PRIMARY KEY,
+                source_message_id        TEXT NOT NULL UNIQUE,
+                broadcaster_id          TEXT NOT NULL,
+                chatter_user_id          TEXT NOT NULL,
+                chatter_login            TEXT NOT NULL,
+                chatter_display_name     TEXT NOT NULL,
+                original_message         TEXT NOT NULL,
+                identity_fingerprint     TEXT NOT NULL CHECK(
+                                            length(identity_fingerprint) = 64),
+                category_id              TEXT,
+                category_name            TEXT NOT NULL,
+                message_received_utc     TEXT NOT NULL,
+                template_id              INTEGER,
+                template_row_version     INTEGER NOT NULL CHECK(
+                                            template_row_version > 0),
+                configured_response      TEXT NOT NULL CHECK(
+                                            length(configured_response) BETWEEN 1 AND 500),
+                rendered_response        TEXT NOT NULL CHECK(
+                                            length(rendered_response) BETWEEN 1 AND 500),
+                confidence               REAL NOT NULL CHECK(
+                                            confidence >= 0 AND confidence <= 1),
+                batch_id                 TEXT NOT NULL,
+                ai_latency_ms            INTEGER CHECK(ai_latency_ms >= 0),
+                status                   TEXT NOT NULL DEFAULT 'pending' CHECK(status IN (
+                                            'pending','executing','executed',
+                                            'discarded','failed','outcome_unknown')),
+                twitch_response_id       TEXT,
+                twitch_drop_code         TEXT,
+                twitch_drop_message      TEXT,
+                row_version              INTEGER NOT NULL DEFAULT 1 CHECK(row_version > 0),
+                created_utc              TEXT NOT NULL,
+                resolved_utc             TEXT,
+                FOREIGN KEY(template_id) REFERENCES chat_reply_templates(template_id)
+                    ON DELETE SET NULL
+            ) STRICT;
+
+            CREATE INDEX ix_chat_reply_proposals_status_created
+                ON chat_reply_proposals(status, created_utc DESC);
+            """),
     ];
 }

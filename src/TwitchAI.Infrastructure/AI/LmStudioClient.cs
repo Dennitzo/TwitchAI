@@ -14,7 +14,8 @@ public sealed record LmStudioModerationRequest(
     int MessageCount,
     string SystemPrompt,
     string UserPrompt,
-    IReadOnlyList<string>? ActiveRuleCodes = null);
+    IReadOnlyList<string>? ActiveRuleCodes = null,
+    IReadOnlyList<string>? ReplyTemplateIds = null);
 
 public sealed record LmStudioUsageMetrics(
     int? PromptTokens,
@@ -191,7 +192,9 @@ public sealed class LmStudioClient : ILmStudioClient
                             new { role = "system", content = request.SystemPrompt },
                             new { role = "user", content = request.UserPrompt },
                         },
-                        response_format = CreateResponseFormat(request.ActiveRuleCodes),
+                        response_format = CreateResponseFormat(
+                            request.ActiveRuleCodes,
+                            request.ReplyTemplateIds),
                     }),
             };
             await ApplyOptionalAuthorizationAsync(httpRequest, cancellationToken)
@@ -390,13 +393,22 @@ public sealed class LmStudioClient : ILmStudioClient
             finishReason);
     }
 
-    private static object CreateResponseFormat(IReadOnlyList<string>? activeRuleCodes)
+    private static object CreateResponseFormat(
+        IReadOnlyList<string>? activeRuleCodes,
+        IReadOnlyList<string>? replyTemplateIds)
     {
         var ruleCodes = (activeRuleCodes ?? [])
             .Where(code => !string.IsNullOrWhiteSpace(code))
             .Select(code => code.Trim())
             .Distinct(StringComparer.Ordinal)
             .OrderBy(code => code, StringComparer.Ordinal)
+            .Cast<object?>()
+            .Append(null)
+            .ToArray();
+        var templateIds = (replyTemplateIds ?? [])
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(id => id, StringComparer.Ordinal)
             .Cast<object?>()
             .Append(null)
             .ToArray();
@@ -440,6 +452,8 @@ public sealed class LmStudioClient : ILmStudioClient
                                     "reason",
                                     "triggerPhrases",
                                     "confidence",
+                                    "replyTemplateId",
+                                    "replyConfidence",
                                 },
                                 properties = new
                                 {
@@ -483,6 +497,17 @@ public sealed class LmStudioClient : ILmStudioClient
                                     confidence = new
                                     {
                                         type = "number",
+                                        minimum = 0,
+                                        maximum = 1,
+                                    },
+                                    replyTemplateId = new
+                                    {
+                                        type = new[] { "string", "null" },
+                                        @enum = templateIds,
+                                    },
+                                    replyConfidence = new
+                                    {
+                                        type = new[] { "number", "null" },
                                         minimum = 0,
                                         maximum = 1,
                                     },

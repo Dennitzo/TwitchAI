@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Text;
 using Microsoft.Data.Sqlite;
 
 namespace TwitchAI.Infrastructure.Persistence;
@@ -260,6 +261,15 @@ public sealed class UniversalDatabaseEditor : IUniversalDatabaseEditor
                 NormalizeWhitelistValue(subjectKind, subjectValue);
         }
 
+        if (schema.Name == "chat_reply_templates"
+            && values.TryGetValue("example_message", out var changedExample))
+        {
+            var example = Convert.ToString(
+                changedExample,
+                CultureInfo.InvariantCulture) ?? string.Empty;
+            values["normalized_example"] = NormalizeChatExample(example);
+        }
+
         var now = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
         if (schema.Columns.ContainsKey("updated_utc")
             && !values.ContainsKey("updated_utc"))
@@ -467,6 +477,13 @@ public sealed class UniversalDatabaseEditor : IUniversalDatabaseEditor
             values["normalized_value"] =
                 NormalizeWhitelistValue(subjectKind, whitelistText);
         }
+
+        if (schema.Name == "chat_reply_templates"
+            && values.TryGetValue("example_message", out var example)
+            && example is string exampleText)
+        {
+            values["normalized_example"] = NormalizeChatExample(exampleText);
+        }
     }
 
     private static async Task<(string SubjectKind, string SubjectValue)>
@@ -505,6 +522,9 @@ public sealed class UniversalDatabaseEditor : IUniversalDatabaseEditor
         string.Equals(subjectKind, "user_id", StringComparison.Ordinal)
             ? subjectValue
             : subjectValue.ToLowerInvariant();
+
+    private static string NormalizeChatExample(string value) =>
+        value.Normalize(NormalizationForm.FormKC).ToLowerInvariant();
 
     private static void AddIfMissing(
         TableSchema schema,

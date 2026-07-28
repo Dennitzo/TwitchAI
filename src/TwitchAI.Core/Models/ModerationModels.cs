@@ -53,7 +53,10 @@ public sealed record ModerationBatch(
     IReadOnlyList<ModerationBatchMessage> Messages,
     DateTimeOffset OpenedAtUtc,
     DateTimeOffset SealedAtUtc,
-    BatchSealReason SealReason);
+    BatchSealReason SealReason)
+{
+    public IReadOnlyList<ChatReplyTemplatePrompt> ReplyTemplates { get; init; } = [];
+}
 
 public sealed record ModerationBatcherOptions(
     int MaximumMessages,
@@ -94,6 +97,10 @@ public sealed record RetrievalExample(
     bool IsPositive,
     string? RuleCode = null);
 
+public sealed record ChatReplyTemplatePrompt(
+    string TemplateId,
+    string ExampleLower);
+
 public sealed record ModerationRequestEnvelopeV3(
     string EnvelopeVersion,
     Guid BatchId,
@@ -102,7 +109,8 @@ public sealed record ModerationRequestEnvelopeV3(
     IReadOnlyList<PolicySetRevision> ActivePolicySets,
     IReadOnlyList<ModerationRuleDefinition> ActiveRules,
     IReadOnlyList<ModerationRequestMessageV3> Messages,
-    IReadOnlyList<RetrievalExample> LearningExamples);
+    IReadOnlyList<RetrievalExample> LearningExamples,
+    IReadOnlyList<ChatReplyTemplatePrompt> ReplyTemplates);
 
 public sealed record ModerationRequestMessageV3(
     string MessageId,
@@ -117,7 +125,9 @@ public sealed record ModerationDecisionCandidateV3(
     string? RuleCode,
     string Reason,
     IReadOnlyList<string> TriggerPhrases,
-    double Confidence);
+    double Confidence,
+    string? ReplyTemplateId = null,
+    double? ReplyConfidence = null);
 
 public sealed record ModerationResponseEnvelopeV3(
     string EnvelopeVersion,
@@ -132,7 +142,9 @@ public sealed record ValidatedModerationDecision(
     string Reason,
     IReadOnlyList<string> TriggerPhrases,
     double Confidence,
-    string? RuleCode = null);
+    string? RuleCode = null,
+    string? ReplyTemplateId = null,
+    double? ReplyConfidence = null);
 
 public sealed record ValidatedModerationEnvelope(
     Guid BatchId,

@@ -187,7 +187,8 @@
                   Grid.Row="2"
                   HorizontalAlignment="Stretch"
                   Header="Trefferphrasen"
-                  HorizontalContentAlignment="Stretch">
+                  HorizontalContentAlignment="Stretch"
+                  Visibility="{x:Bind ModerationEditorVisibility, Mode=OneWay}">
                   <ItemsControl
                     Margin="0,4,0,0"
                     ItemsSource="{x:Bind TriggerPhrases}">
@@ -233,7 +234,7 @@
                       <TextBlock
                         FontSize="14"
                         FontWeight="SemiBold"
-                        Text="Vorschlag prüfen" />
+                        Text="{x:Bind ReviewTitle}" />
                       <ProgressRing
                         Width="18"
                         Height="18"
@@ -248,7 +249,8 @@
                       Header="Aktion"
                       HorizontalAlignment="Stretch"
                       SelectedValue="{x:Bind Action, Mode=TwoWay}"
-                      SelectedValuePath="Tag">
+                      SelectedValuePath="Tag"
+                      Visibility="{x:Bind ModerationEditorVisibility, Mode=OneWay}">
                       <ComboBoxItem Content="Nachricht löschen" Tag="delete" />
                       <ComboBoxItem Content="Timeout" Tag="timeout" />
                     </ComboBox>
@@ -274,7 +276,8 @@
                       DisplayMemberPath="DisplayName"
                       ItemsSource="{x:Bind ViolationRuleOptions}"
                       SelectedValue="{x:Bind RuleCode, Mode=TwoWay}"
-                      SelectedValuePath="Code" />
+                      SelectedValuePath="Code"
+                      Visibility="{x:Bind ModerationEditorVisibility, Mode=OneWay}" />
 
                     <TextBox
                       x:Name="ReasonEditor"
@@ -287,6 +290,18 @@
                       Text="{x:Bind Reason, Mode=TwoWay}"
                       TextWrapping="NoWrap"
                       Visibility="{x:Bind TimeoutEditorVisibility, Mode=OneWay}" />
+
+                    <TextBox
+                      x:Name="ChatReplyEditor"
+                      Grid.Row="1"
+                      Grid.Column="0"
+                      Grid.ColumnSpan="4"
+                      Header="Antwortnachricht"
+                      HorizontalAlignment="Stretch"
+                      IsReadOnly="True"
+                      Text="{x:Bind ReplyMessage}"
+                      TextWrapping="Wrap"
+                      Visibility="{x:Bind ChatReplyEditorVisibility, Mode=OneWay}" />
 
                     <StackPanel
                       x:Name="ActionButtons"

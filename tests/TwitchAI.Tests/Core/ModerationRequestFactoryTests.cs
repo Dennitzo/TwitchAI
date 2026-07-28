@@ -133,6 +133,32 @@ public sealed class ModerationRequestFactoryTests
         Assert.Equal(ModerationRuleCodes.Backseatgaming, stored.RuleCode);
     }
 
+    [Fact]
+    public void Create_EmitsOnlyTemporaryReplyIdAndLowercaseExample()
+    {
+        var batch = Batch(PolicySetCode.General) with
+        {
+            ReplyTemplates =
+            [
+                new ChatReplyTemplatePrompt(
+                    "r1",
+                    "WIE LANGE GEHT DAS EVENT NOCH?"),
+            ],
+        };
+
+        var prompt = ModerationRequestFactory.Create(batch, []);
+
+        var template = Assert.Single(prompt.Envelope.ReplyTemplates);
+        Assert.Equal("r1", template.TemplateId);
+        Assert.Equal("wie lange geht das event noch?", template.ExampleLower);
+        Assert.Contains("\"replyTemplates\"", prompt.UserPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("!event", prompt.UserPrompt, StringComparison.Ordinal);
+        Assert.Contains(
+            "Never compose, infer, paraphrase, or return an answer message",
+            prompt.SystemPrompt,
+            StringComparison.Ordinal);
+    }
+
     private static ModerationBatch Batch(params PolicySetCode[] policySets)
     {
         var receivedAt = new DateTimeOffset(2026, 7, 26, 10, 0, 0, TimeSpan.Zero);

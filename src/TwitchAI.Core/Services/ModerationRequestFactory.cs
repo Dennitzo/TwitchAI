@@ -11,7 +11,7 @@ public sealed record ModerationPrompt(
 
 public sealed class ModerationRequestFactory
 {
-    public const string RequestEnvelopeVersion = "twitchai.moderation.request.v3";
+    public const string RequestEnvelopeVersion = "twitchai.moderation.request.v4";
     public const int MaximumExamples = 6;
     public const int MaximumRetrievalTokens = 800;
 
@@ -41,6 +41,7 @@ public sealed class ModerationRequestFactory
             retrievalExamples.Where(
                 example => example.RuleCode is null
                     || activeRuleCodes.Contains(example.RuleCode)));
+        var replyTemplates = NormalizeReplyTemplates(batch.ReplyTemplates);
         var envelope = new ModerationRequestEnvelopeV3(
             RequestEnvelopeVersion,
             batch.BatchId,
@@ -59,7 +60,8 @@ public sealed class ModerationRequestFactory
                     .Distinct(StringComparer.Ordinal)
                     .ToArray()))
                 .ToArray(),
-            examples);
+            examples,
+            replyTemplates);
 
         return new ModerationPrompt(
             envelope,
@@ -90,11 +92,51 @@ public sealed class ModerationRequestFactory
             Describe only the violation. Never mention policy codes, the action, or a recommendation.
             Trigger phrases must be lowercase substrings copied exactly from that message, at most three.
             For G_PERSONAL_DATA, always return an empty triggerPhrases array so personal data is never learned as a phrase.
+            replyTemplates contains only opaque temporary IDs and lowercase example messages. It never contains the configured answer.
+            For action none, select replyTemplateId only when the chat message has substantially the same intent as exactly one example.
+            Similar words alone, greetings, ambiguity, or a merely related topic are not enough for a reply match.
+            When replyTemplateId is set, return its exact listed temporary ID and a replyConfidence from 0 to 1.
+            When no reply template clearly matches, return null replyTemplateId and null replyConfidence.
+            For delete or timeout, always return null replyTemplateId and null replyConfidence; moderation takes priority over replying.
+            Never compose, infer, paraphrase, or return an answer message. The configured answer is resolved locally after validation.
             Do not infer protected traits from usernames. Quoting, reporting, condemning, or neutrally discussing harmful content is not by itself a violation.
             Never invent Twitch IDs, usernames, temporary message IDs, rule codes, or policy sets.
             """
             + "\n"
             + backseat;
+    }
+
+    private static List<ChatReplyTemplatePrompt> NormalizeReplyTemplates(
+        IReadOnlyList<ChatReplyTemplatePrompt> templates)
+    {
+        ArgumentNullException.ThrowIfNull(templates);
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        var normalized = new List<ChatReplyTemplatePrompt>(templates.Count);
+        foreach (var template in templates)
+        {
+            if (string.IsNullOrWhiteSpace(template.TemplateId)
+                || !ids.Add(template.TemplateId))
+            {
+                throw new ArgumentException(
+                    "Reply-template IDs must be non-empty and unique.",
+                    nameof(templates));
+            }
+
+            if (string.IsNullOrWhiteSpace(template.ExampleLower))
+            {
+                throw new ArgumentException(
+                    "Every reply template requires a non-empty example message.",
+                    nameof(templates));
+            }
+
+            normalized.Add(
+                template with
+                {
+                    ExampleLower = template.ExampleLower.ToLowerInvariant(),
+                });
+        }
+
+        return normalized;
     }
 
     private static List<RetrievalExample> SelectExamples(

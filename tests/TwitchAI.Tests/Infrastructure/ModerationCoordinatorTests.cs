@@ -632,6 +632,8 @@ public sealed class ModerationCoordinatorTests
                 ["reason"] = index == 0 ? "Lokaler Moderationstest" : string.Empty,
                 ["triggerPhrases"] = index == 0 ? new[] { message.LowerText } : [],
                 ["confidence"] = index == 0 ? 0.95 : 0.05,
+                ["replyTemplateId"] = null,
+                ["replyConfidence"] = null,
             })
             .ToArray();
         return JsonSerializer.Serialize(
@@ -660,6 +662,8 @@ public sealed class ModerationCoordinatorTests
                     ? new[] { message.LowerText }
                     : [],
                 ["confidence"] = index == 0 ? 0.95 : 0.05,
+                ["replyTemplateId"] = null,
+                ["replyConfidence"] = null,
             })
             .ToArray();
         return JsonSerializer.Serialize(

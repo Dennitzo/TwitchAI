@@ -106,6 +106,9 @@ public sealed partial class ModerationQueuePage : Page
         var reasonEditor = FindNamedChild<TextBox>(
             reviewGrid,
             "ReasonEditor");
+        var chatReplyEditor = FindNamedChild<TextBox>(
+            reviewGrid,
+            "ChatReplyEditor");
         var actionButtons = FindNamedChild<StackPanel>(
             reviewGrid,
             "ActionButtons");
@@ -113,8 +116,39 @@ public sealed partial class ModerationQueuePage : Page
             || timeoutEditor is null
             || violationEditor is null
             || reasonEditor is null
+            || chatReplyEditor is null
             || actionButtons is null)
         {
+            return;
+        }
+
+        if (reviewGrid.DataContext is ModerationCaseItem { IsChatReply: true })
+        {
+            if (e.NewSize.Width >= 700)
+            {
+                SetReviewColumnWidths(
+                    reviewGrid,
+                    new GridLength(1, GridUnitType.Star),
+                    new GridLength(0),
+                    new GridLength(0),
+                    new GridLength(0),
+                    new GridLength(230));
+                PlaceReviewElement(chatReplyEditor, row: 1, column: 0, columnSpan: 4);
+                PlaceReviewElement(actionButtons, row: 1, column: 4);
+            }
+            else
+            {
+                SetReviewColumnWidths(
+                    reviewGrid,
+                    new GridLength(1, GridUnitType.Star),
+                    new GridLength(0),
+                    new GridLength(0),
+                    new GridLength(0),
+                    new GridLength(0));
+                PlaceReviewElement(chatReplyEditor, row: 1, column: 0);
+                PlaceReviewElement(actionButtons, row: 2, column: 0);
+            }
+
             return;
         }
 
@@ -239,6 +273,23 @@ public sealed partial class ModerationQueuePage : Page
 
         try
         {
+            if (item.IsChatReply)
+            {
+                var chatResult = await ViewModel.ExecuteChatReplyAsync(item);
+                if (chatResult.Outcome !=
+                    TwitchAI.Infrastructure.Twitch.ChatReplyExecutionOutcome.Succeeded)
+                {
+                    await ShowErrorAsync(
+                        chatResult.Message,
+                        chatResult.Outcome ==
+                        TwitchAI.Infrastructure.Twitch.ChatReplyExecutionOutcome.OutcomeUnknown
+                            ? "Ergebnis nicht sicher"
+                            : "Chat-Antwort nicht gesendet");
+                }
+
+                return;
+            }
+
             var request = ModerationQueueViewModel.CreateExecutionRequest(item);
             if (item.Status == "Extern erledigt · Lernentscheidung offen")
             {
@@ -300,6 +351,27 @@ public sealed partial class ModerationQueuePage : Page
     {
         if (sender is not Button { Tag: ModerationCaseItem item })
         {
+            return;
+        }
+
+        if (item.IsChatReply)
+        {
+            try
+            {
+                var result = await ViewModel.DiscardChatReplyAsync(item);
+                if (result.Outcome !=
+                    TwitchAI.Infrastructure.Twitch.ChatReplyExecutionOutcome.Succeeded)
+                {
+                    await ShowErrorAsync(
+                        result.Message,
+                        "Chat-Antwort konnte nicht verworfen werden");
+                }
+            }
+            catch (Exception exception)
+            {
+                await ShowErrorAsync(exception.Message);
+            }
+
             return;
         }
 

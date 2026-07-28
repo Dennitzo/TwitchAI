@@ -35,6 +35,10 @@ public sealed class CoreLocalModerationClient : ILocalModerationClient
                 request.ActiveRules
                     .Select(item => item.RuleCode)
                     .Distinct(StringComparer.Ordinal)
+                    .ToArray(),
+                request.ReplyTemplates
+                    .Select(item => item.TemplateId)
+                    .Distinct(StringComparer.Ordinal)
                     .ToArray()),
             cancellationToken).ConfigureAwait(false);
         return completion.RawEnvelope;

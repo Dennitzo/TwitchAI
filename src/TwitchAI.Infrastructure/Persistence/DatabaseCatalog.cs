@@ -102,6 +102,19 @@ public sealed class DatabaseCatalog : IDatabaseCatalog
                     Boolean("enabled", required: true),
                 ]),
             Editable(
+                "chat_reply_templates",
+                "template_id",
+                [
+                    Text(
+                        "broadcaster_id",
+                        true,
+                        64,
+                        Set(GlobalPolicyStorage.BroadcasterId)),
+                    Text("example_message", true, 500),
+                    Text("response_message", true, 500),
+                    Boolean("enabled", required: true),
+                ]),
+            Editable(
                 "policy_sets",
                 "scope_id",
                 [
@@ -146,6 +159,7 @@ public sealed class DatabaseCatalog : IDatabaseCatalog
             Audit("configuration_audit", "change_id"),
             Audit("ai_run_metrics", "request_id"),
             Audit("data_deletion_audit", "deletion_id"),
+            Audit("chat_reply_proposals", "proposal_id"),
         };
 
         return definitions.ToDictionary(item => item.Name, StringComparer.Ordinal);

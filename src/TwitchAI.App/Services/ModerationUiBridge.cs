@@ -155,6 +155,9 @@ public sealed class ModerationUiBridge : IDisposable
             case ModerationPipelineEventKind.CaseCreated:
                 AddCase(eventArgs);
                 break;
+            case ModerationPipelineEventKind.ChatReplyCreated:
+                AddChatReply(eventArgs);
+                break;
             case ModerationPipelineEventKind.DroppedOverload:
                 _state.SkippedOverloadCount++;
                 break;
@@ -222,7 +225,63 @@ public sealed class ModerationUiBridge : IDisposable
         var existingIndex = -1;
         for (var index = 0; index < _state.ModerationCases.Count; index++)
         {
-            if (_state.ModerationCases[index].CaseId == caseId)
+            if (!_state.ModerationCases[index].IsChatReply
+                && _state.ModerationCases[index].CaseId == caseId)
+            {
+                existingIndex = index;
+                break;
+            }
+        }
+
+        if (existingIndex >= 0)
+        {
+            _state.ModerationCases[existingIndex] = item;
+        }
+        else
+        {
+            _state.ModerationCases.Insert(0, item);
+        }
+    }
+
+    private void AddChatReply(ModerationPipelineEventArgs eventArgs)
+    {
+        if (eventArgs.ChatReplyProposal is not { } proposal)
+        {
+            return;
+        }
+
+        var item = new ModerationCaseItem
+        {
+            CaseId = proposal.ProposalId,
+            IsChatReply = true,
+            ReplyMessage = proposal.RenderedResponse,
+            ChannelId = proposal.BroadcasterId,
+            UserName = proposal.ChatterDisplayName,
+            UserId = proposal.ChatterUserId,
+            MessageId = proposal.SourceMessageId,
+            IdentityFingerprint = proposal.IdentityFingerprint,
+            OriginalMessage = proposal.OriginalMessage,
+            CategoryName = proposal.CategoryName,
+            CategoryId = proposal.CategoryId,
+            ReceivedAt = proposal.MessageReceivedAt,
+            RowVersion = proposal.RowVersion,
+            Action = "chat",
+            TimeoutSeconds = 0,
+            Reason = string.Empty,
+            PolicySet = string.Empty,
+            RuleCode = null,
+            Confidence = proposal.Confidence,
+            LocalMatchCodes = [],
+            AiLatencyMilliseconds = proposal.AiLatencyMilliseconds,
+            AvailabilityLabel = "Antwortvorlage semantisch erkannt",
+            Status = "Pending",
+        };
+
+        var existingIndex = -1;
+        for (var index = 0; index < _state.ModerationCases.Count; index++)
+        {
+            if (_state.ModerationCases[index].IsChatReply
+                && _state.ModerationCases[index].CaseId == proposal.ProposalId)
             {
                 existingIndex = index;
                 break;
@@ -455,7 +514,7 @@ public sealed class ModerationUiBridge : IDisposable
         }
 
         var existing = _state.ModerationCases.FirstOrDefault(
-            item => item.CaseId == caseId.Value);
+            item => !item.IsChatReply && item.CaseId == caseId.Value);
         if (existing is not null)
         {
             _state.ModerationCases.Remove(existing);

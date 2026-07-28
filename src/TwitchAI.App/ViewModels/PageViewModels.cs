@@ -30,6 +30,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
     private readonly IModerationCoordinator _coordinator;
     private readonly IConfigurationDataService _configuration;
     private readonly IPolicyStore _policyStore;
+    private readonly ITwitchChatReplyExecutor _chatReplyExecutor;
     private readonly HashSet<ModerationCaseItem> _observedCases = [];
 
     public ModerationQueueViewModel(
@@ -38,7 +39,8 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         IModerationReviewFeedbackService feedbackService,
         IModerationCoordinator coordinator,
         IConfigurationDataService configuration,
-        IPolicyStore policyStore)
+        IPolicyStore policyStore,
+        ITwitchChatReplyExecutor chatReplyExecutor)
     {
         _state = state;
         _executor = executor;
@@ -46,6 +48,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         _coordinator = coordinator;
         _configuration = configuration;
         _policyStore = policyStore;
+        _chatReplyExecutor = chatReplyExecutor;
         Cases = state.ModerationCases;
         Cases.CollectionChanged += OnCasesCollectionChanged;
         foreach (var item in Cases)
@@ -201,8 +204,10 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         IReadOnlyList<ModerationCaseItem>? targetCases = null,
         CancellationToken cancellationToken = default)
     {
-        var items = targetCases ?? Cases.ToArray();
-        if (items.Count == 0)
+        var items = (targetCases ?? Cases.ToArray())
+            .Where(item => !item.IsChatReply)
+            .ToArray();
+        if (items.Length == 0)
         {
             return;
         }
@@ -324,6 +329,101 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
             else if (result.Outcome == ModerationExecutionOutcome.Succeeded)
             {
                 RemoveResolvedCase(item);
+            }
+
+            return result;
+        }
+        finally
+        {
+            item.IsBusy = false;
+        }
+    }
+
+    public async Task<ChatReplyExecutionResult> ExecuteChatReplyAsync(
+        ModerationCaseItem item,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (!item.IsChatReply)
+        {
+            throw new InvalidOperationException(
+                "Der ausgewählte Vorschlag ist keine Chat-Antwort.");
+        }
+
+        if (item.IsBusy)
+        {
+            return new ChatReplyExecutionResult(
+                ChatReplyExecutionOutcome.Rejected,
+                "ui_busy",
+                "Dieser Vorschlag wird bereits verarbeitet.");
+        }
+
+        item.IsBusy = true;
+        item.Status = "Chat-Antwort wird gesendet";
+        try
+        {
+            var result = await _chatReplyExecutor
+                .ExecuteAsync(item.CaseId, item.RowVersion, cancellationToken);
+            if (result.RowVersion is { } rowVersion)
+            {
+                item.RowVersion = rowVersion;
+            }
+
+            switch (result.Outcome)
+            {
+                case ChatReplyExecutionOutcome.Succeeded:
+                    RemoveResolvedCase(item);
+                    break;
+                case ChatReplyExecutionOutcome.Rejected:
+                    item.Status = "Pending";
+                    break;
+                case ChatReplyExecutionOutcome.OutcomeUnknown:
+                    item.Status = "Ergebnis unbekannt · nicht erneut ausführen";
+                    break;
+                default:
+                    item.Status = "Fehlgeschlagen";
+                    break;
+            }
+
+            return result;
+        }
+        finally
+        {
+            item.IsBusy = false;
+        }
+    }
+
+    public async Task<ChatReplyExecutionResult> DiscardChatReplyAsync(
+        ModerationCaseItem item,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (!item.IsChatReply)
+        {
+            throw new InvalidOperationException(
+                "Der ausgewählte Vorschlag ist keine Chat-Antwort.");
+        }
+
+        if (item.IsBusy)
+        {
+            return new ChatReplyExecutionResult(
+                ChatReplyExecutionOutcome.Rejected,
+                "ui_busy",
+                "Dieser Vorschlag wird bereits verarbeitet.");
+        }
+
+        item.IsBusy = true;
+        try
+        {
+            var result = await _chatReplyExecutor
+                .DiscardAsync(item.CaseId, item.RowVersion, cancellationToken);
+            if (result.Outcome == ChatReplyExecutionOutcome.Succeeded)
+            {
+                RemoveResolvedCase(item);
+            }
+            else
+            {
+                item.Status = "Pending";
             }
 
             return result;
@@ -1700,6 +1800,398 @@ public sealed partial class WhitelistViewModel : ObservableObject
             _ => $"SQLite-Konfiguration fehlgeschlagen: {exception.Message}",
         };
     }
+}
+
+public sealed partial class ChatReplyTemplateItem : ObservableObject
+{
+    public ChatReplyTemplateItem(ChatReplyTemplateRecord record)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        TemplateId = record.TemplateId;
+        RowVersion = record.RowVersion;
+        ChatMessage = record.ExampleMessage;
+        PersistedChatMessage = record.ExampleMessage;
+        ResponseMessage = record.ResponseMessage;
+        PersistedResponseMessage = record.ResponseMessage;
+        IsEnabled = record.IsEnabled;
+        PersistedIsEnabled = record.IsEnabled;
+        HitCount = record.HitCount;
+    }
+
+    public long TemplateId { get; }
+
+    public long RowVersion { get; private set; }
+
+    [ObservableProperty]
+    public partial string ChatMessage { get; set; }
+
+    public string PersistedChatMessage { get; private set; }
+
+    [ObservableProperty]
+    public partial string ResponseMessage { get; set; }
+
+    public string PersistedResponseMessage { get; private set; }
+
+    [ObservableProperty]
+    public partial bool IsEnabled { get; set; }
+
+    public bool PersistedIsEnabled { get; private set; }
+
+    public int HitCount { get; }
+
+    public bool HasTextChanges =>
+        !string.Equals(
+            ChatMessage,
+            PersistedChatMessage,
+            StringComparison.Ordinal)
+        || !string.Equals(
+            ResponseMessage,
+            PersistedResponseMessage,
+            StringComparison.Ordinal);
+
+    public void AcceptTexts(long rowVersion)
+    {
+        RowVersion = rowVersion;
+        PersistedChatMessage = ChatMessage;
+        PersistedResponseMessage = ResponseMessage;
+    }
+
+    public void RestoreTexts()
+    {
+        ChatMessage = PersistedChatMessage;
+        ResponseMessage = PersistedResponseMessage;
+    }
+
+    public void AcceptEnabled(bool isEnabled, long rowVersion)
+    {
+        RowVersion = rowVersion;
+        PersistedIsEnabled = isEnabled;
+        IsEnabled = isEnabled;
+    }
+
+    public void RestoreEnabled() => IsEnabled = PersistedIsEnabled;
+}
+
+public sealed partial class ChatViewModel : ObservableObject
+{
+    private const string SortScope = "chat";
+
+    private static readonly HashSet<string> SortableColumns =
+    [
+        "TemplateId",
+        "ChatMessage",
+        "ResponseMessage",
+        "HitCount",
+        "IsEnabled",
+    ];
+
+    private readonly IChatReplyStore _chatReplyStore;
+    private readonly ITableSortPreferenceStore _sortPreferences;
+
+    public ChatViewModel(
+        IChatReplyStore chatReplyStore,
+        ITableSortPreferenceStore sortPreferences)
+    {
+        _chatReplyStore = chatReplyStore;
+        _sortPreferences = sortPreferences;
+        var preference = _sortPreferences.GetOrDefault(
+            SortScope,
+            defaultColumn: "TemplateId",
+            defaultDescending: true,
+            validColumns: SortableColumns);
+        SortColumn = preference.Column;
+        SortDescending = preference.Descending;
+    }
+
+    public ObservableCollection<ChatReplyTemplateItem> Templates { get; } = [];
+
+    public IEnumerable<ChatReplyTemplateItem> SortedTemplates =>
+        ApplySort(Templates.Where(MatchesSearch));
+
+    public string SortColumn { get; private set; }
+
+    public bool SortDescending { get; private set; }
+
+    [ObservableProperty]
+    public partial string NewChatMessage { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial string NewResponseMessage { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial string SearchText { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial string StatusMessage { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial bool IsBusy { get; set; }
+
+    [ObservableProperty]
+    public partial int SelectedCount { get; set; }
+
+    public bool CanAdd =>
+        !IsBusy
+        && !string.IsNullOrWhiteSpace(NewChatMessage)
+        && !string.IsNullOrWhiteSpace(NewResponseMessage);
+
+    public bool CanDeleteSelected => !IsBusy && SelectedCount > 0;
+
+    partial void OnNewChatMessageChanged(string value) =>
+        OnPropertyChanged(nameof(CanAdd));
+
+    partial void OnNewResponseMessageChanged(string value) =>
+        OnPropertyChanged(nameof(CanAdd));
+
+    partial void OnSearchTextChanged(string value)
+    {
+        SelectedCount = 0;
+        OnPropertyChanged(nameof(SortedTemplates));
+    }
+
+    partial void OnIsBusyChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanAdd));
+        OnPropertyChanged(nameof(CanDeleteSelected));
+    }
+
+    partial void OnSelectedCountChanged(int value) =>
+        OnPropertyChanged(nameof(CanDeleteSelected));
+
+    public void SortByColumn(string columnName)
+    {
+        if (!SortableColumns.Contains(columnName))
+        {
+            return;
+        }
+
+        if (string.Equals(SortColumn, columnName, StringComparison.Ordinal))
+        {
+            SortDescending = !SortDescending;
+        }
+        else
+        {
+            SortColumn = columnName;
+            SortDescending = false;
+        }
+
+        _sortPreferences.Save(SortScope, SortColumn, SortDescending);
+        OnPropertyChanged(nameof(SortedTemplates));
+    }
+
+    public async Task AddTemplateAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (!CanAdd)
+        {
+            return;
+        }
+
+        IsBusy = true;
+        try
+        {
+            await _chatReplyStore.AddTemplateAsync(
+                NewChatMessage,
+                NewResponseMessage,
+                cancellationToken);
+            NewChatMessage = string.Empty;
+            NewResponseMessage = string.Empty;
+            await ReloadCoreAsync(cancellationToken);
+            StatusMessage =
+                "Chat-Vorlage gespeichert. Ähnliche Nachrichten können jetzt einen Antwortvorschlag erzeugen.";
+        }
+        catch (Exception exception)
+        {
+            StatusMessage = FriendlyError(exception);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task LoadAsync(CancellationToken cancellationToken = default)
+    {
+        if (IsBusy)
+        {
+            return;
+        }
+
+        IsBusy = true;
+        StatusMessage = "Chat-Vorlagen werden aus SQLite geladen …";
+        try
+        {
+            await ReloadCoreAsync(cancellationToken);
+            StatusMessage =
+                $"{Templates.Count:N0} Chat-Vorlage(n) geladen.";
+        }
+        catch (Exception exception)
+        {
+            Templates.Clear();
+            OnPropertyChanged(nameof(SortedTemplates));
+            StatusMessage = FriendlyError(exception);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task UpdateTemplateAsync(
+        ChatReplyTemplateItem item,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (!item.HasTextChanges)
+        {
+            return;
+        }
+
+        if (IsBusy)
+        {
+            item.RestoreTexts();
+            return;
+        }
+
+        IsBusy = true;
+        try
+        {
+            var rowVersion = await _chatReplyStore.UpdateTemplateAsync(
+                item.TemplateId,
+                item.RowVersion,
+                item.ChatMessage,
+                item.ResponseMessage,
+                cancellationToken);
+            item.AcceptTexts(rowVersion);
+            OnPropertyChanged(nameof(SortedTemplates));
+            StatusMessage =
+                $"Chat-Vorlage {item.TemplateId:N0} wurde automatisch gespeichert.";
+        }
+        catch (Exception exception)
+        {
+            item.RestoreTexts();
+            await ReloadCoreAsync(cancellationToken);
+            StatusMessage = FriendlyError(exception);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task SetEnabledAsync(
+        ChatReplyTemplateItem item,
+        bool isEnabled,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (item.PersistedIsEnabled == isEnabled)
+        {
+            return;
+        }
+
+        if (IsBusy)
+        {
+            item.RestoreEnabled();
+            return;
+        }
+
+        IsBusy = true;
+        try
+        {
+            var rowVersion = await _chatReplyStore.SetTemplateEnabledAsync(
+                item.TemplateId,
+                item.RowVersion,
+                isEnabled,
+                cancellationToken);
+            item.AcceptEnabled(isEnabled, rowVersion);
+            OnPropertyChanged(nameof(SortedTemplates));
+            StatusMessage = isEnabled
+                ? $"Chat-Vorlage {item.TemplateId:N0} ist aktiv."
+                : $"Chat-Vorlage {item.TemplateId:N0} ist deaktiviert.";
+        }
+        catch (Exception exception)
+        {
+            item.RestoreEnabled();
+            await ReloadCoreAsync(cancellationToken);
+            StatusMessage = FriendlyError(exception);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task ReloadCoreAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var rows = await _chatReplyStore.LoadTemplatesAsync(cancellationToken);
+        Templates.Clear();
+        foreach (var row in rows)
+        {
+            Templates.Add(new ChatReplyTemplateItem(row));
+        }
+
+        SelectedCount = 0;
+        OnPropertyChanged(nameof(SortedTemplates));
+    }
+
+    private IEnumerable<ChatReplyTemplateItem> ApplySort(
+        IEnumerable<ChatReplyTemplateItem> source)
+    {
+        var textComparer = StringComparer.CurrentCultureIgnoreCase;
+        return SortColumn switch
+        {
+            "TemplateId" => SortDescending
+                ? source.OrderByDescending(item => item.TemplateId)
+                : source.OrderBy(item => item.TemplateId),
+            "ChatMessage" => SortDescending
+                ? source.OrderByDescending(item => item.ChatMessage, textComparer)
+                : source.OrderBy(item => item.ChatMessage, textComparer),
+            "ResponseMessage" => SortDescending
+                ? source.OrderByDescending(item => item.ResponseMessage, textComparer)
+                : source.OrderBy(item => item.ResponseMessage, textComparer),
+            "HitCount" => SortDescending
+                ? source.OrderByDescending(item => item.HitCount)
+                : source.OrderBy(item => item.HitCount),
+            "IsEnabled" => SortDescending
+                ? source.OrderByDescending(item => item.IsEnabled)
+                : source.OrderBy(item => item.IsEnabled),
+            _ => source.OrderByDescending(item => item.TemplateId),
+        };
+    }
+
+    private bool MatchesSearch(ChatReplyTemplateItem item)
+    {
+        var query = SearchText.Trim();
+        if (query.Length == 0)
+        {
+            return true;
+        }
+
+        var state = item.IsEnabled ? "aktiv" : "inaktiv";
+        return item.TemplateId.ToString(CultureInfo.InvariantCulture).Contains(
+                query,
+                StringComparison.OrdinalIgnoreCase)
+            || item.ChatMessage.Contains(
+                query,
+                StringComparison.OrdinalIgnoreCase)
+            || item.ResponseMessage.Contains(
+                query,
+                StringComparison.OrdinalIgnoreCase)
+            || item.HitCount.ToString(CultureInfo.InvariantCulture).Contains(
+                query,
+                StringComparison.OrdinalIgnoreCase)
+            || state.Contains(query, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string FriendlyError(Exception exception) =>
+        exception switch
+        {
+            ArgumentException => exception.Message,
+            InvalidOperationException => exception.Message,
+            _ => $"Chat-Konfiguration fehlgeschlagen: {exception.Message}",
+        };
 }
 
 public sealed partial class AuditViewModel : ObservableObject
