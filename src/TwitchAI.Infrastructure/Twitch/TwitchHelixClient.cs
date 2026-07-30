@@ -101,6 +101,13 @@ public interface ITwitchHelixClient
         string reason,
         CancellationToken cancellationToken = default);
 
+    Task BanUserAsync(
+        string broadcasterId,
+        string moderatorId,
+        string userId,
+        string reason,
+        CancellationToken cancellationToken = default);
+
     Task<TwitchSendChatMessageResult> SendChatMessageAsync(
         string broadcasterId,
         string senderId,
@@ -348,6 +355,49 @@ public sealed class TwitchHelixClient : ITwitchHelixClient
                     {
                         user_id = userId,
                         duration = durationSeconds,
+                        reason,
+                    },
+                });
+                return request;
+            },
+            cancellationToken).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task BanUserAsync(
+        string broadcasterId,
+        string moderatorId,
+        string userId,
+        string reason,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(broadcasterId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(moderatorId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(userId);
+        ArgumentNullException.ThrowIfNull(reason);
+        if (reason.Length > 500)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(reason),
+                reason.Length,
+                "Twitch moderation reasons may contain at most 500 characters.");
+        }
+
+        var path =
+            $"moderation/bans?broadcaster_id={Escape(broadcasterId)}" +
+            $"&moderator_id={Escape(moderatorId)}";
+
+        // Omitting duration makes this a permanent ban instead of a timeout.
+        // Deliberately no automatic retry for a mutating moderation request.
+        using var response = await SendAuthenticatedAsync(
+            () =>
+            {
+                var request = new HttpRequestMessage(HttpMethod.Post, path);
+                request.Content = JsonContent.Create(new
+                {
+                    data = new
+                    {
+                        user_id = userId,
                         reason,
                     },
                 });

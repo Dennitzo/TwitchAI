@@ -224,7 +224,7 @@
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                       <ColumnDefinition Width="160" />
-                      <ColumnDefinition Width="145" />
+                      <ColumnDefinition Width="Auto" />
                       <ColumnDefinition Width="230" />
                       <ColumnDefinition Width="*" />
                       <ColumnDefinition Width="230" />
@@ -253,6 +253,7 @@
                       Visibility="{x:Bind ModerationEditorVisibility, Mode=OneWay}">
                       <ComboBoxItem Content="Nachricht löschen" Tag="delete" />
                       <ComboBoxItem Content="Timeout" Tag="timeout" />
+                      <ComboBoxItem Content="Ban" Tag="ban" />
                     </ComboBox>
 
                     <NumberBox
@@ -262,6 +263,7 @@
                       Header="Timeout (Sekunden)"
                       HorizontalAlignment="Stretch"
                       Maximum="1209600"
+                      MinWidth="145"
                       Minimum="1"
                       SmallChange="30"
                       Value="{x:Bind TimeoutSeconds, Mode=TwoWay}"
@@ -289,7 +291,7 @@
                       MaxLength="120"
                       Text="{x:Bind Reason, Mode=TwoWay}"
                       TextWrapping="NoWrap"
-                      Visibility="{x:Bind TimeoutEditorVisibility, Mode=OneWay}" />
+                      Visibility="{x:Bind ReasonEditorVisibility, Mode=OneWay}" />
 
                     <TextBox
                       x:Name="ChatReplyEditor"

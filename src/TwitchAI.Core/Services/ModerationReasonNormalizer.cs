@@ -53,7 +53,7 @@ public static partial class ModerationReasonNormalizer
         if (lower.Contains("harassment", StringComparison.Ordinal)
             || lower.Contains("profanity directed", StringComparison.Ordinal))
         {
-            return "Belästigung oder Beleidigung gegen einen Nutzer.";
+            return "Belästigung oder Beleidigung eines Nutzers oder Streamers.";
         }
 
         if (lower.Contains("hate speech", StringComparison.Ordinal))
@@ -79,6 +79,7 @@ public static partial class ModerationReasonNormalizer
             return Fallback(ruleCode, policySet, configuredPublicReason);
         }
 
+        value = IncludeStreamerAsPossibleTarget(value);
         if (value.Length > MaximumLength)
         {
             return Fallback(ruleCode, policySet, configuredPublicReason);
@@ -94,7 +95,8 @@ public static partial class ModerationReasonNormalizer
     }
 
     private static bool LooksEnglish(string value) =>
-        EnglishWords().Count(value) >= 2;
+        EnglishWords().Count(value) >= 2
+        || SingleEnglishModerationReason().IsMatch(value);
 
     private static string Fallback(
         string? ruleCode,
@@ -105,8 +107,9 @@ public static partial class ModerationReasonNormalizer
         {
             "G_SEXUALIZATION" => "Sexualisierende Aussage über eine Person.",
             "G_SEXUAL_EXPLICIT" => "Sexuell expliziter Inhalt.",
-            "G_INSULT" => "Direkte Beleidigung gegen einen Nutzer.",
-            "G_HARASSMENT" => "Gezielte Belästigung eines Nutzers.",
+            "G_INSULT" => "Direkte Beleidigung eines Nutzers oder Streamers.",
+            "G_HARASSMENT" =>
+                "Gezielte Belästigung eines Nutzers oder Streamers.",
             "G_RACISM" => "Rassistische oder ethnisch abwertende Aussage.",
             "G_SEXISM" => "Sexistische oder frauenfeindliche Aussage.",
             "G_LGBTQ_HATE" => "Queerfeindliche Aussage.",
@@ -119,6 +122,10 @@ public static partial class ModerationReasonNormalizer
             "G_SPAM" => "Wiederholter Spam.",
             "G_SCAM" => "Betrugs- oder Phishingversuch.",
             "G_DISRUPTION" => "Gezielte Störung des Chats.",
+            ModerationRuleCodes.Advertising =>
+                "Unaufgeforderte Werbung oder Eigenwerbung.",
+            ModerationRuleCodes.Begging =>
+                "Betteln nach Subs, Geschenken oder Giveaways.",
             "G_OTHER_ABUSE" => "Sonstiger Verstoß gegen die Chatregeln.",
             ModerationRuleCodes.Backseatgaming =>
                 "Unaufgeforderter Spielhinweis oder Spoiler.",
@@ -136,7 +143,8 @@ public static partial class ModerationReasonNormalizer
             return null;
         }
 
-        var value = CollapseWhitespace().Replace(reason.Trim(), " ");
+        var value = IncludeStreamerAsPossibleTarget(
+            CollapseWhitespace().Replace(reason.Trim(), " "));
         if (value.Length is 0 or > MaximumLength
             || LooksEnglish(value.ToLowerInvariant()))
         {
@@ -149,9 +157,36 @@ public static partial class ModerationReasonNormalizer
             : value;
     }
 
+    private static string IncludeStreamerAsPossibleTarget(string value)
+    {
+        value = UserPossessiveTarget().Replace(
+            value,
+            match => char.IsLower(match.Value[0])
+                ? "nutzers oder streamers"
+                : "Nutzers oder Streamers");
+        return UserTarget().Replace(
+            value,
+            match => char.IsLower(match.Value[0])
+                ? "nutzer oder streamer"
+                : "Nutzer oder Streamer");
+    }
+
     [GeneratedRegex(@"\s+")]
     private static partial Regex CollapseWhitespace();
 
-    [GeneratedRegex(@"\b(the|this|that|with|against|under|should|content|user|message|policy|disallowed|removed|remove|delete|timeout|harassment|profanity|directed|violation|abuse|hate|speech|backseat|spoiler|personal|data|threat|sexual|racist|sexist)\b")]
+    [GeneratedRegex(
+        @"\bNutzers\b(?!\s+oder\s+Streamers\b)",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex UserPossessiveTarget();
+
+    [GeneratedRegex(
+        @"\bNutzer\b(?!\s+oder\s+Streamer\b)",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex UserTarget();
+
+    [GeneratedRegex(@"\b(the|this|that|with|against|under|should|content|user|message|policy|disallowed|removed|remove|delete|timeout|harassment|profanity|directed|violation|abuse|hate|speech|backseat|spoiler|personal|data|threat|sexual|racist|sexist|severe|strong|insult|insults|extreme|ban|banned|bannable|advertising|begging|scam|phishing)\b")]
     private static partial Regex EnglishWords();
+
+    [GeneratedRegex(@"^\s*(harassment|profanity|abuse|hate speech|backseat|backseatgaming|spoiler|personal data|threat|sexual content|racist|sexist|severe insult|strong insult|insult|extreme abuse|advertising|begging|scam|phishing|spam|violation)\s*[.!?]?\s*$")]
+    private static partial Regex SingleEnglishModerationReason();
 }

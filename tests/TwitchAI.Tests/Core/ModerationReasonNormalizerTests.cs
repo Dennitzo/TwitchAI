@@ -13,7 +13,9 @@ public sealed class ModerationReasonNormalizerTests
 
         var result = ModerationReasonNormalizer.Normalize(reason, PolicySetCode.General);
 
-        Assert.Equal("Belästigung oder Beleidigung gegen einen Nutzer.", result);
+        Assert.Equal(
+            "Belästigung oder Beleidigung eines Nutzers oder Streamers.",
+            result);
     }
 
     [Fact]
@@ -23,7 +25,9 @@ public sealed class ModerationReasonNormalizerTests
             "Direkte Beleidigung eines Nutzers. Die Nachricht sollte gelöscht werden.",
             PolicySetCode.General);
 
-        Assert.Equal("Direkte Beleidigung eines Nutzers.", result);
+        Assert.Equal(
+            "Direkte Beleidigung eines Nutzers oder Streamers.",
+            result);
     }
 
     [Fact]
@@ -37,10 +41,17 @@ public sealed class ModerationReasonNormalizerTests
     }
 
     [Theory]
-    [InlineData("G_INSULT", "Direkte Beleidigung gegen einen Nutzer.")]
+    [InlineData(
+        "G_INSULT",
+        "Direkte Beleidigung eines Nutzers oder Streamers.")]
+    [InlineData(
+        "G_HARASSMENT",
+        "Gezielte Belästigung eines Nutzers oder Streamers.")]
     [InlineData("G_THREAT", "Gewaltandrohung gegen eine Person.")]
     [InlineData("G_PERSONAL_DATA", "Veröffentlichung persönlicher Daten.")]
     [InlineData("G_SPAM", "Wiederholter Spam.")]
+    [InlineData("G_ADVERTISING", "Unaufgeforderte Werbung oder Eigenwerbung.")]
+    [InlineData("G_BEGGING", "Betteln nach Subs, Geschenken oder Giveaways.")]
     [InlineData("G_OTHER_ABUSE", "Sonstiger Verstoß gegen die Chatregeln.")]
     [InlineData("BACKSEATGAMING", "Unaufgeforderter Spielhinweis oder Spoiler.")]
     public void Normalize_UsesExactRuleSpecificGermanFallback(
@@ -97,6 +108,91 @@ public sealed class ModerationReasonNormalizerTests
             rule,
             PolicySetCode.General);
 
-        Assert.Equal("Direkte Beleidigung gegen einen Nutzer.", result);
+        Assert.Equal(
+            "Direkte Beleidigung eines Nutzers oder Streamers.",
+            result);
+    }
+
+    [Fact]
+    public void Normalize_ShortEnglishBanReasonUsesGermanRuleFallback()
+    {
+        var result = ModerationReasonNormalizer.Normalize(
+            "Severe insult.",
+            "G_INSULT",
+            PolicySetCode.General);
+
+        Assert.Equal(
+            "Direkte Beleidigung eines Nutzers oder Streamers.",
+            result);
+    }
+
+    [Theory]
+    [InlineData(
+        "Beleidigung gegen einen Nutzer.",
+        "Beleidigung gegen einen Nutzer oder Streamer.")]
+    [InlineData(
+        "Beleidigung eines Nutzers.",
+        "Beleidigung eines Nutzers oder Streamers.")]
+    [InlineData(
+        "Gezielte Belästigung eines Nutzers.",
+        "Gezielte Belästigung eines Nutzers oder Streamers.")]
+    [InlineData(
+        "Beleidigung eines Nutzers oder Streamers.",
+        "Beleidigung eines Nutzers oder Streamers.")]
+    public void Normalize_AddsStreamerToGermanTargetReasons(
+        string reason,
+        string expected)
+    {
+        var result = ModerationReasonNormalizer.Normalize(
+            reason,
+            "G_INSULT",
+            PolicySetCode.General);
+
+        Assert.Equal(expected, result);
+    }
+
+    [Fact]
+    public void Normalize_AddsStreamerToConfiguredLegacyReason()
+    {
+        var rule = new ModerationRuleDefinition(
+            "G_INSULT",
+            PolicySetCode.General,
+            "Beleidigung",
+            "test",
+            ModerationActionKind.Timeout,
+            600,
+            "Direkte Beleidigung gegen einen Nutzer.",
+            Priority: 70);
+
+        var result = ModerationReasonNormalizer.Normalize(
+            "This content violates the active rule.",
+            rule,
+            PolicySetCode.General);
+
+        Assert.Equal(
+            "Direkte Beleidigung gegen einen Nutzer oder Streamer.",
+            result);
+    }
+
+    [Theory]
+    [InlineData(
+        "Advertising.",
+        ModerationRuleCodes.Advertising,
+        "Unaufgeforderte Werbung oder Eigenwerbung.")]
+    [InlineData(
+        "Begging.",
+        ModerationRuleCodes.Begging,
+        "Betteln nach Subs, Geschenken oder Giveaways.")]
+    public void Normalize_OneWordEnglishReasonUsesGermanRuleFallback(
+        string reason,
+        string ruleCode,
+        string expected)
+    {
+        var result = ModerationReasonNormalizer.Normalize(
+            reason,
+            ruleCode,
+            PolicySetCode.General);
+
+        Assert.Equal(expected, result);
     }
 }

@@ -8,6 +8,12 @@ using TwitchAI.Infrastructure.Persistence;
 
 namespace TwitchAI.Infrastructure.AI;
 
+public enum LmStudioResponseSchemaKind
+{
+    Moderation,
+    LearningTest,
+}
+
 public sealed record LmStudioModerationRequest(
     string CorrelationId,
     string PolicyHash,
@@ -15,7 +21,10 @@ public sealed record LmStudioModerationRequest(
     string SystemPrompt,
     string UserPrompt,
     IReadOnlyList<string>? ActiveRuleCodes = null,
-    IReadOnlyList<string>? ReplyTemplateIds = null);
+    IReadOnlyList<string>? ReplyTemplateIds = null,
+    LmStudioResponseSchemaKind ResponseSchema =
+        LmStudioResponseSchemaKind.Moderation,
+    LocalAiRunKind RunKind = LocalAiRunKind.Moderation);
 
 public sealed record LmStudioUsageMetrics(
     int? PromptTokens,
@@ -137,19 +146,22 @@ public sealed class LmStudioClient : ILmStudioClient
     private readonly ILmStudioCredentialVault _credentialVault;
     private readonly LmStudioOptions _options;
     private readonly ILocalAiRunActivityMonitor? _activityMonitor;
+    private readonly ILocalAiExecutionGate _executionGate;
 
     public LmStudioClient(
         HttpClient httpClient,
         ILlmRunMetricsStore metricsStore,
         ILmStudioCredentialVault credentialVault,
         InfrastructureOptions options,
-        ILocalAiRunActivityMonitor? activityMonitor = null)
+        ILocalAiRunActivityMonitor? activityMonitor = null,
+        ILocalAiExecutionGate? executionGate = null)
     {
         _httpClient = httpClient;
         _metricsStore = metricsStore;
         _credentialVault = credentialVault;
         _options = options.LmStudio;
         _activityMonitor = activityMonitor;
+        _executionGate = executionGate ?? LocalAiExecutionGate.ProcessWide;
     }
 
     public async Task<LmStudioModerationCompletion> CompleteModerationAsync(
@@ -165,6 +177,9 @@ public sealed class LmStudioClient : ILmStudioClient
                 "A moderation request must contain at least one message.");
         }
 
+        await using var executionLease = await _executionGate
+            .AcquireAsync(cancellationToken)
+            .ConfigureAwait(false);
         var requestedAt = DateTimeOffset.UtcNow;
         var stopwatch = Stopwatch.StartNew();
         PublishActivity(
@@ -194,7 +209,8 @@ public sealed class LmStudioClient : ILmStudioClient
                         },
                         response_format = CreateResponseFormat(
                             request.ActiveRuleCodes,
-                            request.ReplyTemplateIds),
+                            request.ReplyTemplateIds,
+                            request.ResponseSchema),
                     }),
             };
             await ApplyOptionalAuthorizationAsync(httpRequest, cancellationToken)
@@ -395,7 +411,8 @@ public sealed class LmStudioClient : ILmStudioClient
 
     private static object CreateResponseFormat(
         IReadOnlyList<string>? activeRuleCodes,
-        IReadOnlyList<string>? replyTemplateIds)
+        IReadOnlyList<string>? replyTemplateIds,
+        LmStudioResponseSchemaKind responseSchema)
     {
         var ruleCodes = (activeRuleCodes ?? [])
             .Where(code => !string.IsNullOrWhiteSpace(code))
@@ -412,6 +429,23 @@ public sealed class LmStudioClient : ILmStudioClient
             .Cast<object?>()
             .Append(null)
             .ToArray();
+        return responseSchema switch
+        {
+            LmStudioResponseSchemaKind.Moderation =>
+                CreateModerationResponseFormat(ruleCodes, templateIds),
+            LmStudioResponseSchemaKind.LearningTest =>
+                CreateLearningTestResponseFormat(ruleCodes),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(responseSchema),
+                responseSchema,
+                null),
+        };
+    }
+
+    private static object CreateModerationResponseFormat(
+        object?[] ruleCodes,
+        object?[] templateIds)
+    {
         return new
         {
             type = "json_schema",
@@ -461,13 +495,19 @@ public sealed class LmStudioClient : ILmStudioClient
                                     action = new
                                     {
                                         type = "string",
-                                        @enum = new[] { "none", "delete", "timeout" },
+                                        @enum = new[] { "none", "delete", "timeout", "ban" },
                                     },
                                     timeoutSeconds = new
                                     {
                                         type = new[] { "integer", "null" },
-                                        minimum = 1,
-                                        maximum = 1_209_600,
+                                        @enum = new object?[]
+                                        {
+                                            null,
+                                            2,
+                                            120,
+                                            600,
+                                            86_400,
+                                        },
                                     },
                                     policySet = new
                                     {
@@ -511,6 +551,105 @@ public sealed class LmStudioClient : ILmStudioClient
                                         minimum = 0,
                                         maximum = 1,
                                     },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+    }
+
+    private static object CreateLearningTestResponseFormat(object?[] nullableRuleCodes)
+    {
+        var ruleCodes = nullableRuleCodes
+            .Where(item => item is not null)
+            .ToArray();
+        return new
+        {
+            type = "json_schema",
+            json_schema = new
+            {
+                name = "learning_test_decision",
+                strict = true,
+                schema = new
+                {
+                    type = "object",
+                    additionalProperties = false,
+                    required = new[] { "envelopeVersion", "testId", "decision" },
+                    properties = new
+                    {
+                        envelopeVersion = new
+                        {
+                            type = "string",
+                            @const = LearningTestPromptFactory.ResponseEnvelopeVersion,
+                        },
+                        testId = new { type = "string" },
+                        decision = new
+                        {
+                            type = "object",
+                            additionalProperties = false,
+                            required = new[]
+                            {
+                                "verdict",
+                                "action",
+                                "timeoutSeconds",
+                                "policySet",
+                                "ruleCode",
+                                "reason",
+                                "triggerPhrases",
+                                "confidence",
+                            },
+                            properties = new
+                            {
+                                verdict = new
+                                {
+                                    type = "string",
+                                    @enum = new[] { "allow", "moderate" },
+                                },
+                                action = new
+                                {
+                                    type = "string",
+                                    @enum = new[] { "none", "delete", "timeout", "ban" },
+                                },
+                                timeoutSeconds = new
+                                {
+                                    type = new[] { "integer", "null" },
+                                    @enum = new object?[]
+                                    {
+                                        null,
+                                        2,
+                                        120,
+                                        600,
+                                        86_400,
+                                    },
+                                },
+                                policySet = new
+                                {
+                                    type = "string",
+                                    @enum = new[] { "G", "B" },
+                                },
+                                ruleCode = new
+                                {
+                                    type = "string",
+                                    @enum = ruleCodes,
+                                },
+                                reason = new
+                                {
+                                    type = "string",
+                                    maxLength = 120,
+                                },
+                                triggerPhrases = new
+                                {
+                                    type = "array",
+                                    maxItems = 3,
+                                    items = new { type = "string" },
+                                },
+                                confidence = new
+                                {
+                                    type = "number",
+                                    minimum = 0,
+                                    maximum = 1,
                                 },
                             },
                         },
@@ -581,6 +720,7 @@ public sealed class LmStudioClient : ILmStudioClient
                 totalTokens,
                 elapsedMilliseconds,
                 occurredAtUtc ?? DateTimeOffset.UtcNow,
-                errorCode));
+                errorCode,
+                request.RunKind));
     }
 }

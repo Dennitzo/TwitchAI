@@ -33,6 +33,9 @@ public sealed partial class LocalAiRunItem : ObservableObject
     public partial LocalAiRunState State { get; private set; }
 
     [ObservableProperty]
+    public partial LocalAiRunKind RunKind { get; private set; }
+
+    [ObservableProperty]
     public partial int MessageCount { get; private set; }
 
     [ObservableProperty]
@@ -63,6 +66,11 @@ public sealed partial class LocalAiRunItem : ObservableObject
             if (string.IsNullOrEmpty(CorrelationId))
             {
                 return string.Empty;
+            }
+
+            if (RunKind == LocalAiRunKind.LearningTest)
+            {
+                return "Lerntest";
             }
 
             var repairSuffix = CorrelationId.EndsWith(
@@ -146,6 +154,7 @@ public sealed partial class LocalAiRunItem : ObservableObject
         }
 
         State = activity.State;
+        RunKind = activity.RunKind;
         MessageCount = activity.MessageCount;
         ModelId = activity.ModelId ?? string.Empty;
         PromptTokens = activity.PromptTokens;
@@ -174,6 +183,9 @@ public sealed partial class LocalAiRunItem : ObservableObject
         OnPropertyChanged(nameof(SucceededVisibility));
         OnPropertyChanged(nameof(FailedVisibility));
     }
+
+    partial void OnRunKindChanged(LocalAiRunKind value) =>
+        OnPropertyChanged(nameof(RunLabel));
 
     partial void OnMessageCountChanged(int value) =>
         OnPropertyChanged(nameof(MessageCountLabel));

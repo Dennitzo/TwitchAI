@@ -58,6 +58,7 @@ public sealed class DatabaseCatalog : IDatabaseCatalog
     private static Dictionary<string, DatabaseTableDefinition> CreateDefinitions()
     {
         var actionValues = Set("delete", "timeout");
+        var moderationActionValues = Set("none", "delete", "timeout", "ban");
         var subjectValues = Set("user_id", "user_login", "exact_message");
         var definitions = new[]
         {
@@ -160,6 +161,50 @@ public sealed class DatabaseCatalog : IDatabaseCatalog
             Audit("ai_run_metrics", "request_id"),
             Audit("data_deletion_audit", "deletion_id"),
             Audit("chat_reply_proposals", "proposal_id"),
+            Editable(
+                "manual_learning_examples",
+                "manual_example_id",
+                [
+                    Text("test_id", true, 36),
+                    Text("message_text_original", true, 500),
+                    Text("lower_text", true, 500),
+                    Text("ai_verdict", true, 16, Set("allow", "moderate")),
+                    Text("ai_action", true, 16, moderationActionValues),
+                    Integer("ai_timeout_seconds"),
+                    Text(
+                        "ai_policy_set",
+                        true,
+                        32,
+                        Set("general", "backseatgaming")),
+                    Text("ai_rule_code", true, 64),
+                    Text("ai_reason", maximumLength: 120),
+                    Text("ai_trigger_phrases_json", true, 2_000),
+                    Real("confidence", required: true),
+                    Text("local_match_codes_json", true, 2_000),
+                    Text(
+                        "final_decision",
+                        true,
+                        32,
+                        Set("confirmed_violation", "marked_allowed")),
+                    Text("actual_action", true, 16, moderationActionValues),
+                    Integer("actual_timeout_seconds"),
+                    Text(
+                        "actual_policy_set",
+                        true,
+                        32,
+                        Set("general", "backseatgaming")),
+                    Text("actual_rule_code", true, 64),
+                    Text("actual_reason", maximumLength: 120),
+                    Text("actual_trigger_phrases_json", true, 2_000),
+                    Text("policy_revision_fingerprint", true, 128),
+                    Text("model_id", true, 256),
+                    Integer("prompt_tokens"),
+                    Integer("completion_tokens"),
+                    Integer("total_tokens"),
+                    Integer("ai_latency_ms", required: true),
+                    Boolean("eligible_for_learning", required: true),
+                ],
+                supportsSoftArchive: false),
         };
 
         return definitions.ToDictionary(item => item.Name, StringComparer.Ordinal);
@@ -168,14 +213,15 @@ public sealed class DatabaseCatalog : IDatabaseCatalog
     private static DatabaseTableDefinition Editable(
         string name,
         string primaryKey,
-        IReadOnlyList<DatabaseColumnDefinition> columns)
+        IReadOnlyList<DatabaseColumnDefinition> columns,
+        bool supportsSoftArchive = true)
     {
         return new DatabaseTableDefinition(
             name,
             primaryKey,
             DatabaseTableAccessClass.UserEditable,
             columns.ToDictionary(item => item.Name, StringComparer.Ordinal),
-            SupportsSoftArchive: true,
+            SupportsSoftArchive: supportsSoftArchive,
             UsesRowVersion: true);
     }
 
@@ -237,6 +283,11 @@ public sealed class DatabaseCatalog : IDatabaseCatalog
     private static DatabaseColumnDefinition Boolean(string name, bool required = false)
     {
         return new DatabaseColumnDefinition(name, DatabaseColumnKind.Boolean, required);
+    }
+
+    private static DatabaseColumnDefinition Real(string name, bool required = false)
+    {
+        return new DatabaseColumnDefinition(name, DatabaseColumnKind.Real, required);
     }
 
     private static HashSet<string> Set(params string[] values)

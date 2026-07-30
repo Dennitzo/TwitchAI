@@ -11,11 +11,22 @@ public interface IRetrievalExampleStore
         string? categoryId,
         CoreEffectivePolicySnapshot policy,
         CancellationToken cancellationToken = default);
+
+    ValueTask<IReadOnlyList<RetrievalExample>> GetRelevantForLearningTestAsync(
+        CoreEffectivePolicySnapshot policy,
+        CancellationToken cancellationToken = default) =>
+        GetRelevantAsync(
+            GlobalPolicyStorage.BroadcasterId,
+            categoryId: null,
+            policy,
+            cancellationToken);
 }
 
 public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connectionFactory)
     : IRetrievalExampleStore
 {
+    private const int MaximumCandidatesPerSource = 12;
+
     public async ValueTask<IReadOnlyList<RetrievalExample>> GetRelevantAsync(
         string channelId,
         string? categoryId,
@@ -28,6 +39,52 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
         await using var connection = await connectionFactory
             .OpenConnectionAsync(cancellationToken)
             .ConfigureAwait(false);
+        var manual = await ReadManualExamplesAsync(
+                connection,
+                policy,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var twitch = await ReadTwitchExamplesAsync(
+                connection,
+                categoryId,
+                includeAllCategories: false,
+                policy,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return Interleave(manual, twitch);
+    }
+
+    public async ValueTask<IReadOnlyList<RetrievalExample>>
+        GetRelevantForLearningTestAsync(
+            CoreEffectivePolicySnapshot policy,
+            CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(policy);
+        await using var connection = await connectionFactory
+            .OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var manual = await ReadManualExamplesAsync(
+                connection,
+                policy,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var twitch = await ReadTwitchExamplesAsync(
+                connection,
+                categoryId: null,
+                includeAllCategories: true,
+                policy,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return Interleave(manual, twitch);
+    }
+
+    private static async Task<IReadOnlyList<RetrievalExample>> ReadTwitchExamplesAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        string? categoryId,
+        bool includeAllCategories,
+        CoreEffectivePolicySnapshot policy,
+        CancellationToken cancellationToken)
+    {
         await using var command = connection.CreateCommand();
         command.CommandText =
             """
@@ -50,13 +107,58 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
                 ON s.twitch_message_id = c.twitch_message_id
             WHERE m.eligible_for_learning = 1
               AND m.review_completed = 1
-              AND (c.category_id IS NULL OR c.category_id = @category_id)
+              AND (
+                  @all_categories = 1
+                  OR c.category_id IS NULL
+                  OR c.category_id = @category_id)
             ORDER BY m.decided_utc DESC
-            LIMIT 24;
+            LIMIT @limit;
             """;
         command.Parameters.AddWithValue("@category_id", SqliteData.DbValue(categoryId));
+        command.Parameters.AddWithValue(
+            "@all_categories",
+            includeAllCategories ? 1 : 0);
+        command.Parameters.AddWithValue("@limit", MaximumCandidatesPerSource);
 
-        var examples = new List<RetrievalExample>(24);
+        return await ReadExamplesAsync(command, policy, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<IReadOnlyList<RetrievalExample>> ReadManualExamplesAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        CoreEffectivePolicySnapshot policy,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT lower_text,
+                   actual_action,
+                   actual_timeout_seconds,
+                   actual_policy_set,
+                   actual_reason,
+                   CASE final_decision
+                       WHEN 'confirmed_violation' THEN 1
+                       ELSE 0
+                   END,
+                   actual_rule_code
+            FROM manual_learning_examples
+            WHERE eligible_for_learning = 1
+            ORDER BY created_utc DESC, manual_example_id DESC
+            LIMIT @limit;
+            """;
+        command.Parameters.AddWithValue("@limit", MaximumCandidatesPerSource);
+
+        return await ReadExamplesAsync(command, policy, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static async Task<IReadOnlyList<RetrievalExample>> ReadExamplesAsync(
+        Microsoft.Data.Sqlite.SqliteCommand command,
+        CoreEffectivePolicySnapshot policy,
+        CancellationToken cancellationToken)
+    {
+        var examples = new List<RetrievalExample>(MaximumCandidatesPerSource);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken)
             .ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -90,6 +192,28 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
         return examples;
     }
 
+    private static List<RetrievalExample> Interleave(
+        IReadOnlyList<RetrievalExample> manual,
+        IReadOnlyList<RetrievalExample> twitch)
+    {
+        var result = new List<RetrievalExample>(manual.Count + twitch.Count);
+        var maximum = Math.Max(manual.Count, twitch.Count);
+        for (var index = 0; index < maximum; index++)
+        {
+            if (index < manual.Count)
+            {
+                result.Add(manual[index]);
+            }
+
+            if (index < twitch.Count)
+            {
+                result.Add(twitch[index]);
+            }
+        }
+
+        return result;
+    }
+
     private static ModerationActionKind ParseAction(string value)
     {
         return value switch
@@ -97,6 +221,7 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
             "none" => ModerationActionKind.None,
             "delete" => ModerationActionKind.Delete,
             "timeout" => ModerationActionKind.Timeout,
+            "ban" => ModerationActionKind.Ban,
             _ => throw new InvalidDataException($"Unsupported feedback action '{value}'."),
         };
     }

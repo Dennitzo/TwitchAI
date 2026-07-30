@@ -157,7 +157,7 @@ public sealed partial class ModerationQueuePage : Page
             SetReviewColumnWidths(
                 reviewGrid,
                 new GridLength(160),
-                new GridLength(145),
+                GridLength.Auto,
                 new GridLength(230),
                 new GridLength(1, GridUnitType.Star),
                 new GridLength(230));
@@ -174,7 +174,7 @@ public sealed partial class ModerationQueuePage : Page
             SetReviewColumnWidths(
                 reviewGrid,
                 new GridLength(1, GridUnitType.Star),
-                new GridLength(1, GridUnitType.Star),
+                GridLength.Auto,
                 new GridLength(1, GridUnitType.Star),
                 new GridLength(0),
                 new GridLength(0));

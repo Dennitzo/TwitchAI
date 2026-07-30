@@ -95,6 +95,7 @@ public sealed class TwitchModerationExecutorTests
 
         Assert.Equal(ModerationExecutionOutcome.Succeeded, result.Outcome);
         Assert.True(result.TwitchExecuted);
+        Assert.Equal(0, helix.GetBannedUserCalls);
         Assert.Equal(
             (channelId, "moderator-1", "user-1", 42, "edited reason"),
             helix.Timeout);
@@ -152,6 +153,172 @@ public sealed class TwitchModerationExecutorTests
         Assert.Equal("auto", learningReader.GetString(2));
         Assert.Equal(1, learningReader.GetInt32(3));
         Assert.Equal(0, learningReader.GetInt32(4));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BanPersistsReasonAndRecordsUserClear()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var helix = new RecordingHelixClient();
+        var fixture = await CreateBanFixtureAsync(database, helix);
+
+        var result = await fixture.Executor.ExecuteAsync(
+            CreateBanRequest(fixture.CaseId));
+
+        Assert.Equal(ModerationExecutionOutcome.Succeeded, result.Outcome);
+        Assert.True(result.TwitchExecuted);
+        Assert.Equal(0, helix.GetBannedUserCalls);
+        Assert.Equal(
+            (
+                "channel-ban",
+                "moderator-1",
+                "user-ban",
+                "Schwere gezielte Beleidigung."),
+            helix.Ban);
+        Assert.Null(helix.Timeout);
+
+        await using var connection = await database.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT a.action, a.timeout_seconds, a.reason,
+                   f.actual_action, f.actual_timeout_seconds, f.actual_reason,
+                   w.availability, w.eventsub_message_id
+            FROM action_attempts a
+            INNER JOIN moderation_feedback f ON f.case_id = a.case_id
+            INNER JOIN message_clear_watermarks w
+                ON w.broadcaster_id = a.broadcaster_id
+               AND w.target_user_id = a.target_user_id
+               AND w.clear_kind = 'user'
+            WHERE a.case_id = @case_id;
+            """;
+        command.Parameters.AddWithValue("@case_id", fixture.CaseId);
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("ban", reader.GetString(0));
+        Assert.True(reader.IsDBNull(1));
+        Assert.Equal("Schwere gezielte Beleidigung.", reader.GetString(2));
+        Assert.Equal("ban", reader.GetString(3));
+        Assert.True(reader.IsDBNull(4));
+        Assert.Equal("Schwere gezielte Beleidigung.", reader.GetString(5));
+        Assert.Equal("cleared_for_user", reader.GetString(6));
+        Assert.StartsWith("local-ban:", reader.GetString(7), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BanEscalatesActiveTimeoutWhileMessageRemainsAvailable()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var helix = new RecordingHelixClient
+        {
+            ExistingBan = new TwitchBannedUserInfo(
+                "user-ban",
+                "viewer",
+                "Viewer",
+                DateTimeOffset.UtcNow.AddMinutes(5)),
+        };
+        var fixture = await CreateBanFixtureAsync(
+            database,
+            helix,
+            moderatorUserId: "channel-ban");
+
+        var result = await fixture.Executor.ExecuteAsync(
+            CreateBanRequest(fixture.CaseId));
+
+        Assert.Equal(ModerationExecutionOutcome.Succeeded, result.Outcome);
+        Assert.True(result.TwitchExecuted);
+        Assert.NotNull(helix.Ban);
+        Assert.Null(helix.Timeout);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_UserClearBlocksBanDespiteActiveTemporaryTimeout()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var helix = new RecordingHelixClient
+        {
+            ExistingBan = new TwitchBannedUserInfo(
+                "user-ban",
+                "viewer",
+                "Viewer",
+                DateTimeOffset.UtcNow.AddMinutes(5)),
+        };
+        var fixture = await CreateBanFixtureAsync(
+            database,
+            helix,
+            moderatorUserId: "channel-ban");
+        var availabilityStore = new SqliteMessageAvailabilityStore(
+            database.ConnectionFactory,
+            new TwitchAI.Infrastructure.Persistence.ChatTextNormalizer());
+        await availabilityStore.RecordUserClearAsync(
+            new TwitchUserMessagesClearedEvent(
+                "external-timeout-clear",
+                "channel-ban",
+                DateTimeOffset.UtcNow.AddSeconds(1),
+                "user-ban",
+                "viewer",
+                "Viewer"));
+
+        var result = await fixture.Executor.ExecuteAsync(
+            CreateBanRequest(fixture.CaseId));
+
+        Assert.Equal(ModerationExecutionOutcome.AlreadyUnavailable, result.Outcome);
+        Assert.False(result.TwitchExecuted);
+        Assert.Null(helix.Ban);
+        Assert.Null(helix.Timeout);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PermanentBanPreventsDuplicateBanRequest()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var helix = new RecordingHelixClient
+        {
+            ExistingBan = new TwitchBannedUserInfo(
+                "user-ban",
+                "viewer",
+                "Viewer",
+                ExpiresAt: null),
+        };
+        var fixture = await CreateBanFixtureAsync(
+            database,
+            helix,
+            moderatorUserId: "channel-ban");
+
+        var result = await fixture.Executor.ExecuteAsync(
+            CreateBanRequest(fixture.CaseId));
+
+        Assert.Equal(ModerationExecutionOutcome.AlreadyUnavailable, result.Outcome);
+        Assert.False(result.TwitchExecuted);
+        Assert.Null(helix.Ban);
+        Assert.Null(helix.Timeout);
+
+        await using var connection = await database.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT COUNT(*) FROM action_attempts WHERE case_id = @case_id;";
+        command.Parameters.AddWithValue("@case_id", fixture.CaseId);
+        Assert.Equal(0L, await command.ExecuteScalarAsync());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_BanWithTimeoutDurationIsRejectedBeforeTwitchCall()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var helix = new RecordingHelixClient();
+        var fixture = await CreateBanFixtureAsync(database, helix);
+        var invalidRequest = CreateBanRequest(fixture.CaseId) with
+        {
+            TimeoutSeconds = 600,
+        };
+
+        var result = await fixture.Executor.ExecuteAsync(invalidRequest);
+
+        Assert.Equal(ModerationExecutionOutcome.Rejected, result.Outcome);
+        Assert.Equal("invalid_request", result.StatusCode);
+        Assert.False(result.TwitchExecuted);
+        Assert.Null(helix.Ban);
+        Assert.Null(helix.Timeout);
     }
 
     [Fact]
@@ -650,10 +817,108 @@ public sealed class TwitchModerationExecutorTests
         }
     }
 
+    private static async Task<BanFixture> CreateBanFixtureAsync(
+        TestDatabase database,
+        RecordingHelixClient helix,
+        string moderatorUserId = "moderator-1")
+    {
+        const string channelId = "channel-ban";
+        var infrastructureNormalizer =
+            new TwitchAI.Infrastructure.Persistence.ChatTextNormalizer();
+        var policyStore = new SqlitePolicyStore(
+            database.ConnectionFactory,
+            infrastructureNormalizer);
+        var persistedPolicy = await policyStore.GetEffectivePolicyAsync(
+            channelId,
+            "509658");
+        var context = new ChannelContextSnapshot(
+            channelId,
+            "509658",
+            "Just Chatting",
+            DateTimeOffset.UtcNow,
+            Revision: 1,
+            IsVerified: true);
+        var corePolicy = new EffectivePolicyResolver().Resolve(
+            context,
+            persistedPolicy.GeneralRevision,
+            backseatgamingRevision: 1);
+        var identity = ChatMessageIdentityV1.Create(
+            "event-ban",
+            "message-ban",
+            channelId,
+            "user-ban",
+            "viewer",
+            "Viewer",
+            "schwere beleidigung",
+            DateTimeOffset.UtcNow);
+        var snapshot = new ChatMessageSnapshot(
+            identity,
+            new CoreChatTextNormalizer().Process(identity.OriginalText),
+            context,
+            IngressSequence: 1);
+        var repository = new CoreModerationCaseRepository(
+            database.ConnectionFactory,
+            infrastructureNormalizer);
+        var caseId = await repository.AddAsync(
+            snapshot,
+            new ValidatedModerationDecision(
+                "temporary-ban",
+                ModerationActionKind.Delete,
+                TimeoutSeconds: null,
+                PolicySetCode.General,
+                "Ursprünglicher Vorschlag.",
+                ["schwere beleidigung"],
+                Confidence: 0.99,
+                RuleCode: ModerationRuleCodes.GeneralPhrase),
+            corePolicy.RevisionFingerprint);
+        var executor = new TwitchModerationExecutor(
+            repository,
+            new SqliteMessageAvailabilityStore(
+                database.ConnectionFactory,
+                infrastructureNormalizer),
+            new FixedChannelContextService(context),
+            new EffectivePolicyResolver(),
+            policyStore,
+            database.ConnectionFactory,
+            infrastructureNormalizer,
+            helix,
+            new InfrastructureOptions
+            {
+                DatabasePath = database.Path,
+                TwitchApi = new TwitchApiOptions
+                {
+                    ModeratorUserId = moderatorUserId,
+                },
+            });
+        return new BanFixture(caseId, executor);
+    }
+
+    private static ModerationExecutionRequest CreateBanRequest(long caseId) =>
+        new(
+            caseId,
+            ExpectedRowVersion: 1,
+            ModerationActionKind.Ban,
+            TimeoutSeconds: null,
+            "Schwere gezielte Beleidigung.",
+            PolicySetCode.General,
+            ["schwere beleidigung"],
+            RuleCode: ModerationRuleCodes.GeneralPhrase);
+
+    private sealed record BanFixture(
+        long CaseId,
+        TwitchModerationExecutor Executor);
+
     private sealed class RecordingHelixClient : ITwitchHelixClient
     {
         public (string BroadcasterId, string ModeratorId, string UserId, int Seconds, string Reason)?
             Timeout { get; private set; }
+
+        public (string BroadcasterId, string ModeratorId, string UserId, string Reason)?
+            Ban { get; private set; }
+
+        public TwitchBannedUserInfo? ExistingBan { get; init; }
+
+        public int GetBannedUserCalls { get; private set; }
 
         public Task<TwitchUserInfo> GetCurrentUserAsync(
             CancellationToken cancellationToken = default)
@@ -694,7 +959,8 @@ public sealed class TwitchModerationExecutorTests
             string userId,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult<TwitchBannedUserInfo?>(null);
+            GetBannedUserCalls++;
+            return Task.FromResult(ExistingBan);
         }
 
         public Task DeleteMessageAsync(
@@ -715,6 +981,17 @@ public sealed class TwitchModerationExecutorTests
             CancellationToken cancellationToken = default)
         {
             Timeout = (broadcasterId, moderatorId, userId, durationSeconds, reason);
+            return Task.CompletedTask;
+        }
+
+        public Task BanUserAsync(
+            string broadcasterId,
+            string moderatorId,
+            string userId,
+            string reason,
+            CancellationToken cancellationToken = default)
+        {
+            Ban = (broadcasterId, moderatorId, userId, reason);
             return Task.CompletedTask;
         }
 

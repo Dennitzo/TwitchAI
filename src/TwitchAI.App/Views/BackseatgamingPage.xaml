@@ -182,17 +182,6 @@
               SortMemberPath="Code"
               Tag="Code"
               Width="280" />
-            <tv:TableViewComboBoxColumn
-              CanResize="True"
-              CanSort="True"
-              Header="Override"
-              IsEditable="False"
-              IsReadOnly="False"
-              ItemsSource="{x:Bind ViewModel.OverrideOptions, Mode=OneWay}"
-              SelectedValueBinding="{Binding Override, Mode=TwoWay}"
-              SortMemberPath="Override"
-              Tag="Override"
-              Width="120" />
             <tv:TableViewTextColumn
               Binding="{Binding FeedbackLabel}"
               CanResize="True"

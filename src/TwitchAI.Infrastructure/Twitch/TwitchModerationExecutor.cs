@@ -219,7 +219,15 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             return unavailableResult;
         }
 
-        if (request.Action == ModerationActionKind.Timeout)
+        // Twitch restricts Get Banned Users to a broadcaster token for the
+        // requested channel. A moderator token may still execute the mutation,
+        // so only perform this additional preflight for the moderator's own
+        // channel and otherwise rely on EventSub plus the mutation response.
+        if (request.Action is ModerationActionKind.Timeout or ModerationActionKind.Ban
+            && string.Equals(
+                moderationCase.Message.Identity.ChannelId,
+                _options.ModeratorUserId,
+                StringComparison.Ordinal))
         {
             TwitchBannedUserInfo? existingBan;
             try
@@ -233,11 +241,15 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             {
                 return Rejected(
                     "ban_lookup_failed",
-                    $"Der bestehende Timeout-Status konnte nicht sicher geprüft werden: {exception.Message}");
+                    $"Der bestehende Ban-/Timeoutstatus konnte nicht sicher geprüft werden: {exception.Message}");
             }
 
-            if (existingBan is not null &&
-                (existingBan.ExpiresAt is null || existingBan.ExpiresAt > DateTimeOffset.UtcNow))
+            var permanentBanExists = existingBan is not null && existingBan.ExpiresAt is null;
+            var activeTimeoutExists = existingBan?.ExpiresAt > DateTimeOffset.UtcNow;
+            var actionAlreadyApplied =
+                permanentBanExists ||
+                (request.Action == ModerationActionKind.Timeout && activeTimeoutExists);
+            if (actionAlreadyApplied)
             {
                 return await CompleteWithoutMutationAsync(
                     moderationCase,
@@ -278,31 +290,49 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
         AttemptCompletion completion;
         try
         {
-            if (request.Action == ModerationActionKind.Delete)
+            switch (request.Action)
             {
-                await _helixClient.DeleteMessageAsync(
-                    moderationCase.Message.Identity.ChannelId,
-                    moderatorId,
-                    moderationCase.Message.Identity.TwitchMessageId,
-                    cancellationToken).ConfigureAwait(false);
-                await TryRecordOwnDeleteAsync(
-                    intent.Value,
-                    moderationCase,
-                    CancellationToken.None).ConfigureAwait(false);
-            }
-            else
-            {
-                await _helixClient.TimeoutUserAsync(
-                    moderationCase.Message.Identity.ChannelId,
-                    moderatorId,
-                    moderationCase.Message.Identity.TwitchUserId,
-                    request.TimeoutSeconds!.Value,
-                    request.Reason,
-                    cancellationToken).ConfigureAwait(false);
-                await TryRecordOwnTimeoutAsync(
-                    intent.Value,
-                    moderationCase,
-                    CancellationToken.None).ConfigureAwait(false);
+                case ModerationActionKind.Delete:
+                    await _helixClient.DeleteMessageAsync(
+                        moderationCase.Message.Identity.ChannelId,
+                        moderatorId,
+                        moderationCase.Message.Identity.TwitchMessageId,
+                        cancellationToken).ConfigureAwait(false);
+                    await TryRecordOwnDeleteAsync(
+                        intent.Value,
+                        moderationCase,
+                        CancellationToken.None).ConfigureAwait(false);
+                    break;
+                case ModerationActionKind.Timeout:
+                    await _helixClient.TimeoutUserAsync(
+                        moderationCase.Message.Identity.ChannelId,
+                        moderatorId,
+                        moderationCase.Message.Identity.TwitchUserId,
+                        request.TimeoutSeconds!.Value,
+                        request.Reason,
+                        cancellationToken).ConfigureAwait(false);
+                    await TryRecordOwnUserClearAsync(
+                        "timeout",
+                        intent.Value,
+                        moderationCase,
+                        CancellationToken.None).ConfigureAwait(false);
+                    break;
+                case ModerationActionKind.Ban:
+                    await _helixClient.BanUserAsync(
+                        moderationCase.Message.Identity.ChannelId,
+                        moderatorId,
+                        moderationCase.Message.Identity.TwitchUserId,
+                        request.Reason,
+                        cancellationToken).ConfigureAwait(false);
+                    await TryRecordOwnUserClearAsync(
+                        "ban",
+                        intent.Value,
+                        moderationCase,
+                        CancellationToken.None).ConfigureAwait(false);
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        $"Unsupported moderation action '{request.Action}'.");
             }
 
             completion = AttemptCompletion.Succeeded();
@@ -363,9 +393,12 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             return "Case-ID und Row-Version müssen positiv sein.";
         }
 
-        if (request.Action is not (ModerationActionKind.Delete or ModerationActionKind.Timeout))
+        if (request.Action is not (
+            ModerationActionKind.Delete
+            or ModerationActionKind.Timeout
+            or ModerationActionKind.Ban))
         {
-            return "Nur Löschen oder Timeout können ausgeführt werden.";
+            return "Nur Löschen, Timeout oder Ban können ausgeführt werden.";
         }
 
         if (string.IsNullOrWhiteSpace(request.RuleCode))
@@ -373,7 +406,7 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             return "Für die Moderationsaktion muss eine Regelkategorie ausgewählt sein.";
         }
 
-        if (request.Action == ModerationActionKind.Timeout &&
+        if (request.Action is ModerationActionKind.Timeout or ModerationActionKind.Ban &&
             (string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Length > 120))
         {
             return "Der Twitch-Grund muss 1 bis 120 Zeichen enthalten.";
@@ -394,6 +427,11 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
         if (request.Action == ModerationActionKind.Delete && request.TimeoutSeconds is not null)
         {
             return "Eine Löschaktion darf keine Timeout-Dauer enthalten.";
+        }
+
+        if (request.Action == ModerationActionKind.Ban && request.TimeoutSeconds is not null)
+        {
+            return "Ein Ban darf keine Timeout-Dauer enthalten.";
         }
 
         return null;
@@ -575,7 +613,7 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                 SqliteData.DbValue(request.TimeoutSeconds));
             insert.Parameters.AddWithValue(
                 "@reason",
-                request.Action == ModerationActionKind.Timeout
+                request.Action is ModerationActionKind.Timeout or ModerationActionKind.Ban
                     ? request.Reason
                     : DBNull.Value);
             insert.Parameters.AddWithValue("@rule_code", request.RuleCode!);
@@ -773,7 +811,8 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
         }
     }
 
-    private async Task TryRecordOwnTimeoutAsync(
+    private async Task TryRecordOwnUserClearAsync(
+        string action,
         long executionId,
         ModerationCase moderationCase,
         CancellationToken cancellationToken)
@@ -782,7 +821,7 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
         {
             await _availabilityStore.RecordUserClearAsync(
                 new TwitchUserMessagesClearedEvent(
-                    $"local-timeout:{executionId}",
+                    $"local-{action}:{executionId}",
                     moderationCase.Message.Identity.ChannelId,
                     DateTimeOffset.UtcNow,
                     moderationCase.Message.Identity.TwitchUserId,
@@ -1215,6 +1254,7 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
         {
             ModerationActionKind.Delete => "delete",
             ModerationActionKind.Timeout => "timeout",
+            ModerationActionKind.Ban => "ban",
             _ => throw new ArgumentOutOfRangeException(nameof(action), action, null),
         };
     }

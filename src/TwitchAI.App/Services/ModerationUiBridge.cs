@@ -200,7 +200,14 @@ public sealed class ModerationUiBridge : IDisposable
             CategoryId = message.ChannelContext.CategoryId,
             ReceivedAt = message.Identity.ReceivedAtUtc,
             RowVersion = eventArgs.CaseRowVersion ?? 1,
-            Action = decision.Action == ModerationActionKind.Delete ? "delete" : "timeout",
+            Action = decision.Action switch
+            {
+                ModerationActionKind.Delete => "delete",
+                ModerationActionKind.Timeout => "timeout",
+                ModerationActionKind.Ban => "ban",
+                _ => throw new InvalidDataException(
+                    $"Aktion '{decision.Action}' gehört nicht in die Moderationswarteschlange."),
+            },
             TimeoutSeconds = decision.TimeoutSeconds
                 ?? ModerationActionRules.DefaultTimeoutSeconds,
             Reason = ModerationReasonNormalizer.Normalize(

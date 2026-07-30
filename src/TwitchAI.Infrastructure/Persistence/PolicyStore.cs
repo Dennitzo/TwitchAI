@@ -28,6 +28,12 @@ public interface IPolicyStore
         string broadcasterId,
         string? categoryId,
         CancellationToken cancellationToken = default);
+
+    Task<EffectivePolicySnapshot> GetLearningPolicyAsync(
+        CancellationToken cancellationToken = default) =>
+        Task.FromException<EffectivePolicySnapshot>(
+            new NotSupportedException(
+                "This policy store does not expose an offline learning snapshot."));
 }
 
 public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
@@ -186,6 +192,45 @@ public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
         }
     }
 
+    public async Task<EffectivePolicySnapshot> GetLearningPolicyAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureBroadcasterSeededAsync(
+                GlobalPolicyStorage.BroadcasterId,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var scopes = await ReadLearningScopesAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var general = scopes.Single(item => item.ScopeKind == PolicyScopeKind.General);
+        var backseatgaming = scopes.Single(item => item.ScopeKind == PolicyScopeKind.Category);
+        var key = new PolicyCacheKey(
+            GlobalPolicyStorage.BroadcasterId,
+            CategoryId: null,
+            general.Revision,
+            backseatgaming.Revision);
+        var lazy = _cache.GetOrAdd(
+            key,
+            _ => new Lazy<Task<EffectivePolicySnapshot>>(
+                () => BuildSnapshotAsync(
+                    GlobalPolicyStorage.BroadcasterId,
+                    requestedCategoryId: null,
+                    general,
+                    backseatgaming,
+                    CancellationToken.None),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+
+        try
+        {
+            return await lazy.Value.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            _cache.TryRemove(key, out _);
+            throw;
+        }
+    }
+
     public void Invalidate(PolicyChangeSet changeSet)
     {
         ArgumentNullException.ThrowIfNull(changeSet);
@@ -273,6 +318,51 @@ public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
         {
             throw new InvalidOperationException(
                 $"Broadcaster '{broadcasterId}' has no enabled general policy scope.");
+        }
+
+        return scopes;
+    }
+
+    private async Task<IReadOnlyList<PolicyScopeRecord>> ReadLearningScopesAsync(
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await _connectionFactory
+            .OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT scope_id, broadcaster_id, scope_kind, category_id, revision, enabled
+            FROM policy_sets
+            WHERE broadcaster_id = @global_scope
+              AND enabled = 1
+              AND archived_utc IS NULL
+              AND scope_kind IN ('general', 'category')
+            ORDER BY CASE scope_kind WHEN 'general' THEN 0 ELSE 1 END;
+            """;
+        command.Parameters.AddWithValue(
+            "@global_scope",
+            GlobalPolicyStorage.BroadcasterId);
+
+        var scopes = new List<PolicyScopeRecord>(2);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            scopes.Add(new PolicyScopeRecord(
+                reader.GetInt64(0),
+                reader.GetString(1),
+                ParseScopeKind(reader.GetString(2)),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.GetInt64(4),
+                reader.GetBoolean(5)));
+        }
+
+        if (!scopes.Any(item => item.ScopeKind == PolicyScopeKind.General)
+            || !scopes.Any(item => item.ScopeKind == PolicyScopeKind.Category))
+        {
+            throw new InvalidOperationException(
+                "The global learning policy requires active General and Backseatgaming sets.");
         }
 
         return scopes;

@@ -156,6 +156,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         {
             "delete" => ModerationActionKind.Delete,
             "timeout" => ModerationActionKind.Timeout,
+            "ban" => ModerationActionKind.Ban,
             _ => throw new InvalidOperationException("Bitte eine gültige Moderationsaktion auswählen."),
         };
         int? timeoutSeconds = null;
@@ -173,10 +174,10 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
             timeoutSeconds = checked((int)item.TimeoutSeconds);
         }
 
-        var reason = action == ModerationActionKind.Timeout
+        var reason = action is ModerationActionKind.Timeout or ModerationActionKind.Ban
             ? item.Reason.Trim()
             : string.Empty;
-        if (action == ModerationActionKind.Timeout
+        if (action is ModerationActionKind.Timeout or ModerationActionKind.Ban
             && reason.Length is < 1 or > 120)
         {
             throw new InvalidOperationException(
@@ -586,7 +587,13 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
                     : "Abgeschlossen";
                 AddAudit(
                     item,
-                    item.Action == "delete" ? "Löschen" : "Timeout",
+                    item.Action switch
+                    {
+                        "delete" => "Löschen",
+                        "timeout" => "Timeout",
+                        "ban" => "Ban",
+                        _ => "Moderation",
+                    },
                     result.TwitchExecuted ? "Twitch ausgeführt" : "Keine Twitch-Aktion");
                 break;
             case ModerationExecutionOutcome.AlreadyUnavailable:
@@ -646,7 +653,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
             includeActionDetails && item.Action == "timeout"
                 ? checked((int)item.TimeoutSeconds)
                 : null,
-            includeActionDetails && item.Action == "timeout"
+            includeActionDetails && item.Action is "timeout" or "ban"
                 ? item.Reason
                 : string.Empty);
         try

@@ -1,0 +1,410 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+  x:Class="TwitchAI.App.Views.LearningPage"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:vm="using:TwitchAI.App.ViewModels"
+  Background="Transparent"
+  SizeChanged="OnPageSizeChanged"
+  mc:Ignorable="d">
+
+  <Grid
+    x:Name="PageContent"
+    Margin="28,24,28,40"
+    HorizontalAlignment="Stretch"
+    RowSpacing="16">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+
+    <StackPanel Spacing="6">
+      <TextBlock
+        Style="{StaticResource PageTitleStyle}"
+        Text="Lernen" />
+      <TextBlock
+        Foreground="{ThemeResource MutedTextBrush}"
+        Text="Prüfe einzelne Testnachrichten und gib der lokalen Moderation gezieltes Feedback."
+        TextWrapping="Wrap" />
+    </StackPanel>
+
+    <InfoBar
+      Grid.Row="1"
+      IsClosable="False"
+      IsOpen="True"
+      Message="Alle aktiven General-Regeln und Backseatgaming werden gemeinsam geprüft. Der Test beeinflusst weder Live-Batches noch die Moderationswarteschlange."
+      Severity="Informational"
+      Title="Lokaler Lerntest · alle Regelsets · führt niemals eine Twitch-Aktion aus" />
+
+    <Border
+      Grid.Row="2"
+      Padding="14"
+      Style="{StaticResource CardStyle}">
+      <Grid
+        x:Name="InputGrid"
+        ColumnSpacing="12"
+        RowSpacing="8">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+
+        <Grid Grid.ColumnSpan="2">
+          <StackPanel Spacing="2">
+            <TextBlock
+              Style="{StaticResource SectionTitleStyle}"
+              Text="Testnachricht" />
+            <TextBlock
+              Foreground="{ThemeResource MutedTextBrush}"
+              Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+              TextWrapping="Wrap" />
+          </StackPanel>
+          <ProgressRing
+            Width="22"
+            Height="22"
+            HorizontalAlignment="Right"
+            IsActive="{x:Bind ViewModel.IsBusy, Mode=OneWay}" />
+        </Grid>
+
+        <Grid
+          Grid.Row="1"
+          MinWidth="0">
+          <TextBox
+            x:Name="TestMessageInput"
+            MinHeight="82"
+            AcceptsReturn="True"
+            AutomationProperties.Name="Zu prüfende Chatnachricht"
+            IsEnabled="{x:Bind ViewModel.CanEditInput, Mode=OneWay}"
+            MaxLength="500"
+            PlaceholderText="Beispielhafte Chatnachricht eingeben …"
+            Text="{x:Bind ViewModel.TestMessage, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+            TextWrapping="Wrap" />
+          <TextBlock
+            Margin="0,0,8,6"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Bottom"
+            FontSize="11"
+            Foreground="{ThemeResource MutedTextBrush}"
+            IsHitTestVisible="False"
+            Text="{x:Bind ViewModel.CharacterCountLabel, Mode=OneWay}" />
+        </Grid>
+
+        <Button
+          x:Name="StartTestButton"
+          Grid.Row="1"
+          Grid.Column="1"
+          MinWidth="150"
+          HorizontalAlignment="Stretch"
+          VerticalAlignment="Bottom"
+          AutomationProperties.Name="Lokalen AI-Test starten"
+          Click="OnStartTestClicked"
+          Content="AI-Test starten"
+          IsEnabled="{x:Bind ViewModel.CanStart, Mode=OneWay}"
+          Style="{StaticResource AccentButtonStyle}" />
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="3">
+      <StackPanel
+        MaxWidth="520"
+        Margin="0,34"
+        HorizontalAlignment="Center"
+        Spacing="10"
+        Visibility="{x:Bind ViewModel.EmptyStateVisibility, Mode=OneWay}">
+        <Border
+          Width="56"
+          Height="56"
+          HorizontalAlignment="Center"
+          Background="{ThemeResource LayerStrongBrush}"
+          CornerRadius="16">
+          <FontIcon
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            FontSize="23"
+            Foreground="{ThemeResource TwitchAccentBrush}"
+            Glyph="&#xE70F;" />
+        </Border>
+        <TextBlock
+          HorizontalAlignment="Center"
+          Style="{StaticResource SectionTitleStyle}"
+          Text="Bereit für einen lokalen Test" />
+        <TextBlock
+          HorizontalAlignment="Center"
+          Foreground="{ThemeResource MutedTextBrush}"
+          Text="Die AI-Auswertung erscheint hier als bearbeitbarer Vorschlag."
+          TextAlignment="Center"
+          TextWrapping="Wrap" />
+      </StackPanel>
+
+      <Border
+        Padding="12"
+        HorizontalAlignment="Stretch"
+        Style="{StaticResource CardStyle}"
+        Visibility="{x:Bind ViewModel.ReviewVisibility, Mode=OneWay}">
+        <Grid
+          MinWidth="0"
+          RowSpacing="9">
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+          </Grid.RowDefinitions>
+
+          <Grid ColumnSpacing="10">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <StackPanel Spacing="1">
+              <TextBlock
+                FontSize="15"
+                FontWeight="SemiBold"
+                Text="Vorschlag prüfen" />
+              <TextBlock
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="{x:Bind ViewModel.Review.VerdictDescription, Mode=OneWay}"
+                TextWrapping="Wrap" />
+            </StackPanel>
+            <Border
+              Grid.Column="1"
+              MinHeight="28"
+              Padding="10,4"
+              HorizontalAlignment="Right"
+              Background="#24A970FF"
+              Style="{StaticResource StatusPillStyle}">
+              <TextBlock
+                FontSize="12"
+                FontWeight="SemiBold"
+                Foreground="{ThemeResource TwitchAccentBrush}"
+                Text="{x:Bind ViewModel.Review.VerdictLabel, Mode=OneWay}" />
+            </Border>
+          </Grid>
+
+          <Border
+            Grid.Row="1"
+            Padding="10,8"
+            HorizontalAlignment="Stretch"
+            Background="{ThemeResource LayerStrongBrush}"
+            BorderBrush="{ThemeResource CardStrokeBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+            <Grid MinWidth="0" ColumnSpacing="9">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="3" />
+                <ColumnDefinition Width="*" />
+              </Grid.ColumnDefinitions>
+              <Border
+                Background="{ThemeResource TwitchAccentBrush}"
+                CornerRadius="2" />
+              <TextBlock
+                Grid.Column="1"
+                MinWidth="0"
+                HorizontalAlignment="Stretch"
+                FontFamily="Segoe UI Variable Text"
+                FontSize="15"
+                IsTextSelectionEnabled="True"
+                MaxLines="0"
+                Text="{x:Bind ViewModel.Review.OriginalMessage, Mode=OneWay}"
+                TextTrimming="None"
+                TextWrapping="Wrap" />
+            </Grid>
+          </Border>
+
+          <ItemsControl Grid.Row="2">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <ItemsWrapGrid Orientation="Horizontal" />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.Items>
+              <TextBlock
+                Margin="0,0,18,4"
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="{x:Bind ViewModel.Review.ConfidenceLabel, Mode=OneWay}" />
+              <TextBlock
+                Margin="0,0,18,4"
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="{x:Bind ViewModel.Review.LatencyLabel, Mode=OneWay}" />
+              <TextBlock
+                Margin="0,0,18,4"
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="{x:Bind ViewModel.Review.TokenLabel, Mode=OneWay}" />
+              <TextBlock
+                Margin="0,0,18,4"
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="{x:Bind ViewModel.Review.LocalMatchesLabel, Mode=OneWay}" />
+              <TextBlock
+                Margin="0,0,18,4"
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="{x:Bind ViewModel.Review.PolicyLabel, Mode=OneWay}" />
+              <TextBlock
+                Margin="0,0,0,4"
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="{x:Bind ViewModel.Review.FallbackLabel, Mode=OneWay}" />
+            </ItemsControl.Items>
+          </ItemsControl>
+
+          <Expander
+            Grid.Row="3"
+            HorizontalAlignment="Stretch"
+            Header="Trefferphrasen"
+            HorizontalContentAlignment="Stretch">
+            <StackPanel>
+              <TextBlock
+                Margin="0,4,0,3"
+                Foreground="{ThemeResource MutedTextBrush}"
+                Text="Ausgewählte Phrasen werden nur im lokalen Lernbeispiel gespeichert und verändern keine Blacklist."
+                TextWrapping="Wrap" />
+              <ItemsControl ItemsSource="{x:Bind ViewModel.Review.TriggerPhrases, Mode=OneWay}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:TriggerPhraseItem">
+                    <CheckBox
+                      MinHeight="28"
+                      Content="{x:Bind Phrase}"
+                      IsChecked="{x:Bind IsSelected, Mode=TwoWay}" />
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </Expander>
+
+          <Border
+            Grid.Row="4"
+            Padding="10"
+            Background="{ThemeResource LayerStrongBrush}"
+            CornerRadius="8">
+            <Grid
+              x:Name="ReviewGrid"
+              MinWidth="0"
+              ColumnSpacing="8"
+              RowSpacing="8"
+              SizeChanged="OnReviewGridSizeChanged">
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+              </Grid.RowDefinitions>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="160" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="230" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="230" />
+              </Grid.ColumnDefinitions>
+
+              <Grid Grid.ColumnSpan="5" Margin="0,0,0,1">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <TextBlock
+                    FontSize="14"
+                    FontWeight="SemiBold"
+                    Text="Lokale Lernentscheidung" />
+                  <TextBlock
+                    Foreground="{ThemeResource MutedTextBrush}"
+                    Text="{x:Bind ViewModel.Review.PolicySetLabel, Mode=OneWay}" />
+                </StackPanel>
+                <ProgressRing
+                  Width="18"
+                  Height="18"
+                  HorizontalAlignment="Right"
+                  IsActive="{x:Bind ViewModel.IsBusy, Mode=OneWay}" />
+              </Grid>
+
+              <ComboBox
+                x:Name="ActionEditor"
+                Grid.Row="1"
+                Header="Aktion"
+                HorizontalAlignment="Stretch"
+                SelectedValue="{x:Bind ViewModel.Review.Action, Mode=TwoWay}"
+                SelectedValuePath="Tag">
+                <ComboBoxItem Content="Nachricht löschen" Tag="delete" />
+                <ComboBoxItem Content="Timeout" Tag="timeout" />
+                <ComboBoxItem Content="Ban" Tag="ban" />
+              </ComboBox>
+
+              <NumberBox
+                x:Name="TimeoutEditor"
+                Grid.Row="1"
+                Grid.Column="1"
+                Header="Timeout (Sekunden)"
+                HorizontalAlignment="Stretch"
+                Maximum="1209600"
+                MinWidth="145"
+                Minimum="1"
+                SmallChange="30"
+                Value="{x:Bind ViewModel.Review.TimeoutSeconds, Mode=TwoWay}"
+                Visibility="{x:Bind ViewModel.Review.TimeoutEditorVisibility, Mode=OneWay}" />
+
+              <ComboBox
+                x:Name="ViolationEditor"
+                Grid.Row="1"
+                Grid.Column="2"
+                Header="Verstoßkategorie"
+                HorizontalAlignment="Stretch"
+                DisplayMemberPath="DisplayName"
+                ItemsSource="{x:Bind ViewModel.Review.RuleOptions, Mode=OneWay}"
+                SelectedValue="{x:Bind ViewModel.Review.SelectedRuleCode, Mode=TwoWay}"
+                SelectedValuePath="Code" />
+
+              <TextBox
+                x:Name="ReasonEditor"
+                Grid.Row="1"
+                Grid.Column="3"
+                Header="Kurze Begründung"
+                HorizontalAlignment="Stretch"
+                AcceptsReturn="False"
+                MaxLength="120"
+                Text="{x:Bind ViewModel.Review.Reason, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                TextWrapping="NoWrap"
+                Visibility="{x:Bind ViewModel.Review.ReasonEditorVisibility, Mode=OneWay}" />
+
+              <StackPanel
+                x:Name="ActionButtons"
+                Grid.Row="1"
+                Grid.Column="4"
+                Spacing="4">
+                <TextBlock
+                  FontSize="12"
+                  Foreground="{ThemeResource MutedTextBrush}"
+                  Text="Aktionen" />
+                <Grid ColumnSpacing="8">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                  </Grid.ColumnDefinitions>
+                  <Button
+                    HorizontalAlignment="Stretch"
+                    Click="OnDiscardClicked"
+                    Content="Verwerfen"
+                    IsEnabled="{x:Bind ViewModel.CanReview, Mode=OneWay}"
+                    Style="{StaticResource SubtleButtonStyle}" />
+                  <Button
+                    Grid.Column="1"
+                    HorizontalAlignment="Stretch"
+                    AutomationProperties.HelpText="Speichert nur lokales Learning und führt niemals eine Twitch-Aktion aus."
+                    Click="OnExecuteClicked"
+                    Content="Ausführen"
+                    IsEnabled="{x:Bind ViewModel.CanReview, Mode=OneWay}"
+                    Style="{StaticResource AccentButtonStyle}" />
+                </Grid>
+              </StackPanel>
+            </Grid>
+          </Border>
+        </Grid>
+      </Border>
+    </Grid>
+  </Grid>
+</Page>

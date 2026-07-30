@@ -140,6 +140,25 @@ public interface ILocalModerationClient
         CancellationToken cancellationToken = default);
 }
 
+public interface ILearningTestService
+{
+    ValueTask<LearningTestResult> AnalyzeAsync(
+        LearningTestRequest request,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<bool> IsPolicyCurrentAsync(
+        LearningTestResult result,
+        CancellationToken cancellationToken = default);
+}
+
+public interface ILearningFeedbackService
+{
+    ValueTask<LearningFeedbackResult> SaveAsync(
+        LearningReviewItem review,
+        LearningFeedbackDecision decision,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IModerationCaseRepository
 {
     ValueTask<ModerationCase?> GetAsync(

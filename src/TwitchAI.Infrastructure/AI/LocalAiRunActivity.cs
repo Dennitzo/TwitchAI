@@ -8,6 +8,12 @@ public enum LocalAiRunState
     Failed,
 }
 
+public enum LocalAiRunKind
+{
+    Moderation,
+    LearningTest,
+}
+
 public sealed record LocalAiRunActivity(
     string CorrelationId,
     LocalAiRunState State,
@@ -18,7 +24,8 @@ public sealed record LocalAiRunActivity(
     int? TotalTokens,
     long? ElapsedMilliseconds,
     DateTimeOffset OccurredAtUtc,
-    string? ErrorCode = null);
+    string? ErrorCode = null,
+    LocalAiRunKind RunKind = LocalAiRunKind.Moderation);
 
 public sealed class LocalAiRunActivityEventArgs(LocalAiRunActivity activity)
     : EventArgs

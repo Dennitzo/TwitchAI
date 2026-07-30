@@ -59,10 +59,25 @@ public sealed class ModerationRepairClient(ILmStudioClient client)
                     Select only a ruleCode listed in request.activeRules and its matching policySet.
                     Select replyTemplateId only for action none and only from request.replyTemplates.
                     If no reply template clearly matches, return null replyTemplateId and null replyConfidence.
-                    For delete or timeout, return null replyTemplateId and null replyConfidence.
+                    For delete, timeout, or ban, return null replyTemplateId and null replyConfidence.
                     Never generate or return a chat answer; reply templates contain only opaque IDs and examples.
-                    For timeout decisions, use 600 seconds by default unless the supplied context clearly requires another duration.
+                    For an actionable violation, use a 600-second timeout as the normal baseline.
+                    Deviate only when the message clearly supports one of these lighter or more severe tiers:
+                    2-second timeout as purge for a very light disruption where that user's recent messages should be cleared;
+                    120-second timeout for light spam;
+                    600-second timeout for ordinary actionable abuse, light insults, or clear backseatgaming;
+                    86400-second timeout for strong insults that are not unambiguously ban-worthy and for G_BEGGING;
+                    ban for unambiguously extreme abuse and for confirmed G_ADVERTISING self-promotion or promotion of another channel;
+                    delete only for a single low-context, unnecessary nuisance message with no substantive or serious violation.
+                    Every actionable G_ADVERTISING decision must use ban. Every actionable G_BEGGING decision must use a 86400-second timeout.
+                    Never use delete merely because a message is short or unwanted, and never for insults, harassment,
+                    hate, threats, sexualization, personal data, scams, advertising, begging, repeated spam,
+                    meaningful disruption, or backseatgaming.
+                    Rule defaults are fallbacks, not constraints; use the message context and this scale.
+                    Never ban for an unnecessary message, spam, begging, or backseatgaming alone.
+                    For delete or ban, timeoutSeconds must be null. A timeout must be exactly 2, 120, 600, or 86400 seconds.
                     For actionable decisions, use one short German reason sentence (maximum 120 characters).
+                    When a person is the target, call them "Nutzer oder Streamer", never only "Nutzer".
                     Mention only the violation, never a policy code, action, or recommendation.
                     For G_PERSONAL_DATA, return no trigger phrases.
                     """,

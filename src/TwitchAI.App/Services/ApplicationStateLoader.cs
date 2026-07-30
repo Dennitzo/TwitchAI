@@ -194,7 +194,7 @@ public sealed class ApplicationStateLoader
                     GetTwitchResult(row),
                     row.CategoryName,
                     ToUiPolicySet(row.PolicySet),
-                    effectiveAction == "delete" ? null : row.TimeoutSeconds,
+                    effectiveAction == "timeout" ? row.TimeoutSeconds : null,
                     effectiveAction == "delete" ? string.Empty : row.Reason));
         }
 
@@ -286,6 +286,7 @@ public sealed class ApplicationStateLoader
         {
             ModerationActionKind.Delete => "delete",
             ModerationActionKind.Timeout => "timeout",
+            ModerationActionKind.Ban => "ban",
             _ => throw new InvalidDataException(
                 $"Aktion '{action}' gehört nicht in die Moderationswarteschlange."),
         };
@@ -357,6 +358,7 @@ public sealed class ApplicationStateLoader
         {
             "delete" => "Löschen",
             "timeout" => "Timeout",
+            "ban" => "Ban",
             _ => "Keine Aktion",
         };
     }

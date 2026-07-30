@@ -5,6 +5,7 @@ public enum ModerationActionKind
     None,
     Delete,
     Timeout,
+    Ban,
 }
 
 public enum ModerationCaseStatus

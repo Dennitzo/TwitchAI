@@ -28,5 +28,7 @@ public static class ModerationProposalEligibility
     }
 
     private static bool IsActionable(ModerationActionKind action) =>
-        action is ModerationActionKind.Delete or ModerationActionKind.Timeout;
+        action is ModerationActionKind.Delete
+            or ModerationActionKind.Timeout
+            or ModerationActionKind.Ban;
 }

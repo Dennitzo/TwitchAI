@@ -549,7 +549,7 @@ public sealed class SqliteModerationReviewFeedbackService
             SqliteData.DbValue(request.TimeoutSeconds));
         command.Parameters.AddWithValue(
             "@reason",
-            request.Action == ModerationActionKind.Timeout
+            request.Action is ModerationActionKind.Timeout or ModerationActionKind.Ban
                 ? request.Reason
                 : DBNull.Value);
         command.Parameters.AddWithValue("@rule_code", request.RuleCode!);
@@ -842,6 +842,7 @@ public sealed class SqliteModerationReviewFeedbackService
         {
             ModerationActionKind.Delete => "delete",
             ModerationActionKind.Timeout => "timeout",
+            ModerationActionKind.Ban => "ban",
             _ => throw new ArgumentOutOfRangeException(nameof(action), action, null),
         };
     }

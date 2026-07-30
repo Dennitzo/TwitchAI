@@ -1114,6 +1114,16 @@ public sealed class ModerationPersistenceRegressionTests
                 : Task.FromException(TimeoutFailure);
         }
 
+        public Task BanUserAsync(
+            string broadcasterId,
+            string moderatorId,
+            string userId,
+            string reason,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
         public Task<TwitchSendChatMessageResult> SendChatMessageAsync(
             string broadcasterId,
             string senderId,

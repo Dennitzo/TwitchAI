@@ -15,7 +15,7 @@ public sealed class ModerationEnvelopeValidatorTests
             firstMessage: "fahr links, dort ist eine falle");
         var response = Response(
             batch,
-            Decision("m1", "timeout", 300, "B", "backseat", ["fahr links"], 0.91),
+            Decision("m1", "timeout", 600, "B", "backseat", ["fahr links"], 0.91),
             Decision("m2", "none", null, null, "", [], 0.12));
 
         var result = new ModerationEnvelopeValidator().Validate(response, batch);
@@ -27,7 +27,7 @@ public sealed class ModerationEnvelopeValidatorTests
         Assert.Equal(ModerationActionKind.Timeout, result.Envelope.Decisions[0].Action);
         Assert.Equal(PolicySetCode.Backseatgaming, result.Envelope.Decisions[0].PolicySet);
         Assert.Equal(ModerationRuleCodes.Backseatgaming, result.Envelope.Decisions[0].RuleCode);
-        Assert.Equal(300, result.Envelope.Decisions[0].TimeoutSeconds);
+        Assert.Equal(600, result.Envelope.Decisions[0].TimeoutSeconds);
     }
 
     [Fact]
@@ -156,7 +156,10 @@ public sealed class ModerationEnvelopeValidatorTests
 
         Assert.True(result.IsValid);
         Assert.NotNull(result.Envelope);
-        Assert.Equal("G_INSULT", Assert.Single(result.Envelope.Decisions).RuleCode);
+        var decision = Assert.Single(result.Envelope.Decisions);
+        Assert.Equal("G_INSULT", decision.RuleCode);
+        Assert.Equal(ModerationActionKind.Timeout, decision.Action);
+        Assert.Equal(600, decision.TimeoutSeconds);
     }
 
     [Fact]
@@ -258,6 +261,82 @@ public sealed class ModerationEnvelopeValidatorTests
     }
 
     [Fact]
+    public void Validate_BanWithoutDurationReturnsTypedDecision()
+    {
+        var batch = Batch(
+            1,
+            includeBackseat: false,
+            firstMessage: "du bist ein extremer idiot");
+        var response = Response(
+            batch,
+            Decision(
+                "m1",
+                "ban",
+                null,
+                "G",
+                "Eindeutig extreme Beleidigung.",
+                ["extremer idiot"],
+                0.99,
+                "G_INSULT"));
+
+        var result = new ModerationEnvelopeValidator().Validate(response, batch);
+
+        Assert.True(result.IsValid);
+        var decision = Assert.Single(result.Envelope!.Decisions);
+        Assert.Equal(ModerationActionKind.Ban, decision.Action);
+        Assert.Null(decision.TimeoutSeconds);
+        Assert.Equal(PolicySetCode.General, decision.PolicySet);
+        Assert.Equal("G_INSULT", decision.RuleCode);
+        Assert.Equal("Eindeutig extreme Beleidigung.", decision.Reason);
+    }
+
+    [Fact]
+    public void Validate_BanCannotSelectReplyTemplate()
+    {
+        var batch = Batch(1, includeBackseat: false) with
+        {
+            ReplyTemplates =
+            [
+                new ChatReplyTemplatePrompt("r1", "event"),
+            ],
+        };
+        var response = Response(
+            batch,
+            Decision(
+                "m1",
+                "ban",
+                null,
+                "G",
+                "Eindeutig extreme Beleidigung.",
+                ["bad"],
+                0.99,
+                "G_INSULT",
+                replyTemplateId: "r1",
+                replyConfidence: 0.8));
+
+        AssertInvalid(response, batch, "reply_for_moderation_action");
+    }
+
+    [Fact]
+    public void Validate_BanForSpamRuleRejectsWholeBatch()
+    {
+        var batch = SpamBatch();
+        var response = Response(
+            batch,
+            Decision(
+                "m1",
+                "ban",
+                null,
+                "G",
+                "Wiederholter Spam.",
+                ["spam"],
+                0.99,
+                "G_SPAM"));
+
+        AssertInvalid(response, batch, "action_rule_invalid");
+    }
+
+    [Fact]
     public void Validate_ReplyConfidenceRequiresSelectedTemplateAndValidRange()
     {
         var batch = Batch(1, includeBackseat: false) with
@@ -300,9 +379,13 @@ public sealed class ModerationEnvelopeValidatorTests
     }
 
     [Theory]
+    [InlineData(1)]
+    [InlineData(300)]
+    [InlineData(7_200)]
+    [InlineData(1_209_600)]
     [InlineData(0)]
     [InlineData(1_209_601)]
-    public void Validate_InvalidTimeoutRangeRejectsWholeBatch(int seconds)
+    public void Validate_TimeoutOutsideAiTiersRejectsWholeBatch(int seconds)
     {
         var batch = Batch(1, includeBackseat: false);
         var response = Response(
@@ -313,7 +396,7 @@ public sealed class ModerationEnvelopeValidatorTests
     }
 
     [Fact]
-    public void Validate_MissingTimeoutForTimeoutAndDurationForDeleteAreInvalid()
+    public void Validate_ActionAndTimeoutCombinationMustMatch()
     {
         var batch = Batch(1, includeBackseat: false);
 
@@ -327,6 +410,20 @@ public sealed class ModerationEnvelopeValidatorTests
             Response(
                 batch,
                 Decision("m1", "delete", 10, "G", "spam", ["bad"], 0.9)),
+            batch,
+            "timeout_invalid");
+        AssertInvalid(
+            Response(
+                batch,
+                Decision(
+                    "m1",
+                    "ban",
+                    86_400,
+                    "G",
+                    "Eindeutig extreme Beleidigung.",
+                    ["bad"],
+                    0.99,
+                    "G_INSULT")),
             batch,
             "timeout_invalid");
     }
@@ -512,7 +609,7 @@ public sealed class ModerationEnvelopeValidatorTests
 
         Assert.True(result.IsValid);
         Assert.Equal(
-            "Direkte Beleidigung gegen einen Nutzer.",
+            "Direkte Beleidigung eines Nutzers oder Streamers.",
             Assert.Single(result.Envelope!.Decisions).Reason);
     }
 
@@ -572,6 +669,96 @@ public sealed class ModerationEnvelopeValidatorTests
             batch.Context.EffectivePolicy.ActiveRules,
             rule => rule.RuleCode == spamRuleCode);
         Assert.Equal("Spam", activeRule.Title);
+    }
+
+    [Fact]
+    public void Validate_DeleteForRepeatedSpamBecomesLightTimeout()
+    {
+        var batch = SpamBatch();
+        var response = Response(
+            batch,
+            Decision(
+                "m1",
+                "delete",
+                null,
+                "G",
+                "Wiederholter Spam.",
+                ["spam"],
+                0.96,
+                ModerationRuleCodes.Spam));
+
+        var result = new ModerationEnvelopeValidator().Validate(response, batch);
+
+        Assert.True(result.IsValid);
+        var decision = Assert.Single(result.Envelope!.Decisions);
+        Assert.Equal(ModerationActionKind.Timeout, decision.Action);
+        Assert.Equal(120, decision.TimeoutSeconds);
+    }
+
+    [Theory]
+    [InlineData("delete", null)]
+    [InlineData("timeout", 120)]
+    [InlineData("timeout", 300)]
+    public void Validate_AdvertisingActionAlwaysBecomesBan(
+        string action,
+        int? timeoutSeconds)
+    {
+        var batch = GeneralRuleBatch(
+            ModerationRuleCodes.Advertising,
+            "Werbung",
+            "Unaufgeforderte Werbung oder Eigenwerbung.",
+            "besucht meinen kanal");
+        var response = Response(
+            batch,
+            Decision(
+                "m1",
+                action,
+                timeoutSeconds,
+                "G",
+                "Unaufgeforderte Werbung oder Eigenwerbung.",
+                ["meinen kanal"],
+                0.97,
+                ModerationRuleCodes.Advertising));
+
+        var result = new ModerationEnvelopeValidator().Validate(response, batch);
+
+        Assert.True(result.IsValid);
+        var decision = Assert.Single(result.Envelope!.Decisions);
+        Assert.Equal(ModerationActionKind.Ban, decision.Action);
+        Assert.Null(decision.TimeoutSeconds);
+    }
+
+    [Theory]
+    [InlineData("delete", null)]
+    [InlineData("timeout", 120)]
+    [InlineData("ban", null)]
+    public void Validate_BeggingActionAlwaysBecomesDayTimeout(
+        string action,
+        int? timeoutSeconds)
+    {
+        var batch = GeneralRuleBatch(
+            ModerationRuleCodes.Begging,
+            "Gebettel",
+            "Betteln nach Subs, Geschenken oder Giveaways.",
+            "schenk mir bitte einen sub");
+        var response = Response(
+            batch,
+            Decision(
+                "m1",
+                action,
+                timeoutSeconds,
+                "G",
+                "Betteln nach Subs, Geschenken oder Giveaways.",
+                ["schenk mir bitte einen sub"],
+                0.95,
+                ModerationRuleCodes.Begging));
+
+        var result = new ModerationEnvelopeValidator().Validate(response, batch);
+
+        Assert.True(result.IsValid);
+        var decision = Assert.Single(result.Envelope!.Decisions);
+        Assert.Equal(ModerationActionKind.Timeout, decision.Action);
+        Assert.Equal(86_400, decision.TimeoutSeconds);
     }
 
     [Fact]
@@ -901,6 +1088,41 @@ public sealed class ModerationEnvelopeValidatorTests
         };
     }
 
+    private static ModerationBatch GeneralRuleBatch(
+        string ruleCode,
+        string title,
+        string publicReason,
+        string original)
+    {
+        var batch = Batch(
+            1,
+            includeBackseat: false,
+            firstMessage: original);
+        var rule = new ModerationRuleDefinition(
+            ruleCode,
+            PolicySetCode.General,
+            title,
+            publicReason,
+            ModerationActionKind.Timeout,
+            600,
+            publicReason,
+            Priority: 75);
+        var policy = batch.Context.EffectivePolicy with
+        {
+            ActiveRules =
+            [
+                .. batch.Context.EffectivePolicy.ActiveRules,
+                rule,
+            ],
+        };
+        return batch with
+        {
+            Context = new ModerationBatchContext(
+                batch.Context.Channel,
+                policy),
+        };
+    }
+
     private static ModerationRuleDefinition Rule(
         string code,
         PolicySetCode policySet,
@@ -914,7 +1136,8 @@ public sealed class ModerationEnvelopeValidatorTests
             null,
             code switch
             {
-                "G_INSULT" => "Direkte Beleidigung gegen einen Nutzer.",
+                "G_INSULT" =>
+                    "Direkte Beleidigung eines Nutzers oder Streamers.",
                 ModerationRuleCodes.PersonalData =>
                     "Veröffentlichung persönlicher Daten.",
                 ModerationRuleCodes.Backseatgaming =>

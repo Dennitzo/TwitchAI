@@ -827,6 +827,7 @@ public sealed class CoreModerationCaseRepository : IModerationCaseRepository
             "none" => ModerationActionKind.None,
             "delete" => ModerationActionKind.Delete,
             "timeout" => ModerationActionKind.Timeout,
+            "ban" => ModerationActionKind.Ban,
             _ => throw new InvalidDataException($"Unsupported moderation action '{value}'."),
         };
     }
@@ -838,6 +839,7 @@ public sealed class CoreModerationCaseRepository : IModerationCaseRepository
             ModerationActionKind.None => "none",
             ModerationActionKind.Delete => "delete",
             ModerationActionKind.Timeout => "timeout",
+            ModerationActionKind.Ban => "ban",
             _ => throw new ArgumentOutOfRangeException(nameof(action), action, null),
         };
     }

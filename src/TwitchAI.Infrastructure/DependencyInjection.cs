@@ -75,6 +75,9 @@ public static class DependencyInjection
         services.AddSingleton<
             IModerationReviewFeedbackService,
             SqliteModerationReviewFeedbackService>();
+        services.AddSingleton<
+            CoreContracts.ILearningFeedbackService,
+            SqliteLearningFeedbackService>();
 
         services.AddSingleton<ITwitchCredentialVault, WindowsPasswordVaultCredentialStore>();
         services.AddSingleton<ITwitchAccessTokenProvider, TwitchAccessTokenProvider>();
@@ -113,6 +116,9 @@ public static class DependencyInjection
         services.AddSingleton<
             ILocalAiRunActivityMonitor,
             LocalAiRunActivityMonitor>();
+        services.AddSingleton<
+            ILocalAiExecutionGate,
+            LocalAiExecutionGate>();
         services.AddSingleton<
             ILmStudioCredentialVault,
             WindowsLmStudioCredentialVault>();

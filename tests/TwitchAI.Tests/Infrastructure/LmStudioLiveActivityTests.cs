@@ -167,6 +167,30 @@ public sealed class LmStudioLiveActivityTests
                 .GetProperty("envelopeVersion")
                 .GetProperty("const")
                 .GetString());
+        var actionEnum = schema
+            .GetProperty("properties")
+            .GetProperty("decisions")
+            .GetProperty("items")
+            .GetProperty("properties")
+            .GetProperty("action")
+            .GetProperty("enum")
+            .EnumerateArray()
+            .Select(item => item.GetString()!)
+            .ToArray();
+        Assert.Equal(["none", "delete", "timeout", "ban"], actionEnum);
+        var timeoutEnum = schema
+            .GetProperty("properties")
+            .GetProperty("decisions")
+            .GetProperty("items")
+            .GetProperty("properties")
+            .GetProperty("timeoutSeconds")
+            .GetProperty("enum")
+            .EnumerateArray()
+            .Select(item => item.ValueKind == JsonValueKind.Null
+                ? (int?)null
+                : item.GetInt32())
+            .ToArray();
+        Assert.Equal([null, 2, 120, 600, 86_400], timeoutEnum);
         var ruleCodeEnum = schema
             .GetProperty("properties")
             .GetProperty("decisions")
@@ -197,6 +221,82 @@ public sealed class LmStudioLiveActivityTests
             item => Assert.Equal("r1", item),
             item => Assert.Equal("r2", item),
             Assert.Null);
+    }
+
+    [Fact]
+    public async Task CompleteModerationAsync_LearningTestUsesDedicatedSchemaAndActivityKind()
+    {
+        var responseBody = JsonSerializer.Serialize(
+            new
+            {
+                model = "openai/gpt-oss-20b",
+                choices = new[]
+                {
+                    new
+                    {
+                        message = new
+                        {
+                            content =
+                                """{"envelopeVersion":"twitchai.learning-test.response.v1","testId":"11111111-1111-1111-1111-111111111111","decision":{"verdict":"allow","action":"none","timeoutSeconds":null,"policySet":"G","ruleCode":"G_OTHER_ABUSE","reason":"","triggerPhrases":[],"confidence":0.8}}""",
+                        },
+                        finish_reason = "stop",
+                    },
+                },
+            });
+        var handler = new StaticResponseHandler(HttpStatusCode.OK, responseBody);
+        using var httpClient = CreateHttpClient(handler);
+        var monitor = new LocalAiRunActivityMonitor();
+        var activities = new List<LocalAiRunActivity>();
+        monitor.ActivityChanged += (_, args) => activities.Add(args.Activity);
+        var gate = new RecordingExecutionGate();
+        var sut = new LmStudioClient(
+            httpClient,
+            new RecordingMetricsStore(),
+            new EmptyCredentialVault(),
+            CreateOptions(),
+            monitor,
+            gate);
+
+        await sut.CompleteModerationAsync(
+            new LmStudioModerationRequest(
+                "learning-test:11111111-1111-1111-1111-111111111111",
+                "policy",
+                MessageCount: 1,
+                "system",
+                "{}",
+                ["G_OTHER_ABUSE", "BACKSEATGAMING"],
+                ReplyTemplateIds: [],
+                LmStudioResponseSchemaKind.LearningTest,
+                LocalAiRunKind.LearningTest));
+
+        using var document = JsonDocument.Parse(handler.RequestBody!);
+        var schema = document.RootElement
+            .GetProperty("response_format")
+            .GetProperty("json_schema")
+            .GetProperty("schema");
+        Assert.Equal(
+            "twitchai.learning-test.response.v1",
+            schema
+                .GetProperty("properties")
+                .GetProperty("envelopeVersion")
+                .GetProperty("const")
+                .GetString());
+        var decision = schema
+            .GetProperty("properties")
+            .GetProperty("decision");
+        Assert.Equal("object", decision.GetProperty("type").GetString());
+        Assert.Equal(
+            ["BACKSEATGAMING", "G_OTHER_ABUSE"],
+            decision
+                .GetProperty("properties")
+                .GetProperty("ruleCode")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.Equal(1, gate.AcquireCount);
+        Assert.All(
+            activities,
+            item => Assert.Equal(LocalAiRunKind.LearningTest, item.RunKind));
     }
 
     private static LmStudioModerationRequest Request(
@@ -276,5 +376,22 @@ public sealed class LmStudioLiveActivityTests
 
         public Task DeleteTokenAsync(CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+    }
+
+    private sealed class RecordingExecutionGate : ILocalAiExecutionGate
+    {
+        public int AcquireCount { get; private set; }
+
+        public ValueTask<IAsyncDisposable> AcquireAsync(
+            CancellationToken cancellationToken = default)
+        {
+            AcquireCount++;
+            return ValueTask.FromResult<IAsyncDisposable>(new NoopLease());
+        }
+
+        private sealed class NoopLease : IAsyncDisposable
+        {
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
     }
 }

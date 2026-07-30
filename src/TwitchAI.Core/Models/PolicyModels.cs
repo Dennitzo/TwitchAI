@@ -18,6 +18,10 @@ public static class ModerationRuleCodes
     public const string OtherAbuse = "G_OTHER_ABUSE";
     public const string GeneralPhrase = OtherAbuse;
     public const string PersonalData = "G_PERSONAL_DATA";
+    public const string Advertising = "G_ADVERTISING";
+    public const string Begging = "G_BEGGING";
+    public const string Spam = "G_SPAM";
+    public const string Disruption = "G_DISRUPTION";
     public const string Backseatgaming = "BACKSEATGAMING";
     public const string BackseatgamingPromptInstruction =
         "BACKSEATGAMING nur bei klarer, unaufgeforderter Spielinformation: konkrete Handlungsanweisung, Missions-/Rätsellösung oder Spoiler zu kommendem Ereignis/versteckter Gefahr. Sonst none: einzelne Wörter/Fragmente (z. B. zorro, nichts), allgemeine Reaktionen, Fragen, Scherze, Meinungen, Zustimmung/Ablehnung, Streamer-/Chat-Meta oder Text ohne klaren spielbezogenen Handlungs-/Informationsgehalt; Zitat, Verneinung und Kontext beachten.";

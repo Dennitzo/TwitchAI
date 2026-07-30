@@ -223,6 +223,29 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 ruleResult.Error.Code,
                 $"Decision '{messageId}': {ruleResult.Error.Message}");
         }
+
+        (action, timeoutSeconds) =
+            ModerationActionRules.NormalizeAiSuggestionForRule(
+                action,
+                timeoutSeconds,
+                ruleResult.Rule?.RuleCode);
+        if (!ModerationActionRules.IsValidAiSuggestion(
+                action,
+                timeoutSeconds))
+        {
+            return DecisionValidationResult.Invalid(
+                "timeout_invalid",
+                $"Decision '{messageId}' has an invalid timeout value.");
+        }
+
+        if (!ModerationActionRules.IsValidAiRuleAction(
+                action,
+                ruleResult.Rule?.RuleCode))
+        {
+            return DecisionValidationResult.Invalid(
+                "action_rule_invalid",
+                $"Decision '{messageId}': The selected rule cannot justify a permanent ban on its own.");
+        }
         if (action != ModerationActionKind.None
             && string.Equals(
                 ruleResult.Rule?.RuleCode,
@@ -348,7 +371,7 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                         null,
                         new(
                             "reply_for_moderation_action",
-                            "A delete or timeout decision cannot select a reply template."));
+                            "A delete, timeout, or ban decision cannot select a reply template."));
         }
 
         if (templateIdElement.ValueKind == JsonValueKind.Null)
@@ -611,6 +634,7 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             "none" => ModerationActionKind.None,
             "delete" => ModerationActionKind.Delete,
             "timeout" => ModerationActionKind.Timeout,
+            "ban" => ModerationActionKind.Ban,
             _ => (ModerationActionKind)(-1),
         };
         return Enum.IsDefined(action);

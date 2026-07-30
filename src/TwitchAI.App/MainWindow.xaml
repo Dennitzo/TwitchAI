@@ -203,6 +203,11 @@
             <FontIcon Glyph="&#xE8BD;" />
           </NavigationViewItem.Icon>
         </NavigationViewItem>
+        <NavigationViewItem Content="Lernen" Tag="learning">
+          <NavigationViewItem.Icon>
+            <FontIcon Glyph="&#xE70F;" />
+          </NavigationViewItem.Icon>
+        </NavigationViewItem>
         <NavigationViewItemSeparator />
         <NavigationViewItem Content="Datenbank" Tag="database">
           <NavigationViewItem.Icon>

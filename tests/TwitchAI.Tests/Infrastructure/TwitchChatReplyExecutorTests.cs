@@ -388,6 +388,17 @@ public sealed class TwitchChatReplyExecutorTests
                 "A chat reply must never timeout a Twitch user.");
         }
 
+        public Task BanUserAsync(
+            string broadcasterId,
+            string moderatorId,
+            string userId,
+            string reason,
+            CancellationToken cancellationToken = default)
+        {
+            throw new InvalidOperationException(
+                "A chat reply must never ban a Twitch user.");
+        }
+
         public Task<TwitchUserInfo> GetCurrentUserAsync(
             CancellationToken cancellationToken = default) =>
             Unexpected<TwitchUserInfo>();

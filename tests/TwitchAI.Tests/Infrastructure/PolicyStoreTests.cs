@@ -12,13 +12,25 @@ public sealed class PolicyStoreTests
 
         var policy = await sut.GetEffectivePolicyAsync("channel-1", "509658");
 
-        Assert.Equal(2, policy.GeneralRevision);
+        Assert.Equal(3, policy.GeneralRevision);
         Assert.Equal(0, policy.CategoryRevision);
         Assert.Null(policy.CategoryId);
-        Assert.Equal(17, policy.Rules.Count);
+        Assert.Equal(19, policy.Rules.Count);
         Assert.Contains(
             policy.Rules,
             rule => rule.RuleCode == GlobalPolicyStorage.GeneralRuleCode);
+        Assert.Contains(
+            policy.Rules,
+            rule => rule.RuleCode == TwitchAI.Core.Models.ModerationRuleCodes.Advertising
+                && rule.Title == "Werbung"
+                && rule.DefaultAction == ModerationRuleAction.Timeout
+                && rule.DefaultTimeoutSeconds == 120);
+        Assert.Contains(
+            policy.Rules,
+            rule => rule.RuleCode == TwitchAI.Core.Models.ModerationRuleCodes.Begging
+                && rule.Title == "Gebettel"
+                && rule.DefaultAction == ModerationRuleAction.Timeout
+                && rule.DefaultTimeoutSeconds == 120);
         Assert.DoesNotContain(
             policy.Rules,
             rule => string.Equals(
@@ -36,9 +48,9 @@ public sealed class PolicyStoreTests
         var policy = await sut.GetEffectivePolicyAsync("channel-1", "32982");
 
         Assert.Equal("32982", policy.CategoryId);
-        Assert.Equal(2, policy.GeneralRevision);
+        Assert.Equal(3, policy.GeneralRevision);
         Assert.Equal(3, policy.CategoryRevision);
-        Assert.Equal(18, policy.Rules.Count);
+        Assert.Equal(20, policy.Rules.Count);
         var rule = Assert.Single(
             policy.Rules,
             item => item.RuleCode == GlobalPolicyStorage.BackseatgamingRuleCode);
@@ -55,6 +67,25 @@ public sealed class PolicyStoreTests
     }
 
     [Fact]
+    public async Task LearningPolicy_AlwaysLoadsGeneralAndBackseatgamingOffline()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var sut = CreateStore(database);
+
+        var policy = await sut.GetLearningPolicyAsync();
+
+        Assert.Equal(GlobalPolicyStorage.BroadcasterId, policy.BroadcasterId);
+        Assert.Equal(3, policy.GeneralRevision);
+        Assert.Equal(3, policy.CategoryRevision);
+        Assert.Contains(
+            policy.Rules,
+            item => item.RuleCode == GlobalPolicyStorage.GeneralRuleCode);
+        Assert.Contains(
+            policy.Rules,
+            item => item.RuleCode == GlobalPolicyStorage.BackseatgamingRuleCode);
+    }
+
+    [Fact]
     public async Task UnknownCategory_FallsBackToGeneralOnly()
     {
         await using var database = await TestDatabase.CreateAsync();
@@ -64,7 +95,7 @@ public sealed class PolicyStoreTests
 
         Assert.Null(policy.CategoryId);
         Assert.Equal(0, policy.CategoryRevision);
-        Assert.Equal(17, policy.Rules.Count);
+        Assert.Equal(19, policy.Rules.Count);
         Assert.Contains(
             policy.Rules,
             rule => rule.RuleCode == GlobalPolicyStorage.GeneralRuleCode);

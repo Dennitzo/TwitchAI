@@ -1005,10 +1005,10 @@ internal static class SchemaMigrations
                  'Sexuell expliziter Inhalt.', 50),
                 ('G_INSULT', 'Beleidigung',
                  'Erkenne direkte persönliche Beleidigungen; harmlose Neckerei nur bei klarem Kontext nicht markieren.',
-                 'Direkte Beleidigung gegen einen Nutzer.', 70),
+                 'Direkte Beleidigung eines Nutzers oder Streamers.', 70),
                 ('G_HARASSMENT', 'Belästigung/Mobbing',
                  'Erkenne gezielte, wiederholte Belästigung oder Mobbing gegen eine Person.',
-                 'Gezielte Belästigung eines Nutzers.', 60),
+                 'Gezielte Belästigung eines Nutzers oder Streamers.', 60),
                 ('G_RACISM', 'Rassismus',
                  'Erkenne rassistische oder ethnisch abwertende Aussagen.',
                  'Rassistische oder ethnisch abwertende Aussage.', 30),
@@ -1411,6 +1411,902 @@ internal static class SchemaMigrations
 
             CREATE INDEX ix_chat_reply_proposals_status_created
                 ON chat_reply_proposals(status, created_utc DESC);
+            """),
+        new(
+            12,
+            "Add advertising and begging rules and support ban moderation records",
+            """
+            -- SQLite cannot widen a CHECK constraint in place. Rebuild the four
+            -- action-bearing moderation tables while preserving their complete
+            -- current schemas, data, indexes, and foreign-key relationships.
+            CREATE TABLE twitchai_moderation_cases_v12 (
+                case_id                    INTEGER PRIMARY KEY,
+                twitch_message_id          TEXT NOT NULL UNIQUE,
+                broadcaster_id             TEXT NOT NULL,
+                chatter_user_id            TEXT NOT NULL,
+                chatter_name_snapshot      TEXT NOT NULL,
+                message_text_original      TEXT NOT NULL,
+                message_text_normalized    TEXT NOT NULL,
+                category_id                TEXT,
+                category_name_snapshot     TEXT,
+                effective_policy_hash      TEXT NOT NULL,
+                policy_revisions_json      TEXT NOT NULL DEFAULT '{}',
+                message_snapshot_json      TEXT NOT NULL DEFAULT '{}',
+                matched_allowlist_id       INTEGER,
+                model_id                   TEXT NOT NULL,
+                envelope_json              TEXT NOT NULL,
+                proposed_action            TEXT NOT NULL CHECK(proposed_action IN (
+                                               'none','delete','timeout','ban')),
+                proposed_timeout_seconds   INTEGER,
+                violation_rule_code        TEXT,
+                reason                     TEXT NOT NULL DEFAULT '',
+                policy_set                 TEXT NOT NULL DEFAULT 'general'
+                                           CHECK(policy_set IN ('general','backseatgaming')),
+                trigger_phrases_json        TEXT NOT NULL DEFAULT '[]',
+                confidence                 REAL,
+                status                     TEXT NOT NULL CHECK(status IN (
+                    'pending','executed','discarded','allowlisted','externally_deleted',
+                    'executing','failed','stale_policy','integrity_blocked',
+                    'externally_completed','outcome_unknown','skipped_overload')),
+                row_version                INTEGER NOT NULL DEFAULT 1 CHECK(row_version > 0),
+                created_utc                TEXT NOT NULL,
+                resolved_utc               TEXT,
+                batch_id                   TEXT,
+                local_match_codes_json     TEXT NOT NULL DEFAULT '[]',
+                ai_latency_ms              INTEGER
+                                           CHECK(ai_latency_ms IS NULL OR ai_latency_ms >= 0),
+                CHECK (
+                    (proposed_action = 'timeout' AND
+                     proposed_timeout_seconds BETWEEN 1 AND 1209600) OR
+                    (proposed_action <> 'timeout' AND proposed_timeout_seconds IS NULL)
+                ),
+                FOREIGN KEY(twitch_message_id) REFERENCES chat_message_snapshots(twitch_message_id),
+                FOREIGN KEY(category_id) REFERENCES twitch_categories(category_id),
+                FOREIGN KEY(matched_allowlist_id) REFERENCES whitelist_phrases(allowlist_id)
+            ) STRICT;
+
+            INSERT INTO twitchai_moderation_cases_v12(
+                case_id, twitch_message_id, broadcaster_id, chatter_user_id,
+                chatter_name_snapshot, message_text_original,
+                message_text_normalized, category_id, category_name_snapshot,
+                effective_policy_hash, policy_revisions_json,
+                message_snapshot_json, matched_allowlist_id, model_id,
+                envelope_json, proposed_action, proposed_timeout_seconds,
+                violation_rule_code, reason, policy_set, trigger_phrases_json,
+                confidence, status, row_version, created_utc, resolved_utc,
+                batch_id, local_match_codes_json, ai_latency_ms)
+            SELECT
+                case_id, twitch_message_id, broadcaster_id, chatter_user_id,
+                chatter_name_snapshot, message_text_original,
+                message_text_normalized, category_id, category_name_snapshot,
+                effective_policy_hash, policy_revisions_json,
+                message_snapshot_json, matched_allowlist_id, model_id,
+                envelope_json, proposed_action, proposed_timeout_seconds,
+                violation_rule_code, reason, policy_set, trigger_phrases_json,
+                confidence, status, row_version, created_utc, resolved_utc,
+                batch_id, local_match_codes_json, ai_latency_ms
+            FROM moderation_cases;
+
+            CREATE TABLE twitchai_moderation_feedback_v12 (
+                feedback_id             INTEGER PRIMARY KEY,
+                case_id                 INTEGER NOT NULL UNIQUE,
+                operator_decision       TEXT NOT NULL CHECK(operator_decision IN (
+                                                'executed','discarded')),
+                actual_action           TEXT NOT NULL CHECK(actual_action IN (
+                                                'none','delete','timeout','ban')),
+                actual_timeout_seconds  INTEGER,
+                actual_reason           TEXT,
+                discard_reason          TEXT,
+                eligible_for_learning   INTEGER NOT NULL CHECK(eligible_for_learning IN (0,1)),
+                human_approved          INTEGER NOT NULL DEFAULT 1 CHECK(human_approved IN (0,1)),
+                twitch_executed         INTEGER NOT NULL DEFAULT 0 CHECK(twitch_executed IN (0,1)),
+                learning_accepted       INTEGER NOT NULL DEFAULT 0 CHECK(learning_accepted IN (0,1)),
+                decided_utc             TEXT NOT NULL,
+                review_completed        INTEGER NOT NULL DEFAULT 0
+                                        CHECK(review_completed IN (0,1)),
+                rule_code               TEXT,
+                CHECK (
+                    (actual_action = 'timeout' AND
+                     actual_timeout_seconds BETWEEN 1 AND 1209600) OR
+                    (actual_action <> 'timeout' AND actual_timeout_seconds IS NULL)
+                ),
+                FOREIGN KEY(case_id) REFERENCES moderation_cases(case_id) ON DELETE RESTRICT
+            ) STRICT;
+
+            INSERT INTO twitchai_moderation_feedback_v12(
+                feedback_id, case_id, operator_decision, actual_action,
+                actual_timeout_seconds, actual_reason, discard_reason,
+                eligible_for_learning, human_approved, twitch_executed,
+                learning_accepted, decided_utc, review_completed, rule_code)
+            SELECT
+                feedback_id, case_id, operator_decision, actual_action,
+                actual_timeout_seconds, actual_reason, discard_reason,
+                eligible_for_learning, human_approved, twitch_executed,
+                learning_accepted, decided_utc, review_completed, rule_code
+            FROM moderation_feedback;
+
+            CREATE TABLE twitchai_action_attempts_v12 (
+                execution_id       INTEGER PRIMARY KEY,
+                case_id            INTEGER NOT NULL,
+                broadcaster_id     TEXT NOT NULL,
+                twitch_message_id  TEXT NOT NULL,
+                target_user_id     TEXT NOT NULL,
+                action             TEXT NOT NULL CHECK(action IN (
+                                           'delete','timeout','ban')),
+                timeout_seconds    INTEGER,
+                reason             TEXT,
+                status             TEXT NOT NULL CHECK(status IN (
+                    'intent','succeeded','failed','outcome_unknown')),
+                requested_utc      TEXT NOT NULL,
+                completed_utc      TEXT,
+                http_status        INTEGER,
+                error_code         TEXT,
+                response_json      TEXT,
+                rule_code          TEXT,
+                CHECK (
+                    (action = 'timeout' AND timeout_seconds BETWEEN 1 AND 1209600) OR
+                    (action IN ('delete','ban') AND timeout_seconds IS NULL)
+                ),
+                FOREIGN KEY(case_id) REFERENCES moderation_cases(case_id) ON DELETE RESTRICT,
+                FOREIGN KEY(twitch_message_id) REFERENCES chat_message_snapshots(twitch_message_id)
+            ) STRICT;
+
+            INSERT INTO twitchai_action_attempts_v12(
+                execution_id, case_id, broadcaster_id, twitch_message_id,
+                target_user_id, action, timeout_seconds, reason, status,
+                requested_utc, completed_utc, http_status, error_code,
+                response_json, rule_code)
+            SELECT
+                execution_id, case_id, broadcaster_id, twitch_message_id,
+                target_user_id, action, timeout_seconds, reason, status,
+                requested_utc, completed_utc, http_status, error_code,
+                response_json, rule_code
+            FROM action_attempts;
+
+            CREATE TABLE twitchai_phrase_feedback_v12 (
+                feedback_id         INTEGER PRIMARY KEY,
+                case_id             INTEGER NOT NULL,
+                source_kind         TEXT NOT NULL CHECK(source_kind IN (
+                    'operator_execute','operator_discard','external_delete')),
+                source_event_id     TEXT,
+                label_action        TEXT NOT NULL CHECK(label_action IN (
+                                            'none','delete','timeout','ban')),
+                rule_code           TEXT,
+                trigger_phrase      TEXT NOT NULL,
+                policy_set          TEXT NOT NULL CHECK(policy_set IN (
+                                            'general','backseatgaming')),
+                is_positive         INTEGER NOT NULL CHECK(is_positive IN (0,1)),
+                category_id         TEXT,
+                message_normalized  TEXT NOT NULL,
+                eligible            INTEGER NOT NULL CHECK(eligible IN (0,1)),
+                confirmed_utc       TEXT NOT NULL,
+                FOREIGN KEY(case_id) REFERENCES moderation_cases(case_id) ON DELETE RESTRICT,
+                FOREIGN KEY(category_id) REFERENCES twitch_categories(category_id),
+                UNIQUE(source_kind, source_event_id)
+            ) STRICT;
+
+            INSERT INTO twitchai_phrase_feedback_v12(
+                feedback_id, case_id, source_kind, source_event_id,
+                label_action, rule_code, trigger_phrase, policy_set,
+                is_positive, category_id, message_normalized, eligible,
+                confirmed_utc)
+            SELECT
+                feedback_id, case_id, source_kind, source_event_id,
+                label_action, rule_code, trigger_phrase, policy_set,
+                is_positive, category_id, message_normalized, eligible,
+                confirmed_utc
+            FROM phrase_feedback;
+
+            DROP TABLE phrase_feedback;
+            DROP TABLE action_attempts;
+            DROP TABLE moderation_feedback;
+            DROP TABLE moderation_cases;
+
+            ALTER TABLE twitchai_moderation_cases_v12 RENAME TO moderation_cases;
+            ALTER TABLE twitchai_moderation_feedback_v12 RENAME TO moderation_feedback;
+            ALTER TABLE twitchai_action_attempts_v12 RENAME TO action_attempts;
+            ALTER TABLE twitchai_phrase_feedback_v12 RENAME TO phrase_feedback;
+
+            CREATE INDEX ix_moderation_cases_status_created
+                ON moderation_cases(broadcaster_id, status, created_utc DESC);
+
+            CREATE INDEX ix_action_attempt_message
+                ON action_attempts(
+                    broadcaster_id, twitch_message_id, action, requested_utc DESC);
+
+            CREATE UNIQUE INDEX ux_action_attempt_case
+                ON action_attempts(case_id);
+
+            CREATE INDEX ix_phrase_feedback_retrieval
+                ON phrase_feedback(
+                    eligible, rule_code, category_id, confirmed_utc DESC);
+
+            CREATE TEMP TABLE twitchai_general_rule_seed_v12 (
+                rule_code          TEXT PRIMARY KEY,
+                title              TEXT NOT NULL,
+                prompt_instruction TEXT NOT NULL,
+                public_reason      TEXT NOT NULL,
+                priority           INTEGER NOT NULL
+            ) STRICT;
+
+            INSERT INTO twitchai_general_rule_seed_v12(
+                rule_code, title, prompt_instruction, public_reason, priority)
+            VALUES
+                ('G_ADVERTISING', 'Werbung',
+                 'Erkenne unaufgeforderte Eigenwerbung sowie Werbung für andere Twitch-Kanäle, Produkte, Dienste, Botangebote, Scam-/Phishing-Seiten oder andere externe Ziele. Bloße sachliche Erwähnungen, erlaubte Kanalbefehle und Antworten auf ausdrückliche Nachfrage sind kein Verstoß.',
+                 'Unaufgeforderte Werbung oder Eigenwerbung.', 75),
+                ('G_BEGGING', 'Gebettel',
+                 'Erkenne direkte Aufforderungen nach geschenkten Subs, Geld oder Gegenständen sowie Drängen nach weiteren Giveaways. Neutrale Fragen zu Laufzeit, Teilnahme oder Regeln eines Giveaways sind kein Verstoß.',
+                 'Betteln nach Subs, Geschenken oder Giveaways.', 76);
+
+            INSERT INTO blacklist_rules(
+                scope_id, rule_code, title, prompt_instruction,
+                default_action, default_timeout_seconds, public_reason,
+                priority, enabled, row_version, created_utc, updated_utc)
+            SELECT
+                s.scope_id, seed.rule_code, seed.title, seed.prompt_instruction,
+                'timeout', 120, seed.public_reason,
+                seed.priority, 1, 1,
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            FROM policy_sets s
+            CROSS JOIN twitchai_general_rule_seed_v12 seed
+            WHERE s.broadcaster_id = '*'
+              AND s.set_code = 'general'
+              AND s.archived_utc IS NULL
+            ON CONFLICT(scope_id, rule_code) WHERE archived_utc IS NULL
+            DO NOTHING;
+
+            DROP TABLE twitchai_general_rule_seed_v12;
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE broadcaster_id = '*'
+              AND set_code = 'general'
+              AND archived_utc IS NULL;
+            """,
+            RequiresForeignKeysDisabled: true,
+            RequiresBackup: true),
+        new(
+            13,
+            "Add isolated manual learning examples and phrase feedback ownership",
+            """
+            CREATE TABLE manual_learning_examples (
+                manual_example_id           INTEGER PRIMARY KEY,
+                test_id                     TEXT NOT NULL UNIQUE,
+                message_text_original       TEXT NOT NULL
+                                                CHECK(length(message_text_original)
+                                                      BETWEEN 1 AND 500),
+                lower_text                  TEXT NOT NULL
+                                                CHECK(length(lower_text)
+                                                      BETWEEN 1 AND 500),
+                ai_verdict                  TEXT NOT NULL
+                                                CHECK(ai_verdict IN ('allow','moderate')),
+                ai_action                   TEXT NOT NULL
+                                                CHECK(ai_action IN (
+                                                    'none','delete','timeout','ban')),
+                ai_timeout_seconds          INTEGER,
+                ai_policy_set               TEXT NOT NULL
+                                                CHECK(ai_policy_set IN (
+                                                    'general','backseatgaming')),
+                ai_rule_code                TEXT NOT NULL,
+                ai_reason                   TEXT NOT NULL DEFAULT '',
+                ai_trigger_phrases_json     TEXT NOT NULL DEFAULT '[]'
+                                                CHECK(json_valid(ai_trigger_phrases_json)
+                                                      AND json_type(
+                                                          ai_trigger_phrases_json) = 'array'),
+                confidence                  REAL NOT NULL
+                                                CHECK(confidence BETWEEN 0 AND 1),
+                local_match_codes_json      TEXT NOT NULL DEFAULT '[]'
+                                                CHECK(json_valid(local_match_codes_json)
+                                                      AND json_type(
+                                                          local_match_codes_json) = 'array'),
+                final_decision              TEXT NOT NULL
+                                                CHECK(final_decision IN (
+                                                    'confirmed_violation',
+                                                    'marked_allowed')),
+                actual_action               TEXT NOT NULL
+                                                CHECK(actual_action IN (
+                                                    'none','delete','timeout','ban')),
+                actual_timeout_seconds      INTEGER,
+                actual_policy_set           TEXT NOT NULL
+                                                CHECK(actual_policy_set IN (
+                                                    'general','backseatgaming')),
+                actual_rule_code            TEXT NOT NULL,
+                actual_reason               TEXT NOT NULL DEFAULT '',
+                actual_trigger_phrases_json TEXT NOT NULL DEFAULT '[]'
+                                                CHECK(json_valid(
+                                                          actual_trigger_phrases_json)
+                                                      AND json_type(
+                                                          actual_trigger_phrases_json) =
+                                                          'array'),
+                policy_revision_fingerprint TEXT NOT NULL,
+                model_id                    TEXT NOT NULL,
+                prompt_tokens               INTEGER CHECK(
+                                                prompt_tokens IS NULL
+                                                OR prompt_tokens >= 0),
+                completion_tokens           INTEGER CHECK(
+                                                completion_tokens IS NULL
+                                                OR completion_tokens >= 0),
+                total_tokens                INTEGER CHECK(
+                                                total_tokens IS NULL
+                                                OR total_tokens >= 0),
+                ai_latency_ms               INTEGER NOT NULL
+                                                CHECK(ai_latency_ms >= 0),
+                eligible_for_learning       INTEGER NOT NULL DEFAULT 1
+                                                CHECK(eligible_for_learning IN (0,1)),
+                row_version                 INTEGER NOT NULL DEFAULT 1
+                                                CHECK(row_version > 0),
+                created_utc                 TEXT NOT NULL,
+                updated_utc                 TEXT NOT NULL,
+                CHECK (
+                    (ai_action = 'timeout'
+                     AND ai_timeout_seconds BETWEEN 1 AND 1209600)
+                    OR
+                    (ai_action <> 'timeout' AND ai_timeout_seconds IS NULL)
+                ),
+                CHECK (
+                    (final_decision = 'marked_allowed'
+                     AND actual_action = 'none'
+                     AND actual_timeout_seconds IS NULL)
+                    OR
+                    (final_decision = 'confirmed_violation'
+                     AND actual_action IN ('delete','timeout','ban')
+                     AND (
+                         (actual_action = 'timeout'
+                          AND actual_timeout_seconds BETWEEN 1 AND 1209600)
+                         OR
+                         (actual_action <> 'timeout'
+                          AND actual_timeout_seconds IS NULL)
+                     ))
+                )
+            ) STRICT;
+
+            CREATE INDEX ix_manual_learning_examples_retrieval
+                ON manual_learning_examples(
+                    eligible_for_learning, actual_policy_set,
+                    actual_rule_code, created_utc DESC);
+
+            CREATE TABLE twitchai_phrase_feedback_v13 (
+                feedback_id         INTEGER PRIMARY KEY,
+                case_id             INTEGER,
+                manual_example_id   INTEGER,
+                source_kind         TEXT NOT NULL CHECK(source_kind IN (
+                    'operator_execute','operator_discard','external_delete',
+                    'learning_test_execute','learning_test_allow')),
+                source_event_id     TEXT,
+                label_action        TEXT NOT NULL CHECK(label_action IN (
+                                            'none','delete','timeout','ban')),
+                rule_code           TEXT,
+                trigger_phrase      TEXT NOT NULL,
+                policy_set          TEXT NOT NULL CHECK(policy_set IN (
+                                            'general','backseatgaming')),
+                is_positive         INTEGER NOT NULL CHECK(is_positive IN (0,1)),
+                category_id         TEXT,
+                message_normalized  TEXT NOT NULL,
+                eligible            INTEGER NOT NULL CHECK(eligible IN (0,1)),
+                confirmed_utc       TEXT NOT NULL,
+                CHECK (
+                    (case_id IS NOT NULL AND manual_example_id IS NULL)
+                    OR
+                    (case_id IS NULL AND manual_example_id IS NOT NULL)
+                ),
+                FOREIGN KEY(case_id) REFERENCES moderation_cases(case_id)
+                    ON DELETE RESTRICT,
+                FOREIGN KEY(manual_example_id)
+                    REFERENCES manual_learning_examples(manual_example_id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(category_id) REFERENCES twitch_categories(category_id),
+                UNIQUE(source_kind, source_event_id)
+            ) STRICT;
+
+            INSERT INTO twitchai_phrase_feedback_v13(
+                feedback_id, case_id, manual_example_id, source_kind,
+                source_event_id, label_action, rule_code, trigger_phrase,
+                policy_set, is_positive, category_id, message_normalized,
+                eligible, confirmed_utc)
+            SELECT
+                feedback_id, case_id, NULL, source_kind,
+                source_event_id, label_action, rule_code, trigger_phrase,
+                policy_set, is_positive, category_id, message_normalized,
+                eligible, confirmed_utc
+            FROM phrase_feedback;
+
+            DROP TABLE phrase_feedback;
+            ALTER TABLE twitchai_phrase_feedback_v13 RENAME TO phrase_feedback;
+
+            CREATE INDEX ix_phrase_feedback_retrieval
+                ON phrase_feedback(
+                    eligible, rule_code, category_id, confirmed_utc DESC);
+
+            -- Manual rows are deliberately self-contained. These triggers keep
+            -- their phrase feedback and aggregate counters in sync even when
+            -- a row is edited or removed through the generic database page.
+            CREATE TRIGGER trg_manual_learning_insert_phrases
+            AFTER INSERT ON manual_learning_examples
+            WHEN NEW.eligible_for_learning = 1
+              AND NEW.actual_rule_code <> 'G_PERSONAL_DATA'
+            BEGIN
+                INSERT OR IGNORE INTO phrase_rules(
+                    rule_id, phrase, normalized_phrase, enabled,
+                    manual_override, positive_confirmations,
+                    negative_confirmations, row_version,
+                    created_utc, updated_utc)
+                SELECT
+                    r.rule_id,
+                    lower(trim(CAST(items.value AS TEXT))),
+                    lower(trim(CAST(items.value AS TEXT))),
+                    1, 'auto', 0, 0, 1, NEW.created_utc, NEW.updated_utc
+                FROM json_each(NEW.actual_trigger_phrases_json) items
+                INNER JOIN blacklist_rules r
+                    ON r.rule_code = NEW.actual_rule_code
+                   AND r.enabled = 1
+                   AND r.archived_utc IS NULL
+                INNER JOIN policy_sets s
+                    ON s.scope_id = r.scope_id
+                   AND s.broadcaster_id = '*'
+                   AND s.set_code = NEW.actual_policy_set
+                   AND s.enabled = 1
+                   AND s.archived_utc IS NULL
+                WHERE NEW.final_decision = 'confirmed_violation'
+                  AND length(trim(CAST(items.value AS TEXT))) BETWEEN 2 AND 500
+                GROUP BY r.rule_id, lower(trim(CAST(items.value AS TEXT)));
+
+                INSERT INTO phrase_feedback(
+                    case_id, manual_example_id, source_kind, source_event_id,
+                    label_action, rule_code, trigger_phrase, policy_set,
+                    is_positive, category_id, message_normalized,
+                    eligible, confirmed_utc)
+                SELECT
+                    NULL,
+                    NEW.manual_example_id,
+                    CASE NEW.final_decision
+                        WHEN 'confirmed_violation' THEN 'learning_test_execute'
+                        ELSE 'learning_test_allow'
+                    END,
+                    'manual:' || NEW.manual_example_id || ':' ||
+                        hex(CAST(
+                            lower(trim(CAST(items.value AS TEXT))) AS BLOB)),
+                    NEW.actual_action,
+                    NEW.actual_rule_code,
+                    lower(trim(CAST(items.value AS TEXT))),
+                    NEW.actual_policy_set,
+                    CASE NEW.final_decision
+                        WHEN 'confirmed_violation' THEN 1 ELSE 0
+                    END,
+                    NULL,
+                    NEW.lower_text,
+                    CASE WHEN EXISTS (
+                        SELECT 1
+                        FROM phrase_rules p
+                        INNER JOIN blacklist_rules r
+                            ON r.rule_id = p.rule_id
+                        INNER JOIN policy_sets s
+                            ON s.scope_id = r.scope_id
+                        WHERE s.broadcaster_id = '*'
+                          AND s.set_code = NEW.actual_policy_set
+                          AND r.rule_code = NEW.actual_rule_code
+                          AND p.normalized_phrase =
+                              lower(trim(CAST(items.value AS TEXT)))
+                          AND p.archived_utc IS NULL
+                          AND r.archived_utc IS NULL
+                    ) THEN 1 ELSE 0 END,
+                    NEW.updated_utc
+                FROM json_each(NEW.actual_trigger_phrases_json) items
+                WHERE length(trim(CAST(items.value AS TEXT))) BETWEEN 2 AND 500
+                GROUP BY lower(trim(CAST(items.value AS TEXT)));
+            END;
+
+            CREATE TRIGGER trg_manual_learning_delete_counters
+            BEFORE DELETE ON phrase_feedback
+            WHEN OLD.manual_example_id IS NOT NULL
+              AND OLD.eligible = 1
+            BEGIN
+                UPDATE phrase_rules
+                SET positive_confirmations = MAX(
+                        positive_confirmations -
+                        CASE OLD.is_positive WHEN 1 THEN 1 ELSE 0 END,
+                        0),
+                    negative_confirmations = MAX(
+                        negative_confirmations -
+                        CASE OLD.is_positive WHEN 0 THEN 1 ELSE 0 END,
+                        0),
+                    row_version = row_version + 1,
+                    updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE phrase_id = (
+                    SELECT p.phrase_id
+                    FROM phrase_rules p
+                    INNER JOIN blacklist_rules r ON r.rule_id = p.rule_id
+                    INNER JOIN policy_sets s ON s.scope_id = r.scope_id
+                    WHERE s.broadcaster_id = '*'
+                      AND s.set_code = OLD.policy_set
+                      AND r.rule_code = OLD.rule_code
+                      AND p.normalized_phrase = OLD.trigger_phrase
+                      AND p.archived_utc IS NULL
+                      AND r.archived_utc IS NULL
+                    LIMIT 1
+                );
+            END;
+
+            CREATE TRIGGER trg_manual_learning_insert_counters
+            AFTER INSERT ON phrase_feedback
+            WHEN NEW.manual_example_id IS NOT NULL
+              AND NEW.eligible = 1
+            BEGIN
+                UPDATE phrase_rules
+                SET positive_confirmations = positive_confirmations +
+                        CASE NEW.is_positive WHEN 1 THEN 1 ELSE 0 END,
+                    negative_confirmations = negative_confirmations +
+                        CASE NEW.is_positive WHEN 0 THEN 1 ELSE 0 END,
+                    row_version = row_version + 1,
+                    updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                WHERE phrase_id = (
+                    SELECT p.phrase_id
+                    FROM phrase_rules p
+                    INNER JOIN blacklist_rules r ON r.rule_id = p.rule_id
+                    INNER JOIN policy_sets s ON s.scope_id = r.scope_id
+                    WHERE s.broadcaster_id = '*'
+                      AND s.set_code = NEW.policy_set
+                      AND r.rule_code = NEW.rule_code
+                      AND p.normalized_phrase = NEW.trigger_phrase
+                      AND p.archived_utc IS NULL
+                      AND r.archived_utc IS NULL
+                    LIMIT 1
+                );
+            END;
+
+            CREATE TRIGGER trg_manual_learning_update_phrases
+            AFTER UPDATE OF
+                lower_text, final_decision, actual_action,
+                actual_policy_set, actual_rule_code,
+                actual_trigger_phrases_json, eligible_for_learning
+            ON manual_learning_examples
+            BEGIN
+                DELETE FROM phrase_feedback
+                WHERE manual_example_id = NEW.manual_example_id;
+
+                INSERT OR IGNORE INTO phrase_rules(
+                    rule_id, phrase, normalized_phrase, enabled,
+                    manual_override, positive_confirmations,
+                    negative_confirmations, row_version,
+                    created_utc, updated_utc)
+                SELECT
+                    r.rule_id,
+                    lower(trim(CAST(items.value AS TEXT))),
+                    lower(trim(CAST(items.value AS TEXT))),
+                    1, 'auto', 0, 0, 1, NEW.created_utc, NEW.updated_utc
+                FROM json_each(NEW.actual_trigger_phrases_json) items
+                INNER JOIN blacklist_rules r
+                    ON r.rule_code = NEW.actual_rule_code
+                   AND r.enabled = 1
+                   AND r.archived_utc IS NULL
+                INNER JOIN policy_sets s
+                    ON s.scope_id = r.scope_id
+                   AND s.broadcaster_id = '*'
+                   AND s.set_code = NEW.actual_policy_set
+                   AND s.enabled = 1
+                   AND s.archived_utc IS NULL
+                WHERE NEW.eligible_for_learning = 1
+                  AND NEW.final_decision = 'confirmed_violation'
+                  AND NEW.actual_rule_code <> 'G_PERSONAL_DATA'
+                  AND length(trim(CAST(items.value AS TEXT))) BETWEEN 2 AND 500
+                GROUP BY r.rule_id, lower(trim(CAST(items.value AS TEXT)));
+
+                INSERT INTO phrase_feedback(
+                    case_id, manual_example_id, source_kind, source_event_id,
+                    label_action, rule_code, trigger_phrase, policy_set,
+                    is_positive, category_id, message_normalized,
+                    eligible, confirmed_utc)
+                SELECT
+                    NULL,
+                    NEW.manual_example_id,
+                    CASE NEW.final_decision
+                        WHEN 'confirmed_violation' THEN 'learning_test_execute'
+                        ELSE 'learning_test_allow'
+                    END,
+                    'manual:' || NEW.manual_example_id || ':' ||
+                        hex(CAST(
+                            lower(trim(CAST(items.value AS TEXT))) AS BLOB)),
+                    NEW.actual_action,
+                    NEW.actual_rule_code,
+                    lower(trim(CAST(items.value AS TEXT))),
+                    NEW.actual_policy_set,
+                    CASE NEW.final_decision
+                        WHEN 'confirmed_violation' THEN 1 ELSE 0
+                    END,
+                    NULL,
+                    NEW.lower_text,
+                    CASE WHEN EXISTS (
+                        SELECT 1
+                        FROM phrase_rules p
+                        INNER JOIN blacklist_rules r
+                            ON r.rule_id = p.rule_id
+                        INNER JOIN policy_sets s
+                            ON s.scope_id = r.scope_id
+                        WHERE s.broadcaster_id = '*'
+                          AND s.set_code = NEW.actual_policy_set
+                          AND r.rule_code = NEW.actual_rule_code
+                          AND p.normalized_phrase =
+                              lower(trim(CAST(items.value AS TEXT)))
+                          AND p.archived_utc IS NULL
+                          AND r.archived_utc IS NULL
+                    ) THEN 1 ELSE 0 END,
+                    NEW.updated_utc
+                FROM json_each(NEW.actual_trigger_phrases_json) items
+                WHERE NEW.eligible_for_learning = 1
+                  AND NEW.actual_rule_code <> 'G_PERSONAL_DATA'
+                  AND length(trim(CAST(items.value AS TEXT))) BETWEEN 2 AND 500
+                GROUP BY lower(trim(CAST(items.value AS TEXT)));
+            END;
+            """,
+            RequiresForeignKeysDisabled: true,
+            RequiresBackup: true),
+        new(
+            14,
+            "Keep manual learning examples isolated from policy phrases",
+            """
+            -- Stop edits to manual examples from creating more policy data while
+            -- the existing v13 side effects are being detached.
+            DROP TRIGGER IF EXISTS trg_manual_learning_insert_phrases;
+            DROP TRIGGER IF EXISTS trg_manual_learning_update_phrases;
+
+            -- Only phrases matching the complete v13 auto-generation signature
+            -- are cleanup candidates. A manually created or subsequently edited
+            -- phrase is intentionally retained when provenance is ambiguous.
+            CREATE TEMP TABLE twitchai_v14_auto_phrase_candidates (
+                phrase_id INTEGER PRIMARY KEY
+            ) STRICT;
+
+            CREATE TEMP TABLE twitchai_v14_policy_cleanup_required (
+                cleanup_required INTEGER PRIMARY KEY CHECK(cleanup_required = 1)
+            ) STRICT;
+
+            INSERT INTO twitchai_v14_policy_cleanup_required(cleanup_required)
+            SELECT 1
+            WHERE EXISTS (
+                SELECT 1
+                FROM phrase_feedback
+                WHERE manual_example_id IS NOT NULL
+                  AND eligible = 1
+            );
+
+            INSERT INTO twitchai_v14_auto_phrase_candidates(phrase_id)
+            SELECT phrase.phrase_id
+            FROM phrase_rules phrase
+            INNER JOIN blacklist_rules rule
+                ON rule.rule_id = phrase.rule_id
+            INNER JOIN policy_sets policy
+                ON policy.scope_id = rule.scope_id
+            INNER JOIN manual_learning_examples example
+                ON example.actual_policy_set = policy.set_code
+               AND example.actual_rule_code = rule.rule_code
+               AND example.final_decision = 'confirmed_violation'
+               AND example.eligible_for_learning = 1
+            INNER JOIN json_each(example.actual_trigger_phrases_json) trigger
+                ON lower(trim(CAST(trigger.value AS TEXT))) =
+                   phrase.normalized_phrase
+            WHERE policy.broadcaster_id = '*'
+              AND phrase.manual_override = 'auto'
+              AND phrase.enabled = 1
+              AND phrase.archived_utc IS NULL
+              AND phrase.phrase = phrase.normalized_phrase
+              AND phrase.created_utc = example.created_utc
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM phrase_feedback nonmanual
+                  WHERE nonmanual.manual_example_id IS NULL
+                    AND nonmanual.eligible = 1
+                    AND nonmanual.policy_set = policy.set_code
+                    AND nonmanual.rule_code = rule.rule_code
+                    AND nonmanual.trigger_phrase =
+                        phrase.normalized_phrase
+              )
+            GROUP BY phrase.phrase_id
+            HAVING phrase.positive_confirmations = (
+                       SELECT COUNT(*)
+                       FROM phrase_feedback feedback
+                       WHERE feedback.manual_example_id IS NOT NULL
+                         AND feedback.eligible = 1
+                         AND feedback.is_positive = 1
+                         AND feedback.policy_set = policy.set_code
+                         AND feedback.rule_code = rule.rule_code
+                         AND feedback.trigger_phrase =
+                             phrase.normalized_phrase
+                   )
+               AND phrase.negative_confirmations = (
+                       SELECT COUNT(*)
+                       FROM phrase_feedback feedback
+                       WHERE feedback.manual_example_id IS NOT NULL
+                         AND feedback.eligible = 1
+                         AND feedback.is_positive = 0
+                         AND feedback.policy_set = policy.set_code
+                         AND feedback.rule_code = rule.rule_code
+                         AND feedback.trigger_phrase =
+                             phrase.normalized_phrase
+                   )
+               AND phrase.row_version = 1 + (
+                       SELECT COUNT(*)
+                       FROM phrase_feedback feedback
+                       WHERE feedback.manual_example_id IS NOT NULL
+                         AND feedback.eligible = 1
+                         AND feedback.policy_set = policy.set_code
+                         AND feedback.rule_code = rule.rule_code
+                         AND feedback.trigger_phrase =
+                             phrase.normalized_phrase
+                   );
+
+            -- The v13 delete trigger first reverses only the counters that its
+            -- matching manual feedback rows previously contributed.
+            DELETE FROM phrase_feedback
+            WHERE manual_example_id IS NOT NULL;
+
+            DROP TRIGGER IF EXISTS trg_manual_learning_delete_counters;
+            DROP TRIGGER IF EXISTS trg_manual_learning_insert_counters;
+
+            -- Physical cleanup is limited to unmodified, now-zero candidates.
+            -- Keeping an uncertain row is safer than deleting a manual phrase.
+            DELETE FROM phrase_rules
+            WHERE phrase_id IN (
+                    SELECT phrase_id
+                    FROM twitchai_v14_auto_phrase_candidates)
+              AND positive_confirmations = 0
+              AND negative_confirmations = 0
+              AND manual_override = 'auto'
+              AND enabled = 1
+              AND archived_utc IS NULL;
+
+            DROP TABLE twitchai_v14_auto_phrase_candidates;
+
+            -- Restore phrase_feedback to Twitch moderation ownership only.
+            CREATE TABLE twitchai_phrase_feedback_v14 (
+                feedback_id         INTEGER PRIMARY KEY,
+                case_id             INTEGER NOT NULL,
+                source_kind         TEXT NOT NULL CHECK(source_kind IN (
+                    'operator_execute','operator_discard','external_delete')),
+                source_event_id     TEXT,
+                label_action        TEXT NOT NULL CHECK(label_action IN (
+                                            'none','delete','timeout','ban')),
+                rule_code           TEXT,
+                trigger_phrase      TEXT NOT NULL,
+                policy_set          TEXT NOT NULL CHECK(policy_set IN (
+                                            'general','backseatgaming')),
+                is_positive         INTEGER NOT NULL CHECK(is_positive IN (0,1)),
+                category_id         TEXT,
+                message_normalized  TEXT NOT NULL,
+                eligible            INTEGER NOT NULL CHECK(eligible IN (0,1)),
+                confirmed_utc       TEXT NOT NULL,
+                FOREIGN KEY(case_id) REFERENCES moderation_cases(case_id)
+                    ON DELETE RESTRICT,
+                FOREIGN KEY(category_id) REFERENCES twitch_categories(category_id),
+                UNIQUE(source_kind, source_event_id)
+            ) STRICT;
+
+            INSERT INTO twitchai_phrase_feedback_v14(
+                feedback_id, case_id, source_kind, source_event_id,
+                label_action, rule_code, trigger_phrase, policy_set,
+                is_positive, category_id, message_normalized,
+                eligible, confirmed_utc)
+            SELECT
+                feedback_id, case_id, source_kind, source_event_id,
+                label_action, rule_code, trigger_phrase, policy_set,
+                is_positive, category_id, message_normalized,
+                eligible, confirmed_utc
+            FROM phrase_feedback
+            WHERE case_id IS NOT NULL;
+
+            DROP TABLE phrase_feedback;
+            ALTER TABLE twitchai_phrase_feedback_v14 RENAME TO phrase_feedback;
+
+            CREATE INDEX ix_phrase_feedback_retrieval
+                ON phrase_feedback(
+                    eligible, rule_code, category_id, confirmed_utc DESC);
+
+            -- Removing previously active phrases or their aggregate counters is
+            -- a real policy correction. Advance both global policy snapshots
+            -- exactly once so no pre-migration AI result can use that old state.
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE broadcaster_id = '*'
+              AND archived_utc IS NULL
+              AND EXISTS (
+                  SELECT 1
+                  FROM twitchai_v14_policy_cleanup_required
+              );
+
+            DROP TABLE twitchai_v14_policy_cleanup_required;
+            """,
+            RequiresForeignKeysDisabled: true,
+            RequiresBackup: true),
+        new(
+            15,
+            "Include streamers in active insult and harassment rule reasons",
+            """
+            -- Only migrate known historical defaults on active global rules.
+            -- Moderation cases, feedback, action attempts, manual examples, and
+            -- configuration audit rows intentionally remain historical records.
+            CREATE TEMP TABLE twitchai_v15_affected_policy_scopes (
+                scope_id INTEGER PRIMARY KEY
+            ) STRICT;
+
+            INSERT INTO twitchai_v15_affected_policy_scopes(scope_id)
+            SELECT DISTINCT rule.scope_id
+            FROM blacklist_rules rule
+            INNER JOIN policy_sets policy
+                ON policy.scope_id = rule.scope_id
+            WHERE policy.broadcaster_id = '*'
+              AND policy.set_code = 'general'
+              AND policy.enabled = 1
+              AND policy.archived_utc IS NULL
+              AND rule.enabled = 1
+              AND rule.archived_utc IS NULL
+              AND (
+                    (
+                        rule.rule_code = 'G_INSULT'
+                        AND rule.public_reason IN (
+                            'Beleidigung eines Nutzers.',
+                            'Direkte Beleidigung eines Nutzers.',
+                            'Direkte Beleidigung gegen einen Nutzer.'
+                        )
+                    )
+                    OR
+                    (
+                        rule.rule_code = 'G_HARASSMENT'
+                        AND rule.public_reason IN (
+                            'Belästigung eines Nutzers.',
+                            'Gezielte Belästigung eines Nutzers.'
+                        )
+                    )
+              );
+
+            UPDATE blacklist_rules
+            SET public_reason = CASE rule_code
+                    WHEN 'G_INSULT'
+                        THEN 'Direkte Beleidigung eines Nutzers oder Streamers.'
+                    WHEN 'G_HARASSMENT'
+                        THEN 'Gezielte Belästigung eines Nutzers oder Streamers.'
+                    ELSE public_reason
+                END,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                    SELECT scope_id
+                    FROM twitchai_v15_affected_policy_scopes
+                )
+              AND enabled = 1
+              AND archived_utc IS NULL
+              AND (
+                    (
+                        rule_code = 'G_INSULT'
+                        AND public_reason IN (
+                            'Beleidigung eines Nutzers.',
+                            'Direkte Beleidigung eines Nutzers.',
+                            'Direkte Beleidigung gegen einen Nutzer.'
+                        )
+                    )
+                    OR
+                    (
+                        rule_code = 'G_HARASSMENT'
+                        AND public_reason IN (
+                            'Belästigung eines Nutzers.',
+                            'Gezielte Belästigung eines Nutzers.'
+                        )
+                    )
+              );
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                SELECT scope_id
+                FROM twitchai_v15_affected_policy_scopes
+            );
+
+            DROP TABLE twitchai_v15_affected_policy_scopes;
             """),
     ];
 }

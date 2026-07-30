@@ -102,6 +102,7 @@ public partial class App : Application
                 services.AddSingleton<IRetrievalExampleStore, SqliteRetrievalExampleStore>();
                 services.AddSingleton<IModerationCaseRepository, CoreModerationCaseRepository>();
                 services.AddSingleton<IModerationCoordinator, ModerationCoordinator>();
+                services.AddSingleton<ILearningTestService, LearningTestService>();
                 services.AddSingleton<ModerationUiBridge>();
                 services.AddSingleton<AppState>();
                 services.AddSingleton<ApplicationStateLoader>();
@@ -113,6 +114,7 @@ public partial class App : Application
                 services.AddTransient<PoliciesViewModel>();
                 services.AddSingleton<WhitelistViewModel>();
                 services.AddSingleton<ChatViewModel>();
+                services.AddSingleton<LearningViewModel>();
                 services.AddSingleton<DatabaseViewModel>();
                 services.AddSingleton<AuditViewModel>();
                 services.AddSingleton<SettingsViewModel>();

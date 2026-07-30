@@ -624,7 +624,7 @@ public sealed class ModerationCoordinatorTests
             {
                 ["messageId"] = message.MessageId,
                 ["action"] = index == 0 ? "timeout" : "none",
-                ["timeoutSeconds"] = index == 0 ? 300 : null,
+                ["timeoutSeconds"] = index == 0 ? 600 : null,
                 ["policySet"] = index == 0 ? "G" : null,
                 ["ruleCode"] = index == 0
                     ? ModerationRuleCodes.GeneralPhrase
@@ -652,7 +652,7 @@ public sealed class ModerationCoordinatorTests
             {
                 ["messageId"] = message.MessageId,
                 ["action"] = index == 0 ? "timeout" : "none",
-                ["timeoutSeconds"] = index == 0 ? 300 : null,
+                ["timeoutSeconds"] = index == 0 ? 600 : null,
                 ["policySet"] = index == 0 ? "G" : null,
                 ["ruleCode"] = null,
                 ["reason"] = index == 0

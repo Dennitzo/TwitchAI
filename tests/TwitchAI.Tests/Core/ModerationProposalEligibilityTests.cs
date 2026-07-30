@@ -42,6 +42,38 @@ public sealed class ModerationProposalEligibilityTests
     }
 
     [Fact]
+    public void CanBeReviewed_CompleteBanWithoutDuration_IsAccepted()
+    {
+        var decision = new ValidatedModerationDecision(
+            "m1",
+            ModerationActionKind.Ban,
+            TimeoutSeconds: null,
+            PolicySetCode.General,
+            "Eindeutig extreme Beleidigung.",
+            [],
+            0.99,
+            "G_INSULT");
+
+        Assert.True(ModerationProposalEligibility.CanBeReviewed(decision));
+    }
+
+    [Fact]
+    public void CanBeReviewed_BanWithTimeoutDuration_IsRejected()
+    {
+        var decision = new ValidatedModerationDecision(
+            "m1",
+            ModerationActionKind.Ban,
+            TimeoutSeconds: 86_400,
+            PolicySetCode.General,
+            "Eindeutig extreme Beleidigung.",
+            [],
+            0.99,
+            "G_INSULT");
+
+        Assert.False(ModerationProposalEligibility.CanBeReviewed(decision));
+    }
+
+    [Fact]
     public void CanBeReviewed_PersistedCaseWithoutViolationCategory_IsRejected()
     {
         var receivedAt = new DateTimeOffset(

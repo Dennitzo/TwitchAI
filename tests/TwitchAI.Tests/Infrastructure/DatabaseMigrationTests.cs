@@ -30,6 +30,7 @@ public sealed class DatabaseMigrationTests
         Assert.Contains("message_clear_watermarks", tables);
         Assert.Contains("chat_reply_templates", tables);
         Assert.Contains("chat_reply_proposals", tables);
+        Assert.Contains("manual_learning_examples", tables);
         Assert.Equal(["32982", "509658"], categories);
 
         await using var seedCommand = connection.CreateCommand();
@@ -60,7 +61,7 @@ public sealed class DatabaseMigrationTests
         var journalMode = await ScalarAsync<string>(connection, "PRAGMA journal_mode;");
         var foreignKeys = await ScalarAsync<long>(connection, "PRAGMA foreign_keys;");
 
-        Assert.Equal(11, migrationCount);
+        Assert.Equal(15, migrationCount);
         Assert.Equal("wal", journalMode, ignoreCase: true);
         Assert.Equal(1, foreignKeys);
     }
@@ -86,10 +87,698 @@ public sealed class DatabaseMigrationTests
             ORDER BY name;
             """);
 
-        Assert.Equal(11, migrationVersion);
+        Assert.Equal(15, migrationVersion);
         Assert.Equal(
             ["chat_reply_proposals", "chat_reply_templates"],
             tables);
+    }
+
+    [Theory]
+    [InlineData(
+        "Beleidigung eines Nutzers.",
+        "Belästigung eines Nutzers.")]
+    [InlineData(
+        "Direkte Beleidigung eines Nutzers.",
+        "Gezielte Belästigung eines Nutzers.")]
+    [InlineData(
+        "Direkte Beleidigung gegen einen Nutzer.",
+        "Gezielte Belästigung eines Nutzers.")]
+    public async Task Version15_UpdatesKnownActiveRuleReasonsOnceAndPreservesHistory(
+        string legacyInsultReason,
+        string legacyHarassmentReason)
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(14);
+        const string timestamp = "2026-07-29T12:00:00.0000000+00:00";
+        const string historicalReason = "Beleidigung eines Nutzers.";
+        const string auditJson =
+            """{"rule_code":"G_INSULT","public_reason":"Beleidigung eines Nutzers."}""";
+
+        long generalRevisionBefore;
+        long insultRowVersionBefore;
+        long harassmentRowVersionBefore;
+        await using (var connection = await database.OpenConnectionAsync())
+        await using (var transaction = connection.BeginTransaction())
+        {
+            await using var fixture = connection.CreateCommand();
+            fixture.Transaction = transaction;
+            fixture.CommandText =
+                """
+                UPDATE blacklist_rules
+                SET public_reason = CASE rule_code
+                        WHEN 'G_INSULT' THEN @insult_reason
+                        WHEN 'G_HARASSMENT' THEN @harassment_reason
+                        ELSE public_reason
+                    END,
+                    updated_utc = @timestamp
+                WHERE scope_id = (
+                        SELECT scope_id
+                        FROM policy_sets
+                        WHERE broadcaster_id = '*'
+                          AND set_code = 'general'
+                          AND archived_utc IS NULL
+                    )
+                  AND rule_code IN ('G_INSULT','G_HARASSMENT')
+                  AND enabled = 1
+                  AND archived_utc IS NULL;
+
+                UPDATE policy_sets
+                SET updated_utc = @timestamp
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+
+                INSERT INTO chat_message_snapshots(
+                    twitch_message_id, eventsub_notification_id,
+                    broadcaster_id, chatter_user_id,
+                    chatter_login_original, chatter_name_original,
+                    message_text_original, lower_text,
+                    message_text_normalized, normalization_version,
+                    original_sha256, normalized_sha256,
+                    identity_fingerprint, channel_context_revision,
+                    category_is_verified, ingress_sequence,
+                    badges_json, received_utc)
+                VALUES(
+                    'v15-history-message', 'v15-history-event',
+                    'channel-1', 'user-1',
+                    'UserOne', 'UserOne',
+                    'historical message', 'historical message',
+                    'historical message', 1,
+                    'v15-original-hash', 'v15-normalized-hash',
+                    'v15-identity-hash', 1,
+                    1, 1, '{}', @timestamp);
+
+                INSERT INTO moderation_cases(
+                    twitch_message_id, broadcaster_id,
+                    chatter_user_id, chatter_name_snapshot,
+                    message_text_original, message_text_normalized,
+                    effective_policy_hash, model_id, envelope_json,
+                    proposed_action, proposed_timeout_seconds,
+                    violation_rule_code, reason, policy_set,
+                    confidence, status, created_utc)
+                VALUES(
+                    'v15-history-message', 'channel-1',
+                    'user-1', 'UserOne',
+                    'historical message', 'historical message',
+                    'policy-hash', 'model', '{}',
+                    'timeout', 600,
+                    'G_INSULT', @historical_reason, 'general',
+                    0.9, 'executed', @timestamp);
+
+                INSERT INTO configuration_audit(
+                    entity_type, entity_id, operation,
+                    before_json, after_json, scope_id,
+                    change_reason, committed_utc)
+                SELECT
+                    'blacklist_rules', 'v15-history', 'update',
+                    @audit_json, @audit_json, scope_id,
+                    'historical reason fixture', @timestamp
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """;
+            fixture.Parameters.AddWithValue("@insult_reason", legacyInsultReason);
+            fixture.Parameters.AddWithValue(
+                "@harassment_reason",
+                legacyHarassmentReason);
+            fixture.Parameters.AddWithValue("@historical_reason", historicalReason);
+            fixture.Parameters.AddWithValue("@audit_json", auditJson);
+            fixture.Parameters.AddWithValue("@timestamp", timestamp);
+            await fixture.ExecuteNonQueryAsync();
+            await transaction.CommitAsync();
+
+            generalRevisionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            insultRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT r.row_version
+                FROM blacklist_rules r
+                INNER JOIN policy_sets s ON s.scope_id = r.scope_id
+                WHERE s.broadcaster_id = '*'
+                  AND s.set_code = 'general'
+                  AND r.rule_code = 'G_INSULT'
+                  AND r.archived_utc IS NULL;
+                """);
+            harassmentRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT r.row_version
+                FROM blacklist_rules r
+                INNER JOIN policy_sets s ON s.scope_id = r.scope_id
+                WHERE s.broadcaster_id = '*'
+                  AND s.set_code = 'general'
+                  AND r.rule_code = 'G_HARASSMENT'
+                  AND r.archived_utc IS NULL;
+                """);
+        }
+
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            [
+                "G_HARASSMENT|Gezielte Belästigung eines Nutzers oder Streamers.",
+                "G_INSULT|Direkte Beleidigung eines Nutzers oder Streamers.",
+            ],
+            await ReadStringsAsync(
+                verify,
+                """
+                SELECT r.rule_code || '|' || r.public_reason
+                FROM blacklist_rules r
+                INNER JOIN policy_sets s ON s.scope_id = r.scope_id
+                WHERE s.broadcaster_id = '*'
+                  AND s.set_code = 'general'
+                  AND r.rule_code IN ('G_INSULT','G_HARASSMENT')
+                  AND r.archived_utc IS NULL
+                ORDER BY r.rule_code;
+                """));
+        Assert.Equal(
+            generalRevisionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            insultRowVersionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT r.row_version
+                FROM blacklist_rules r
+                INNER JOIN policy_sets s ON s.scope_id = r.scope_id
+                WHERE s.broadcaster_id = '*'
+                  AND s.set_code = 'general'
+                  AND r.rule_code = 'G_INSULT'
+                  AND r.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            harassmentRowVersionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT r.row_version
+                FROM blacklist_rules r
+                INNER JOIN policy_sets s ON s.scope_id = r.scope_id
+                WHERE s.broadcaster_id = '*'
+                  AND s.set_code = 'general'
+                  AND r.rule_code = 'G_HARASSMENT'
+                  AND r.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT COUNT(*)
+                FROM blacklist_rules r
+                INNER JOIN policy_sets s ON s.scope_id = r.scope_id
+                WHERE s.broadcaster_id = '*'
+                  AND s.set_code = 'general'
+                  AND r.rule_code IN ('G_INSULT','G_HARASSMENT')
+                  AND r.archived_utc IS NULL
+                  AND r.updated_utc = '2026-07-29T12:00:00.0000000+00:00';
+                """));
+        Assert.NotEqual(
+            timestamp,
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT updated_utc
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            historicalReason,
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT reason
+                FROM moderation_cases
+                WHERE twitch_message_id = 'v15-history-message';
+                """));
+        Assert.Equal(
+            $"{auditJson}|{auditJson}",
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT before_json || '|' || after_json
+                FROM configuration_audit
+                WHERE change_reason = 'historical reason fixture';
+                """));
+        Assert.Equal(
+            15L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT MAX(version) FROM schema_migrations;"));
+    }
+
+    [Fact]
+    public async Task Version14_RemovesLegacyManualPhraseSideEffectsAndKeepsLearningExample()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(13);
+        const string timestamp = "2026-07-29T10:00:00.0000000+00:00";
+
+        await using (var connection = await database.OpenConnectionAsync())
+        await using (var transaction = connection.BeginTransaction())
+        {
+            await using var fixture = connection.CreateCommand();
+            fixture.Transaction = transaction;
+            fixture.CommandText =
+                """
+                INSERT INTO phrase_rules(
+                    rule_id, phrase, normalized_phrase, enabled,
+                    manual_override, positive_confirmations,
+                    negative_confirmations, row_version,
+                    created_utc, updated_utc)
+                SELECT
+                    rule_id, 'bestehende phrase', 'bestehende phrase', 1,
+                    'active', 2, 1, 1, @timestamp, @timestamp
+                FROM blacklist_rules
+                WHERE rule_code = 'G_OTHER_ABUSE'
+                  AND archived_utc IS NULL
+                LIMIT 1;
+
+                INSERT INTO manual_learning_examples(
+                    test_id, message_text_original, lower_text,
+                    ai_verdict, ai_action, ai_timeout_seconds,
+                    ai_policy_set, ai_rule_code, ai_reason,
+                    ai_trigger_phrases_json, confidence,
+                    local_match_codes_json, final_decision,
+                    actual_action, actual_timeout_seconds,
+                    actual_policy_set, actual_rule_code, actual_reason,
+                    actual_trigger_phrases_json,
+                    policy_revision_fingerprint, model_id,
+                    prompt_tokens, completion_tokens, total_tokens,
+                    ai_latency_ms, eligible_for_learning,
+                    created_utc, updated_utc)
+                VALUES(
+                    'legacy-v13-learning',
+                    'Bestehende Phrase und nur vom Lerntest',
+                    'bestehende phrase und nur vom lerntest',
+                    'moderate', 'timeout', 600,
+                    'general', 'G_OTHER_ABUSE', 'Test',
+                    '["bestehende phrase","nur vom lerntest"]', 0.9,
+                    '[]', 'confirmed_violation',
+                    'timeout', 600,
+                    'general', 'G_OTHER_ABUSE', 'Test',
+                    '["bestehende phrase","nur vom lerntest"]',
+                    'policy', 'model', 10, 5, 15, 20, 1,
+                    @timestamp, @timestamp);
+                """;
+            fixture.Parameters.AddWithValue("@timestamp", timestamp);
+            await fixture.ExecuteNonQueryAsync();
+            await transaction.CommitAsync();
+        }
+
+        long generalRevisionBefore;
+        long backseatRevisionBefore;
+        await using (var before = await database.OpenConnectionAsync())
+        {
+            generalRevisionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*' AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            backseatRevisionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*' AND set_code = 'backseatgaming'
+                  AND archived_utc IS NULL;
+                """);
+            Assert.Equal(
+                "3|1",
+                await ScalarAsync<string>(
+                    before,
+                    """
+                    SELECT positive_confirmations || '|' || negative_confirmations
+                    FROM phrase_rules
+                    WHERE normalized_phrase = 'bestehende phrase';
+                    """));
+            Assert.Equal(
+                "1|0",
+                await ScalarAsync<string>(
+                    before,
+                    """
+                    SELECT positive_confirmations || '|' || negative_confirmations
+                    FROM phrase_rules
+                    WHERE normalized_phrase = 'nur vom lerntest';
+                    """));
+            Assert.Equal(
+                2L,
+                await ScalarAsync<long>(
+                    before,
+                    """
+                    SELECT COUNT(*)
+                    FROM phrase_feedback
+                    WHERE manual_example_id IS NOT NULL;
+                    """));
+        }
+
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT COUNT(*)
+                FROM manual_learning_examples
+                WHERE test_id = 'legacy-v13-learning';
+                """));
+        Assert.Equal(
+            "2|1",
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT positive_confirmations || '|' || negative_confirmations
+                FROM phrase_rules
+                WHERE normalized_phrase = 'bestehende phrase';
+                """));
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT COUNT(*)
+                FROM phrase_rules
+                WHERE normalized_phrase = 'nur vom lerntest';
+                """));
+        Assert.DoesNotContain(
+            "manual_example_id",
+            await ReadStringsAsync(
+                verify,
+                "SELECT name FROM pragma_table_info('phrase_feedback');"));
+        Assert.Empty(
+            await ReadStringsAsync(
+                verify,
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name LIKE 'trg_manual_learning_%';
+                """));
+        Assert.Equal(
+            generalRevisionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*' AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            backseatRevisionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*' AND set_code = 'backseatgaming'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+    }
+
+    [Fact]
+    public async Task Version12_PreservesModerationRowsAndAllowsBanActions()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(11);
+        const string timestamp = "2026-07-28T10:00:00.0000000+00:00";
+
+        await using (var connection = await database.OpenConnectionAsync())
+        await using (var transaction = connection.BeginTransaction())
+        {
+            await using var fixture = connection.CreateCommand();
+            fixture.Transaction = transaction;
+            fixture.CommandText =
+                """
+                INSERT INTO chat_message_snapshots(
+                    twitch_message_id, eventsub_notification_id,
+                    broadcaster_id, chatter_user_id,
+                    chatter_login_original, chatter_name_original,
+                    message_text_original, lower_text,
+                    message_text_normalized, normalization_version,
+                    original_sha256, normalized_sha256,
+                    identity_fingerprint, channel_context_revision,
+                    category_is_verified, ingress_sequence,
+                    badges_json, received_utc)
+                VALUES(
+                    'v12-existing-message', 'v12-existing-event',
+                    'channel-1', 'user-1',
+                    'UserOne', 'UserOne',
+                    'existing text', 'existing text',
+                    'existing text', 1,
+                    'original-hash', 'normalized-hash',
+                    'identity-hash', 1,
+                    1, 1, '{}', @timestamp);
+
+                INSERT INTO moderation_cases(
+                    case_id, twitch_message_id, broadcaster_id,
+                    chatter_user_id, chatter_name_snapshot,
+                    message_text_original, message_text_normalized,
+                    effective_policy_hash, policy_revisions_json,
+                    message_snapshot_json, model_id, envelope_json,
+                    proposed_action, proposed_timeout_seconds,
+                    violation_rule_code, reason, policy_set,
+                    trigger_phrases_json, confidence, status,
+                    row_version, created_utc, batch_id,
+                    local_match_codes_json, ai_latency_ms)
+                VALUES(
+                    1200, 'v12-existing-message', 'channel-1',
+                    'user-1', 'UserOne',
+                    'existing text', 'existing text',
+                    'policy-hash', '{}', '{}', 'model', '{}',
+                    'timeout', 600, 'G_INSULT',
+                    'Bestehender Grund.', 'general',
+                    '["existing text"]', 0.9, 'executed',
+                    3, @timestamp, 'batch-existing',
+                    '["G_INSULT"]', 42);
+
+                INSERT INTO moderation_feedback(
+                    feedback_id, case_id, operator_decision,
+                    actual_action, actual_timeout_seconds,
+                    actual_reason, eligible_for_learning,
+                    human_approved, twitch_executed,
+                    learning_accepted, decided_utc,
+                    review_completed, rule_code)
+                VALUES(
+                    1200, 1200, 'executed',
+                    'timeout', 600,
+                    'Bestehender Grund.', 1,
+                    1, 1, 1, @timestamp,
+                    1, 'G_INSULT');
+
+                INSERT INTO action_attempts(
+                    execution_id, case_id, broadcaster_id,
+                    twitch_message_id, target_user_id,
+                    action, timeout_seconds, reason, status,
+                    requested_utc, completed_utc, http_status,
+                    response_json, rule_code)
+                VALUES(
+                    1200, 1200, 'channel-1',
+                    'v12-existing-message', 'user-1',
+                    'timeout', 600, 'Bestehender Grund.', 'succeeded',
+                    @timestamp, @timestamp, 204,
+                    '{}', 'G_INSULT');
+
+                INSERT INTO phrase_feedback(
+                    feedback_id, case_id, source_kind, source_event_id,
+                    label_action, rule_code, trigger_phrase,
+                    policy_set, is_positive, message_normalized,
+                    eligible, confirmed_utc)
+                VALUES(
+                    1200, 1200, 'operator_execute', 'v12-existing-feedback',
+                    'timeout', 'G_INSULT', 'existing text',
+                    'general', 1, 'existing text',
+                    1, @timestamp);
+                """;
+            fixture.Parameters.AddWithValue("@timestamp", timestamp);
+            await fixture.ExecuteNonQueryAsync();
+            await transaction.CommitAsync();
+        }
+
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            "timeout|600|G_INSULT|batch-existing|42",
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT proposed_action || '|' || proposed_timeout_seconds || '|' ||
+                       violation_rule_code || '|' || batch_id || '|' || ai_latency_ms
+                FROM moderation_cases
+                WHERE case_id = 1200;
+                """));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM moderation_feedback WHERE feedback_id = 1200;"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM action_attempts WHERE execution_id = 1200;"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM phrase_feedback WHERE feedback_id = 1200;"));
+
+        var newRules = await ReadStringsAsync(
+            verify,
+            """
+            SELECT r.rule_code || '|' || r.title || '|' || r.public_reason ||
+                   '|' || r.default_action || '|' || r.default_timeout_seconds
+            FROM blacklist_rules r
+            INNER JOIN policy_sets s ON s.scope_id = r.scope_id
+            WHERE s.broadcaster_id = '*'
+              AND s.set_code = 'general'
+              AND r.rule_code IN ('G_ADVERTISING','G_BEGGING')
+              AND r.archived_utc IS NULL
+            ORDER BY r.rule_code;
+            """);
+        Assert.Equal(
+            [
+                "G_ADVERTISING|Werbung|Unaufgeforderte Werbung oder Eigenwerbung.|timeout|120",
+                "G_BEGGING|Gebettel|Betteln nach Subs, Geschenken oder Giveaways.|timeout|120",
+            ],
+            newRules);
+
+        await using (var transaction = verify.BeginTransaction())
+        {
+            await using var insertBan = verify.CreateCommand();
+            insertBan.Transaction = transaction;
+            insertBan.CommandText =
+                """
+                INSERT INTO chat_message_snapshots(
+                    twitch_message_id, eventsub_notification_id,
+                    broadcaster_id, chatter_user_id,
+                    chatter_login_original, chatter_name_original,
+                    message_text_original, lower_text,
+                    message_text_normalized, normalization_version,
+                    original_sha256, normalized_sha256,
+                    identity_fingerprint, channel_context_revision,
+                    category_is_verified, ingress_sequence,
+                    badges_json, received_utc)
+                VALUES(
+                    'v12-ban-message', 'v12-ban-event',
+                    'channel-1', 'user-2',
+                    'UserTwo', 'UserTwo',
+                    'ban text', 'ban text',
+                    'ban text', 1,
+                    'ban-original-hash', 'ban-normalized-hash',
+                    'ban-identity-hash', 1,
+                    1, 2, '{}', @timestamp);
+
+                INSERT INTO moderation_cases(
+                    case_id, twitch_message_id, broadcaster_id,
+                    chatter_user_id, chatter_name_snapshot,
+                    message_text_original, message_text_normalized,
+                    effective_policy_hash, model_id, envelope_json,
+                    proposed_action, violation_rule_code, reason,
+                    policy_set, confidence, status, created_utc)
+                VALUES(
+                    1201, 'v12-ban-message', 'channel-1',
+                    'user-2', 'UserTwo',
+                    'ban text', 'ban text',
+                    'policy-hash', 'model', '{}',
+                    'ban', 'G_INSULT', 'Banwürdige Beleidigung.',
+                    'general', 0.99, 'executed', @timestamp);
+
+                INSERT INTO moderation_feedback(
+                    feedback_id, case_id, operator_decision,
+                    actual_action, actual_reason,
+                    eligible_for_learning, human_approved,
+                    twitch_executed, learning_accepted, decided_utc,
+                    review_completed, rule_code)
+                VALUES(
+                    1201, 1201, 'executed',
+                    'ban', 'Banwürdige Beleidigung.',
+                    1, 1, 1, 1, @timestamp,
+                    1, 'G_INSULT');
+
+                INSERT INTO action_attempts(
+                    execution_id, case_id, broadcaster_id,
+                    twitch_message_id, target_user_id,
+                    action, reason, status,
+                    requested_utc, completed_utc,
+                    http_status, response_json, rule_code)
+                VALUES(
+                    1201, 1201, 'channel-1',
+                    'v12-ban-message', 'user-2',
+                    'ban', 'Banwürdige Beleidigung.', 'succeeded',
+                    @timestamp, @timestamp,
+                    204, '{}', 'G_INSULT');
+
+                INSERT INTO phrase_feedback(
+                    feedback_id, case_id, source_kind, source_event_id,
+                    label_action, rule_code, trigger_phrase,
+                    policy_set, is_positive, message_normalized,
+                    eligible, confirmed_utc)
+                VALUES(
+                    1201, 1201, 'operator_execute', 'v12-ban-feedback',
+                    'ban', 'G_INSULT', 'ban text',
+                    'general', 1, 'ban text',
+                    1, @timestamp);
+                """;
+            insertBan.Parameters.AddWithValue("@timestamp", timestamp);
+            await insertBan.ExecuteNonQueryAsync();
+            await transaction.CommitAsync();
+        }
+
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+        Assert.Equal(
+            [
+                "ix_action_attempt_message",
+                "ix_moderation_cases_status_created",
+                "ix_phrase_feedback_retrieval",
+                "ux_action_attempt_case",
+            ],
+            await ReadStringsAsync(
+                verify,
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'index'
+                  AND name IN (
+                    'ix_action_attempt_message',
+                    'ix_moderation_cases_status_created',
+                    'ix_phrase_feedback_retrieval',
+                    'ux_action_attempt_case')
+                ORDER BY name;
+                """));
     }
 
     [Fact]
@@ -775,11 +1464,11 @@ public sealed class DatabaseMigrationTests
                 50),
             ["G_INSULT"] = (
                 "Beleidigung",
-                "Direkte Beleidigung gegen einen Nutzer.",
+                "Direkte Beleidigung eines Nutzers oder Streamers.",
                 70),
             ["G_HARASSMENT"] = (
                 "Belästigung/Mobbing",
-                "Gezielte Belästigung eines Nutzers.",
+                "Gezielte Belästigung eines Nutzers oder Streamers.",
                 60),
             ["G_RACISM"] = (
                 "Rassismus",
@@ -829,6 +1518,14 @@ public sealed class DatabaseMigrationTests
                 "Chatstörung",
                 "Gezielte Störung des Chats.",
                 80),
+            ["G_ADVERTISING"] = (
+                "Werbung",
+                "Unaufgeforderte Werbung oder Eigenwerbung.",
+                75),
+            ["G_BEGGING"] = (
+                "Gebettel",
+                "Betteln nach Subs, Geschenken oder Giveaways.",
+                76),
             ["G_OTHER_ABUSE"] = (
                 "Sonstiger General-Verstoß",
                 "Sonstiger Verstoß gegen die Chatregeln.",
@@ -861,7 +1558,9 @@ public sealed class DatabaseMigrationTests
                 Assert.Equal(definition.Reason, reader.GetString(2));
                 Assert.Equal(definition.Priority, reader.GetInt64(3));
                 Assert.Equal("timeout", reader.GetString(4));
-                Assert.Equal(600, reader.GetInt64(5));
+                Assert.Equal(
+                    code is "G_ADVERTISING" or "G_BEGGING" ? 120 : 600,
+                    reader.GetInt64(5));
             }
 
             Assert.Equal(expected.Keys.Order(StringComparer.Ordinal), actualCodes.Order(StringComparer.Ordinal));
@@ -919,7 +1618,10 @@ public sealed class DatabaseMigrationTests
         var backups = Directory.GetFiles(
             directory,
             $"{Path.GetFileName(database.Path)}.pre-schema-v*.bak");
-        Assert.Equal(3, backups.Length);
+        var expectedBackups =
+            TwitchAI.Infrastructure.Persistence.SchemaMigrations.All.Count(
+                migration => migration.Version > 5 && migration.RequiresBackup);
+        Assert.Equal(expectedBackups, backups.Length);
 
         foreach (var backupPath in backups)
         {

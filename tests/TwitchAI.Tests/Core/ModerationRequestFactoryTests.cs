@@ -31,7 +31,59 @@ public sealed class ModerationRequestFactoryTests
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "use 600 seconds by default",
+            "call them \"Nutzer oder Streamer\", never only \"Nutzer\"",
+            prompt.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "use a 600-second timeout as the normal baseline",
+            prompt.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "2-second timeout as purge for a very light disruption where that user's recent messages should be cleared",
+            prompt.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "120-second timeout for light spam",
+            prompt.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "600-second timeout for ordinary actionable abuse, light insults, or clear backseatgaming",
+            prompt.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "86400-second timeout for strong insults",
+            prompt.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ban for unambiguously extreme abuse",
+            prompt.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Every moderate G_ADVERTISING decision must use ban",
+            prompt.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Every moderate G_BEGGING decision must use a 86400-second timeout",
+            prompt.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "delete only for a single low-context, unnecessary nuisance message",
+            prompt.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Never choose delete for insults, harassment, hate, threats",
+            prompt.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "rule defaults are fallbacks, not constraints",
+            prompt.SystemPrompt,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "Never ban for an unnecessary message, spam, begging, or backseatgaming alone",
+            prompt.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "timeoutSeconds must be exactly 2, 120, 600, or 86400",
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(

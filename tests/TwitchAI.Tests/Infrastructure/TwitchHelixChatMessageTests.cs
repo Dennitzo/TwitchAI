@@ -127,6 +127,74 @@ public sealed class TwitchHelixChatMessageTests
         Assert.Equal(0, tokenProvider.RefreshCalls);
     }
 
+    [Fact]
+    public async Task BanUserAsync_OmitsDurationAndPostsPermanentBan()
+    {
+        var handler = new CapturingHandler();
+        var tokenProvider = new StubTokenProvider();
+        using var httpClient = CreateHttpClient(handler);
+        var client = CreateClient(httpClient, tokenProvider);
+
+        await client.BanUserAsync(
+            "broadcaster-1",
+            "moderator-9",
+            "viewer-42",
+            "Schwere gezielte Beleidigung.");
+
+        Assert.Equal(1, handler.CallCount);
+        Assert.Equal(HttpMethod.Post, handler.Method);
+        Assert.Equal(
+            "https://api.twitch.tv/helix/moderation/bans" +
+            "?broadcaster_id=broadcaster-1&moderator_id=moderator-9",
+            handler.RequestUri?.AbsoluteUri);
+        Assert.Equal("Bearer", handler.Authorization?.Scheme);
+        Assert.Equal("access-token", handler.Authorization?.Parameter);
+        Assert.Equal("client-id", handler.ClientId);
+        Assert.Equal(1, tokenProvider.GetCalls);
+        Assert.Equal(0, tokenProvider.RefreshCalls);
+
+        using var body = JsonDocument.Parse(Assert.IsType<string>(handler.Body));
+        var root = body.RootElement;
+        Assert.Equal(["data"], root.EnumerateObject().Select(item => item.Name).ToArray());
+        var data = root.GetProperty("data");
+        Assert.Equal(
+            ["reason", "user_id"],
+            data.EnumerateObject()
+                .Select(property => property.Name)
+                .Order(StringComparer.Ordinal)
+                .ToArray());
+        Assert.Equal("viewer-42", data.GetProperty("user_id").GetString());
+        Assert.Equal(
+            "Schwere gezielte Beleidigung.",
+            data.GetProperty("reason").GetString());
+        Assert.False(data.TryGetProperty("duration", out _));
+    }
+
+    [Fact]
+    public async Task BanUserAsync_OnAmbiguousTransportFailure_DoesNotRetry()
+    {
+        var handler = new CapturingHandler
+        {
+            Exception = new HttpRequestException(
+                "The connection was reset after the ban request upload."),
+        };
+        var tokenProvider = new StubTokenProvider();
+        using var httpClient = CreateHttpClient(handler);
+        var client = CreateClient(httpClient, tokenProvider);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(
+            () => client.BanUserAsync(
+                "broadcaster-1",
+                "moderator-9",
+                "viewer-42",
+                "Schwere gezielte Beleidigung."));
+
+        Assert.Contains("reset", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, handler.CallCount);
+        Assert.Equal(1, tokenProvider.GetCalls);
+        Assert.Equal(0, tokenProvider.RefreshCalls);
+    }
+
     private static TwitchHelixClient CreateClient(
         HttpClient httpClient,
         ITwitchAccessTokenProvider tokenProvider) =>

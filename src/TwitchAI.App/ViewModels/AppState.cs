@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.UI.Xaml;
+using TwitchAI.Core.Models;
 using TwitchAI.Core.Services;
 
 namespace TwitchAI.App.ViewModels;
@@ -113,6 +114,11 @@ public sealed partial class ModerationCaseItem : ObservableObject
             ? Visibility.Visible
             : Visibility.Collapsed;
 
+    public Visibility ReasonEditorVisibility =>
+        Action is "timeout" or "ban"
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
     [ObservableProperty]
     public partial double TimeoutSeconds { get; set; } =
         ModerationActionRules.DefaultTimeoutSeconds;
@@ -147,8 +153,11 @@ public sealed partial class ModerationCaseItem : ObservableObject
     partial void OnConfidenceChanged(double value) =>
         OnPropertyChanged(nameof(ConfidenceLabel));
 
-    partial void OnActionChanged(string value) =>
+    partial void OnActionChanged(string value)
+    {
         OnPropertyChanged(nameof(TimeoutEditorVisibility));
+        OnPropertyChanged(nameof(ReasonEditorVisibility));
+    }
 
     [ObservableProperty]
     public partial string AvailabilityLabel { get; set; } = "Nachricht verfügbar";
@@ -232,8 +241,7 @@ public sealed partial class ModerationCaseItem : ObservableObject
             return;
         }
 
-        PolicySet = value.PolicySet;
-        Reason = value.PublicReason;
+        ApplyViolationRuleDefaults(value);
     }
 
     public void ReplaceViolationRuleOptions(
@@ -271,10 +279,34 @@ public sealed partial class ModerationCaseItem : ObservableObject
         if (applyFallbackDefaults && SelectedViolationRule is { } fallback)
         {
             RuleCode = fallback.Code;
-            PolicySet = fallback.PolicySet;
-            Reason = fallback.PublicReason;
+            ApplyViolationRuleDefaults(fallback);
             OnPropertyChanged(nameof(CanExecute));
         }
+    }
+
+    private void ApplyViolationRuleDefaults(PolicyRuleOptionItem rule)
+    {
+        var sourceAction = rule.DefaultAction?.Trim().ToLowerInvariant() switch
+        {
+            "delete" => ModerationActionKind.Delete,
+            "ban" => ModerationActionKind.Ban,
+            _ => ModerationActionKind.Timeout,
+        };
+        var normalized =
+            ModerationActionRules.NormalizeAiSuggestionForRule(
+                sourceAction,
+                rule.DefaultTimeoutSeconds,
+                rule.Code);
+        Action = normalized.Action switch
+        {
+            ModerationActionKind.Delete => "delete",
+            ModerationActionKind.Ban => "ban",
+            _ => "timeout",
+        };
+        TimeoutSeconds = normalized.TimeoutSeconds
+            ?? ModerationActionRules.DefaultTimeoutSeconds;
+        PolicySet = rule.PolicySet;
+        Reason = rule.PublicReason;
     }
 
     private void SynchronizeViolationRuleOptions(
