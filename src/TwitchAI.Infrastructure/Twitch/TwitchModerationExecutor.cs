@@ -25,6 +25,7 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
     private readonly TwitchApiOptions _options;
     private readonly IEventSubProcessingBarrier? _eventSubBarrier;
     private readonly IWhitelistFilterAgent? _whitelistFilter;
+    private readonly ITwitchRuntimeModeSettings _runtimeMode;
 
     public TwitchModerationExecutor(
         IModerationCaseRepository caseRepository,
@@ -38,7 +39,8 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
         InfrastructureOptions options,
         IEventSubProcessingBarrier? eventSubBarrier = null,
         IWhitelistFilterAgent? whitelistFilter = null,
-        ISqliteWriteCoordinator? writeCoordinator = null)
+        ISqliteWriteCoordinator? writeCoordinator = null,
+        ITwitchRuntimeModeSettings? runtimeMode = null)
     {
         _caseRepository = caseRepository;
         _availabilityStore = availabilityStore;
@@ -52,6 +54,7 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
         _options = options.TwitchApi;
         _eventSubBarrier = eventSubBarrier;
         _whitelistFilter = whitelistFilter;
+        _runtimeMode = runtimeMode ?? new TwitchRuntimeModeSettings();
     }
 
     public async ValueTask<ModerationExecutionResult> ExecuteAsync(
@@ -106,6 +109,20 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                 cancellationToken).ConfigureAwait(false);
         }
 
+        if (TwitchChatBadgeRoles.HasAutomaticModerationBypass(
+                moderationCase.Message.Identity,
+                _options))
+        {
+            return await CompleteWithoutMutationAsync(
+                moderationCase,
+                request,
+                CoreModerationCaseStatus.IntegrityBlocked,
+                ModerationExecutionOutcome.IntegrityBlocked,
+                "sender_role_whitelisted",
+                "Der Absender ist Broadcaster, Moderator, VIP oder erkannter Chat-Bot. Die Twitch-Aktion wurde blockiert.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
         if (_whitelistFilter is not null &&
             await _whitelistFilter
                 .ShouldSkipAsync(
@@ -124,41 +141,45 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                 cancellationToken).ConfigureAwait(false);
         }
 
-        var availability = await _availabilityStore.AssessAsync(
-            moderationCase.Message.Identity.ChannelId,
-            moderationCase.Message.Identity.TwitchMessageId,
-            moderationCase.Message.Identity.TwitchUserId,
-            moderationCase.Message.Identity.ReceivedAtUtc,
-            cancellationToken).ConfigureAwait(false);
-        var unavailableResult = await CompleteIfUnavailableAsync(
-            moderationCase,
-            request,
-            availability,
-            cancellationToken).ConfigureAwait(false);
-        if (unavailableResult is not null)
+        var enteredAsReadOnly = _runtimeMode.IsReadOnly;
+        if (!enteredAsReadOnly)
         {
-            return unavailableResult;
-        }
+            var availability = await _availabilityStore.AssessAsync(
+                moderationCase.Message.Identity.ChannelId,
+                moderationCase.Message.Identity.TwitchMessageId,
+                moderationCase.Message.Identity.TwitchUserId,
+                moderationCase.Message.Identity.ReceivedAtUtc,
+                cancellationToken).ConfigureAwait(false);
+            var unavailableResult = await CompleteIfUnavailableAsync(
+                moderationCase,
+                request,
+                availability,
+                cancellationToken).ConfigureAwait(false);
+            if (unavailableResult is not null)
+            {
+                return unavailableResult;
+            }
 
-        if (_eventSubBarrier is not null)
-        {
-            try
+            if (_eventSubBarrier is not null)
             {
-                await _eventSubBarrier
-                    .DrainAsync(cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                return Rejected(
-                    "eventsub_barrier_failed",
-                    "EventSub ist noch nicht aktiv oder nicht vollständig synchronisiert. "
-                    + "Bitte die Analyse starten und die Verbindung abwarten. "
-                    + $"Details: {exception.Message}");
+                try
+                {
+                    await _eventSubBarrier
+                        .DrainAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    return Rejected(
+                        "eventsub_barrier_failed",
+                        "EventSub ist noch nicht aktiv oder nicht vollständig synchronisiert. "
+                        + "Bitte die Analyse starten und die Verbindung abwarten. "
+                        + $"Details: {exception.Message}");
+                }
             }
         }
 
@@ -203,20 +224,29 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                 cancellationToken).ConfigureAwait(false);
         }
 
-        availability = await _availabilityStore.AssessAsync(
+        var executeReadOnly = enteredAsReadOnly || _runtimeMode.IsReadOnly;
+        if (executeReadOnly)
+        {
+            return await CompleteReadOnlyApprovalAsync(
+                moderationCase,
+                request,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        var currentAvailability = await _availabilityStore.AssessAsync(
             moderationCase.Message.Identity.ChannelId,
             moderationCase.Message.Identity.TwitchMessageId,
             moderationCase.Message.Identity.TwitchUserId,
             moderationCase.Message.Identity.ReceivedAtUtc,
             cancellationToken).ConfigureAwait(false);
-        unavailableResult = await CompleteIfUnavailableAsync(
+        var currentUnavailableResult = await CompleteIfUnavailableAsync(
             moderationCase,
             request,
-            availability,
+            currentAvailability,
             cancellationToken).ConfigureAwait(false);
-        if (unavailableResult is not null)
+        if (currentUnavailableResult is not null)
         {
-            return unavailableResult;
+            return currentUnavailableResult;
         }
 
         // Twitch restricts Get Banned Users to a broadcaster token for the
@@ -258,8 +288,19 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                     ModerationExecutionOutcome.AlreadyUnavailable,
                     "user_already_banned",
                     "Der Benutzer ist bereits gebannt oder getimeoutet.",
-                    cancellationToken).ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        // Re-check immediately before creating a Twitch execution intent. If
+        // the operator enabled Read-Only while the preflight was running, the
+        // pending case is completed locally and no remote attempt is opened.
+        if (_runtimeMode.IsReadOnly)
+        {
+            return await CompleteReadOnlyApprovalAsync(
+                moderationCase,
+                request,
+                cancellationToken).ConfigureAwait(false);
         }
 
         var intent = await TryBeginAttemptAsync(
@@ -785,6 +826,109 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             message);
     }
 
+    private async Task<ModerationExecutionResult> CompleteReadOnlyApprovalAsync(
+        ModerationCase moderationCase,
+        ModerationExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        await using var writeLease = await _writeCoordinator
+            .AcquireAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory
+            .OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = connection.BeginTransaction();
+        var now = DateTimeOffset.UtcNow;
+
+        await using (var updateCase = connection.CreateCommand())
+        {
+            updateCase.Transaction = transaction;
+            updateCase.CommandText =
+                """
+                UPDATE moderation_cases
+                SET status = 'executed',
+                    row_version = row_version + 1,
+                    resolved_utc = @resolved_utc,
+                    proposed_action = @approved_action,
+                    proposed_timeout_seconds = @approved_timeout_seconds,
+                    reason = @approved_reason,
+                    policy_set = @approved_policy_set,
+                    violation_rule_code = @approved_rule_code,
+                    trigger_phrases_json = @approved_triggers
+                WHERE case_id = @case_id
+                  AND row_version = @expected_version
+                  AND status = 'pending';
+                """;
+            updateCase.Parameters.AddWithValue("@case_id", moderationCase.CaseId);
+            updateCase.Parameters.AddWithValue(
+                "@expected_version",
+                request.ExpectedRowVersion);
+            updateCase.Parameters.AddWithValue(
+                "@resolved_utc",
+                SqliteData.ToDatabaseTimestamp(now));
+            updateCase.Parameters.AddWithValue(
+                "@approved_action",
+                ToDatabaseAction(request.Action));
+            updateCase.Parameters.AddWithValue(
+                "@approved_timeout_seconds",
+                SqliteData.DbValue(request.TimeoutSeconds));
+            updateCase.Parameters.AddWithValue("@approved_reason", request.Reason);
+            updateCase.Parameters.AddWithValue(
+                "@approved_policy_set",
+                ToDatabasePolicySet(request.PolicySet));
+            updateCase.Parameters.AddWithValue("@approved_rule_code", request.RuleCode!);
+            updateCase.Parameters.AddWithValue(
+                "@approved_triggers",
+                JsonSerializer.Serialize(request.AcceptedTriggerPhrases));
+            if (await updateCase.ExecuteNonQueryAsync(cancellationToken)
+                    .ConfigureAwait(false) != 1)
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return Rejected(
+                    "case_changed",
+                    "Der Moderationsfall wurde parallel geändert.");
+            }
+        }
+
+        await InsertModerationFeedbackAsync(
+            connection,
+            transaction,
+            moderationCase.CaseId,
+            ToDatabaseAction(request.Action),
+            request.TimeoutSeconds,
+            request.Reason,
+            request.RuleCode!,
+            twitchExecuted: false,
+            learningAccepted: true,
+            eligibleForLearning: true,
+            reviewCompleted: true,
+            now,
+            cancellationToken).ConfigureAwait(false);
+
+        var accepted = ModerationRuleCodes.AllowsTriggerLearning(request.RuleCode)
+            ? NormalizePhrases(request.AcceptedTriggerPhrases)
+            : [];
+        await WritePhraseFeedbackAsync(
+            connection,
+            transaction,
+            $"read-only:{moderationCase.CaseId}",
+            moderationCase,
+            request,
+            accepted,
+            now,
+            cancellationToken).ConfigureAwait(false);
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new ModerationExecutionResult(
+            ModerationExecutionOutcome.Succeeded,
+            HumanApproved: true,
+            TwitchExecuted: false,
+            LearningAccepted: true,
+            "read_only_learning_saved",
+            "Read-Only: Die Entscheidung wurde lokal bestätigt und gelernt; "
+            + "es wurde keine Aktion an Twitch gesendet.");
+    }
+
     private async Task TryRecordOwnDeleteAsync(
         long executionId,
         ModerationCase moderationCase,
@@ -939,7 +1083,7 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             await WritePhraseFeedbackAsync(
                 connection,
                 transaction,
-                executionId,
+                $"execution:{executionId}",
                 moderationCase,
                 request,
                 accepted,
@@ -960,7 +1104,7 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
     private static async Task WritePhraseFeedbackAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
-        long executionId,
+        string sourceEventPrefix,
         ModerationCase moderationCase,
         ModerationExecutionRequest request,
         HashSet<string> accepted,
@@ -997,7 +1141,7 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             insert.Parameters.AddWithValue("@case_id", moderationCase.CaseId);
             insert.Parameters.AddWithValue(
                 "@source_event_id",
-                $"execution:{executionId}:{index++}");
+                $"{sourceEventPrefix}:{index++}");
             insert.Parameters.AddWithValue("@label_action", ToDatabaseAction(request.Action));
             insert.Parameters.AddWithValue("@rule_code", request.RuleCode!);
             insert.Parameters.AddWithValue("@trigger_phrase", triggerPhrase);

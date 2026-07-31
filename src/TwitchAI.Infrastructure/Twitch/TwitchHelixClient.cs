@@ -66,6 +66,11 @@ public interface ITwitchHelixClient
 {
     Task<TwitchUserInfo> GetCurrentUserAsync(CancellationToken cancellationToken = default);
 
+    Task<TwitchUserInfo?> GetUserByLoginAsync(
+        string login,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<TwitchUserInfo?>(null);
+
     Task<TwitchChannelInfo?> GetChannelAsync(
         string broadcasterId,
         CancellationToken cancellationToken = default);
@@ -150,6 +155,27 @@ public sealed class TwitchHelixClient : ITwitchHelixClient
             RequiredString(item, "id"),
             RequiredString(item, "login"),
             RequiredString(item, "display_name"));
+    }
+
+    public async Task<TwitchUserInfo?> GetUserByLoginAsync(
+        string login,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(login);
+        using var response = await SendAuthenticatedAsync(
+            () => new HttpRequestMessage(
+                HttpMethod.Get,
+                $"users?login={Escape(login)}"),
+            cancellationToken).ConfigureAwait(false);
+        using var document = await ReadSuccessJsonAsync(response, cancellationToken)
+            .ConfigureAwait(false);
+        var item = FirstDataItem(document.RootElement);
+        return item is null
+            ? null
+            : new TwitchUserInfo(
+                RequiredString(item.Value, "id"),
+                RequiredString(item.Value, "login"),
+                RequiredString(item.Value, "display_name"));
     }
 
     public async Task<TwitchChannelInfo?> GetChannelAsync(

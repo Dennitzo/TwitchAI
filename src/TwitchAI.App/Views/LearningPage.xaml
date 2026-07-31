@@ -356,8 +356,7 @@
                 HorizontalAlignment="Stretch"
                 DisplayMemberPath="DisplayName"
                 ItemsSource="{x:Bind ViewModel.Review.RuleOptions, Mode=OneWay}"
-                SelectedValue="{x:Bind ViewModel.Review.SelectedRuleCode, Mode=TwoWay}"
-                SelectedValuePath="Code" />
+                SelectedItem="{x:Bind ViewModel.Review.SelectedRule, Mode=TwoWay}" />
 
               <TextBox
                 x:Name="ReasonEditor"

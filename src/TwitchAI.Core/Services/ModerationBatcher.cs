@@ -117,7 +117,7 @@ public sealed class ModerationBatcher : IModerationBatcher
                 };
             }
 
-            var dropped = MakeRoomForOneMessage();
+            var eviction = MakeRoomForOneMessage();
 
             if (_current.Count > 0
                 && _currentCharacters + message.PromptCharacterCount >
@@ -141,11 +141,14 @@ public sealed class ModerationBatcher : IModerationBatcher
                         ? BatchIngressDisposition.Accepted
                         : BatchIngressDisposition.AcceptedAndSealed,
                     sealedBatches,
-                    dropped.Count,
+                    eviction.DroppedMessages.Count,
                     NextDeadlineUtc: null)
                 {
-                    DroppedMessages = dropped,
-                    UpdatedQueuedBatches = [updatedQueuedBatch],
+                    DroppedMessages = eviction.DroppedMessages,
+                    UpdatedQueuedBatches = MergeUpdatedQueuedBatches(
+                        eviction.UpdatedQueuedBatches,
+                        updatedQueuedBatch),
+                    RemovedQueuedBatchIds = eviction.RemovedQueuedBatchIds,
                 };
             }
 
@@ -183,10 +186,12 @@ public sealed class ModerationBatcher : IModerationBatcher
                     ? BatchIngressDisposition.Accepted
                     : BatchIngressDisposition.AcceptedAndSealed,
                 sealedBatches,
-                dropped.Count,
+                eviction.DroppedMessages.Count,
                 _openedAtUtc + _options.MaximumCollectionDelay)
             {
-                DroppedMessages = dropped,
+                DroppedMessages = eviction.DroppedMessages,
+                UpdatedQueuedBatches = eviction.UpdatedQueuedBatches,
+                RemovedQueuedBatchIds = eviction.RemovedQueuedBatchIds,
             };
         }
     }
@@ -367,9 +372,11 @@ public sealed class ModerationBatcher : IModerationBatcher
                 StringComparison.Ordinal);
     }
 
-    private List<ModerationBatchMessage> MakeRoomForOneMessage()
+    private QueueEvictionResult MakeRoomForOneMessage()
     {
         var dropped = new List<ModerationBatchMessage>();
+        var removedBatchIds = new List<Guid>();
+        var updatedBatches = new Dictionary<Guid, ModerationBatch>();
         while (_waitingMessageCount >= _options.MaximumQueuedMessages)
         {
             if (_ready.First is null)
@@ -383,20 +390,48 @@ public sealed class ModerationBatcher : IModerationBatcher
             if (oldest.Messages.Count == 1)
             {
                 _ready.RemoveFirst();
+                updatedBatches.Remove(oldest.BatchId);
+                removedBatchIds.Add(oldest.BatchId);
             }
             else
             {
-                _ready.First.Value = oldest with
+                var updated = oldest with
                 {
                     Messages = oldest.Messages.Skip(1).ToArray(),
                 };
+                _ready.First.Value = updated;
+                updatedBatches[updated.BatchId] = updated;
             }
 
             _waitingMessageCount--;
         }
 
-        return dropped;
+        return new QueueEvictionResult(
+            dropped,
+            updatedBatches.Values.ToArray(),
+            removedBatchIds);
     }
+
+    private static ModerationBatch[] MergeUpdatedQueuedBatches(
+        IReadOnlyList<ModerationBatch> evictionUpdates,
+        ModerationBatch appendedTail)
+    {
+        if (evictionUpdates.Count == 0)
+        {
+            return [appendedTail];
+        }
+
+        var merged = evictionUpdates
+            .Where(batch => batch.BatchId != appendedTail.BatchId)
+            .Append(appendedTail)
+            .ToArray();
+        return merged;
+    }
+
+    private sealed record QueueEvictionResult(
+        IReadOnlyList<ModerationBatchMessage> DroppedMessages,
+        IReadOnlyList<ModerationBatch> UpdatedQueuedBatches,
+        IReadOnlyList<Guid> RemovedQueuedBatchIds);
 
     private static bool HasSameContext(
         ModerationBatchContext left,

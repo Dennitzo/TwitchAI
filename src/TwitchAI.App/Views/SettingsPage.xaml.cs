@@ -6,6 +6,8 @@ namespace TwitchAI.App.Views;
 
 public sealed partial class SettingsPage : Page
 {
+    private bool _isPageLoaded;
+
     public SettingsPage()
     {
         ViewModel = App.Current.GetService<SettingsViewModel>();
@@ -16,6 +18,7 @@ public sealed partial class SettingsPage : Page
 
     private async void OnPageLoaded(object sender, RoutedEventArgs e)
     {
+        _isPageLoaded = true;
         try
         {
             await ViewModel.RefreshLmStudioCredentialStatusAsync();
@@ -24,6 +27,26 @@ public sealed partial class SettingsPage : Page
         {
             // The status text already explains that the Credential Locker
             // could not be read; page loading must remain non-blocking.
+        }
+    }
+
+    private async void OnReadOnlyModeToggled(object sender, RoutedEventArgs e)
+    {
+        if (!_isPageLoaded || sender is not ToggleSwitch toggle)
+        {
+            return;
+        }
+
+        try
+        {
+            await ViewModel.ApplyReadOnlyModeChangeAsync(toggle.IsOn);
+        }
+        catch (Exception exception)
+        {
+            await ShowMessageAsync(
+                "Read-Only-Modus umgestellt",
+                "Die Einstellung wurde gespeichert, die Twitch-Verbindung konnte "
+                + $"aber nicht neu aufgebaut werden: {exception.Message}");
         }
     }
 

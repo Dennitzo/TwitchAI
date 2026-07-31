@@ -113,6 +113,19 @@
             Foreground="{ThemeResource MutedTextBrush}"
             Text="Scopes: user:read:chat · user:write:chat · user:read:moderated_channels · moderator:manage:chat_messages · moderator:manage:banned_users"
             TextWrapping="Wrap" />
+          <ToggleSwitch
+            x:Name="ReadOnlyModeToggle"
+            AutomationProperties.Name="Twitch Read-Only-Modus"
+            Header="Read-Only"
+            IsOn="{x:Bind ViewModel.ReadOnlyMode, Mode=OneWay}"
+            OffContent="Inaktiv"
+            OnContent="Aktiv"
+            Toggled="OnReadOnlyModeToggled" />
+          <TextBlock
+            FontSize="12"
+            Foreground="{ThemeResource MutedTextBrush}"
+            Text="Ausführen bestätigt und speichert das lokale Learning, sendet aber keine Lösch-, Timeout-, Ban- oder Chat-Anfrage an Twitch. Im Read-Only-Modus können auch Kanäle ohne Moderationsberechtigung analysiert werden."
+            TextWrapping="Wrap" />
         </StackPanel>
       </Border>
 

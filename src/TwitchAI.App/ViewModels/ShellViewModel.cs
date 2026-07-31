@@ -58,6 +58,9 @@ public sealed partial class ShellViewModel : ObservableObject
             ? "Analyse starten; EventSub wird dabei verbindlich geprüft"
             : "Zuerst Twitch in den Einstellungen erfolgreich verbinden";
 
+    public Visibility ReadOnlyModeVisibility =>
+        _state.IsReadOnlyMode ? Visibility.Visible : Visibility.Collapsed;
+
     public int PendingCount => _state.ModerationCases.Count(item => item.Status == "Pending");
 
     public ObservableCollection<LocalAiRunItem> QueuedLocalAiRuns =>
@@ -179,6 +182,7 @@ public sealed partial class ShellViewModel : ObservableObject
         OnPropertyChanged(nameof(AnalysisLabel));
         OnPropertyChanged(nameof(CanToggleAnalysis));
         OnPropertyChanged(nameof(AnalysisToolTip));
+        OnPropertyChanged(nameof(ReadOnlyModeVisibility));
         RefreshAiFooter();
         ToggleAnalysisCommand.NotifyCanExecuteChanged();
     }
@@ -223,6 +227,7 @@ public sealed partial class ShellViewModel : ObservableObject
         OnPropertyChanged(nameof(AnalysisLabel));
         OnPropertyChanged(nameof(CanToggleAnalysis));
         OnPropertyChanged(nameof(AnalysisToolTip));
+        OnPropertyChanged(nameof(ReadOnlyModeVisibility));
         RefreshAiFooter();
         ToggleAnalysisCommand.NotifyCanExecuteChanged();
     }

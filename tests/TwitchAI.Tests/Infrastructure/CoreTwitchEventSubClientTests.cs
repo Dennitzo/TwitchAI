@@ -39,6 +39,46 @@ public sealed class CoreTwitchEventSubClientTests
                 chatEvent.Message));
     }
 
+    [Theory]
+    [InlineData("moderator")]
+    [InlineData("lead_moderator")]
+    [InlineData("vip")]
+    [InlineData("bot-badge")]
+    public async Task ReadEventsAsync_PreservesSharedChatPrivilegeBadge(
+        string sourceBadge)
+    {
+        var isModerator = sourceBadge is "moderator" or "lead_moderator";
+        var client = CreateClient(
+            new TwitchChatMessageEvent(
+                "eventsub-shared-message-1",
+                "channel-1",
+                DateTimeOffset.UtcNow,
+                "message-1",
+                "shared-user",
+                "shared_user",
+                "Shared User",
+                "This shared role message must bypass moderation.",
+                isModerator,
+                new Dictionary<string, string>(),
+                SourceBroadcasterId: "source-channel",
+                SourceMessageId: "source-message-1",
+                SourceBadges: new Dictionary<string, string>
+                {
+                    [sourceBadge] = "1",
+                }),
+            new ThrowingAvailabilityStore(AvailabilityFailure.None),
+            new RecordingDedupeStore(),
+            new ThrowingChannelStateRepository());
+
+        var chatEvent = await ReadSingleAsync(client);
+
+        Assert.NotNull(chatEvent.Message);
+        Assert.True(chatEvent.Message.Badges.ContainsKey(sourceBadge));
+        Assert.True(
+            TwitchAI.Core.Services.ChatMessageIdentityFingerprint.IsValid(
+                chatEvent.Message));
+    }
+
     [Fact]
     public async Task ReadEventsAsync_ReleasesDeleteMarker_WhenAvailabilityPersistenceFails()
     {

@@ -42,6 +42,14 @@ public partial class App : Application
             .ConfigureServices(services =>
             {
                 services.AddSingleton<ILocalAppStorage>(_localStorage);
+                services.AddSingleton(
+                    new TwitchRuntimeModeSettings(
+                        _localStorage.GetBooleanOrDefault(
+                            LocalAppSettingKeys.ReadOnlyMode,
+                            defaultValue: false)));
+                services.AddSingleton<ITwitchRuntimeModeSettings>(
+                    provider => provider.GetRequiredService<
+                        TwitchRuntimeModeSettings>());
                 services.AddSingleton<
                     ITableSortPreferenceStore,
                     TableSortPreferenceStore>();
@@ -104,7 +112,13 @@ public partial class App : Application
                 services.AddSingleton<IModerationCoordinator, ModerationCoordinator>();
                 services.AddSingleton<ILearningTestService, LearningTestService>();
                 services.AddSingleton<ModerationUiBridge>();
-                services.AddSingleton<AppState>();
+                services.AddSingleton(
+                    provider => new AppState
+                    {
+                        IsReadOnlyMode = provider
+                            .GetRequiredService<TwitchRuntimeModeSettings>()
+                            .IsReadOnly,
+                    });
                 services.AddSingleton<ApplicationStateLoader>();
                 services.AddSingleton<
                     IConfigurationDataService,

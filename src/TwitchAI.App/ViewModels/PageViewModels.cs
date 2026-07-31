@@ -584,7 +584,9 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
             case ModerationExecutionOutcome.Succeeded:
                 item.Status = result.TwitchExecuted
                     ? "Ausgeführt · Twitch bestätigt"
-                    : "Abgeschlossen";
+                    : result.LearningAccepted
+                        ? "Read-Only · lokal gelernt"
+                        : "Abgeschlossen";
                 AddAudit(
                     item,
                     item.Action switch
@@ -594,7 +596,11 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
                         "ban" => "Ban",
                         _ => "Moderation",
                     },
-                    result.TwitchExecuted ? "Twitch ausgeführt" : "Keine Twitch-Aktion");
+                    result.TwitchExecuted
+                        ? "Twitch ausgeführt"
+                        : result.LearningAccepted
+                            ? "Read-Only · lokal gelernt"
+                            : "Keine Twitch-Aktion");
                 break;
             case ModerationExecutionOutcome.AlreadyUnavailable:
                 item.Status = "Extern erledigt · Lernentscheidung offen";
@@ -2410,6 +2416,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly IPolicyStore _policyStore;
     private readonly ILocalAppStorage _localStorage;
     private readonly ModerationQueueRuntimeSettings _queueRuntimeSettings;
+    private readonly TwitchRuntimeModeSettings _twitchRuntimeModeSettings;
+    private readonly IModerationCoordinator _coordinator;
     private readonly SemaphoreSlim _twitchSessionGate = new(1, 1);
 
     public SettingsViewModel(
@@ -2425,7 +2433,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ISqliteWriteCoordinator writeCoordinator,
         IPolicyStore policyStore,
         ILocalAppStorage localStorage,
-        ModerationQueueRuntimeSettings queueRuntimeSettings)
+        ModerationQueueRuntimeSettings queueRuntimeSettings,
+        TwitchRuntimeModeSettings twitchRuntimeModeSettings,
+        IModerationCoordinator coordinator)
     {
         _state = state;
         _options = options;
@@ -2440,6 +2450,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _policyStore = policyStore;
         _localStorage = localStorage;
         _queueRuntimeSettings = queueRuntimeSettings;
+        _twitchRuntimeModeSettings = twitchRuntimeModeSettings;
+        _coordinator = coordinator;
         TwitchClientId = _localStorage.GetString("TwitchClientId")
             ?? options.TwitchOAuth.ClientId;
         ChannelLogin = _localStorage.GetString("ChannelLogin") ?? string.Empty;
@@ -2453,6 +2465,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             defaultValue: true);
         _queueRuntimeSettings.RemoveIdenticalMessages =
             _removeIdenticalAiQueueMessages;
+        _readOnlyMode = _twitchRuntimeModeSettings.IsReadOnly;
+        _state.IsReadOnlyMode = _readOnlyMode;
     }
 
     [ObservableProperty]
@@ -2505,6 +2519,39 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
     }
 
+    private bool _readOnlyMode;
+
+    public bool ReadOnlyMode
+    {
+        get => _readOnlyMode;
+        set
+        {
+            if (!SetProperty(ref _readOnlyMode, value))
+            {
+                return;
+            }
+
+            _twitchRuntimeModeSettings.IsReadOnly = value;
+            _state.IsReadOnlyMode = value;
+            try
+            {
+                _localStorage.SetString(
+                    LocalAppSettingKeys.ReadOnlyMode,
+                    value.ToString());
+                SaveStatus = value
+                    ? "Read-Only-Modus automatisch gespeichert"
+                    : "Twitch-Ausführung automatisch gespeichert";
+            }
+            catch (Exception exception)
+                when (exception is IOException or UnauthorizedAccessException)
+            {
+                SaveStatus =
+                    "Der Read-Only-Modus ist sofort aktiv, konnte aber nicht "
+                    + $"gespeichert werden: {exception.Message}";
+            }
+        }
+    }
+
     [ObservableProperty]
     public partial string SaveStatus { get; set; } = "Noch nicht gespeichert";
 
@@ -2548,7 +2595,47 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _localStorage.SetString(
             LocalAppSettingKeys.RemoveIdenticalAiQueueMessages,
             RemoveIdenticalAiQueueMessages.ToString());
+        _localStorage.SetString(
+            LocalAppSettingKeys.ReadOnlyMode,
+            ReadOnlyMode.ToString());
         SaveStatus = "Lokal gespeichert · Verbindungsänderungen gelten nach App-Neustart";
+    }
+
+    public async Task ApplyReadOnlyModeChangeAsync(
+        bool isReadOnly,
+        CancellationToken cancellationToken = default)
+    {
+        ReadOnlyMode = isReadOnly;
+        var restartAnalysis = _coordinator.IsRunning;
+        if (!restartAnalysis && !_state.IsTwitchConnectionReady)
+        {
+            return;
+        }
+
+        if (restartAnalysis)
+        {
+            await _coordinator.StopAsync(cancellationToken);
+            _state.IsAnalysisRunning = false;
+        }
+
+        try
+        {
+            await CheckTwitchAsync(cancellationToken);
+            if (restartAnalysis)
+            {
+                await _coordinator.StartAsync(cancellationToken);
+                _state.IsAnalysisRunning = true;
+            }
+
+            SaveStatus = isReadOnly
+                ? "Read-Only aktiv · Analyse verwendet nur lesende Twitch-Ereignisse"
+                : "Twitch-Ausführung aktiv · Moderationsrechte wurden neu geprüft";
+        }
+        catch
+        {
+            _state.IsAnalysisRunning = false;
+            throw;
+        }
     }
 
     public void SaveTwitchClientId()
@@ -2823,6 +2910,18 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 currentUser.Login,
                 currentUser.DisplayName);
         }
+        else if (_twitchRuntimeModeSettings.IsReadOnly)
+        {
+            var channel = await _helixClient
+                .GetUserByLoginAsync(normalizedLogin, cancellationToken);
+            target = channel is null
+                ? throw new InvalidOperationException(
+                    $"Der Twitch-Kanal '{normalizedLogin}' wurde nicht gefunden.")
+                : new TwitchModeratedChannel(
+                    channel.Id,
+                    channel.Login,
+                    channel.DisplayName);
+        }
         else
         {
             var moderated = await _helixClient
@@ -2887,7 +2986,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _state.IsTwitchConnectionReady = true;
         _twitchConnectionReadiness.SetSessionReady(
             isReady: true,
-            "Twitch-Anmeldung und Moderationskanal sind verbunden.");
+            _twitchRuntimeModeSettings.IsReadOnly
+                ? "Twitch-Anmeldung und Read-Only-Kanal sind verbunden."
+                : "Twitch-Anmeldung und Moderationskanal sind verbunden.");
         TwitchConnectionStatus = $"Verbunden als {currentUser.DisplayName}";
         SaveStatus = "Twitch-Zuordnung sicher gespeichert";
     }

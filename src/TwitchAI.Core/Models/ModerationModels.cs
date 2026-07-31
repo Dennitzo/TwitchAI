@@ -86,6 +86,8 @@ public sealed record BatchIngressResult(
 
     public IReadOnlyList<ModerationBatch> UpdatedQueuedBatches { get; init; } = [];
 
+    public IReadOnlyList<Guid> RemovedQueuedBatchIds { get; init; } = [];
+
     public string? DuplicateOfTemporaryMessageId { get; init; }
 }
 

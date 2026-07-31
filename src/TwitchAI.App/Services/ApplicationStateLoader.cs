@@ -365,7 +365,20 @@ public sealed class ApplicationStateLoader
 
     private static string GetTwitchResult(AuditRow row)
     {
-        if (row.TwitchExecuted == true || row.AttemptStatus == "succeeded")
+        if (row.TwitchExecuted == true)
+        {
+            return "Twitch ausgeführt";
+        }
+
+        if (row.TwitchExecuted == false
+            && row.LearningAccepted == true
+            && row.CaseStatus == "executed"
+            && row.AttemptStatus is null)
+        {
+            return "Read-Only · lokal gelernt";
+        }
+
+        if (row.TwitchExecuted is null && row.AttemptStatus == "succeeded")
         {
             return "Twitch ausgeführt";
         }

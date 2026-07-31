@@ -11,6 +11,142 @@ namespace TwitchAI.Tests.Infrastructure;
 
 public sealed class TwitchModerationExecutorTests
 {
+    [Theory]
+    [InlineData("delete")]
+    [InlineData("timeout")]
+    [InlineData("ban")]
+    public async Task ExecuteAsync_ReadOnlyLearnsWithoutCallingTwitch(string actionName)
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        const string channelId = "read-only-channel";
+        var infrastructureNormalizer =
+            new TwitchAI.Infrastructure.Persistence.ChatTextNormalizer();
+        var policyStore = new SqlitePolicyStore(
+            database.ConnectionFactory,
+            infrastructureNormalizer);
+        var persistedPolicy = await policyStore.GetEffectivePolicyAsync(
+            channelId,
+            "509658");
+        var context = new ChannelContextSnapshot(
+            channelId,
+            "509658",
+            "Just Chatting",
+            DateTimeOffset.UtcNow,
+            Revision: 1,
+            IsVerified: true);
+        var corePolicy = new EffectivePolicyResolver().Resolve(
+            context,
+            persistedPolicy.GeneralRevision,
+            backseatgamingRevision: 1);
+        var identity = ChatMessageIdentityV1.Create(
+            $"event-read-only-{actionName}",
+            $"message-read-only-{actionName}",
+            channelId,
+            "viewer-id",
+            "viewer",
+            "Viewer",
+            "verbotene testnachricht",
+            DateTimeOffset.UtcNow);
+        var snapshot = new ChatMessageSnapshot(
+            identity,
+            new CoreChatTextNormalizer().Process(identity.OriginalText),
+            context,
+            IngressSequence: 1);
+        var repository = new CoreModerationCaseRepository(
+            database.ConnectionFactory,
+            infrastructureNormalizer);
+        var action = actionName switch
+        {
+            "delete" => ModerationActionKind.Delete,
+            "timeout" => ModerationActionKind.Timeout,
+            "ban" => ModerationActionKind.Ban,
+            _ => throw new InvalidOperationException(),
+        };
+        int? timeoutSeconds = action == ModerationActionKind.Timeout ? 600 : null;
+        var reason = action == ModerationActionKind.Delete
+            ? string.Empty
+            : "Testverstoß gegen die Chatregeln.";
+        var caseId = await repository.AddAsync(
+            snapshot,
+            new ValidatedModerationDecision(
+                "temporary-read-only",
+                action,
+                timeoutSeconds,
+                PolicySetCode.General,
+                reason,
+                ["verbotene testnachricht"],
+                Confidence: 0.9,
+                RuleCode: ModerationRuleCodes.GeneralPhrase),
+            corePolicy.RevisionFingerprint);
+        var helix = new RecordingHelixClient();
+        var executor = new TwitchModerationExecutor(
+            repository,
+            new SqliteMessageAvailabilityStore(
+                database.ConnectionFactory,
+                infrastructureNormalizer),
+            new FixedChannelContextService(context),
+            new EffectivePolicyResolver(),
+            policyStore,
+            database.ConnectionFactory,
+            infrastructureNormalizer,
+            helix,
+            new InfrastructureOptions
+            {
+                DatabasePath = database.Path,
+                TwitchApi = new TwitchApiOptions(),
+            },
+            runtimeMode: new TwitchRuntimeModeSettings(isReadOnly: true));
+
+        var result = await executor.ExecuteAsync(
+            new ModerationExecutionRequest(
+                caseId,
+                ExpectedRowVersion: 1,
+                action,
+                timeoutSeconds,
+                reason,
+                PolicySetCode.General,
+                ["verbotene testnachricht"],
+                RuleCode: ModerationRuleCodes.GeneralPhrase));
+
+        Assert.Equal(ModerationExecutionOutcome.Succeeded, result.Outcome);
+        Assert.True(result.HumanApproved);
+        Assert.False(result.TwitchExecuted);
+        Assert.True(result.LearningAccepted);
+        Assert.Equal("read_only_learning_saved", result.StatusCode);
+        Assert.Null(helix.Delete);
+        Assert.Null(helix.Timeout);
+        Assert.Null(helix.Ban);
+        Assert.Equal(0, helix.GetBannedUserCalls);
+
+        await using var connection = await database.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT c.status, f.actual_action, f.actual_timeout_seconds,
+                   f.actual_reason, f.twitch_executed, f.learning_accepted,
+                   f.eligible_for_learning,
+                   (SELECT COUNT(*) FROM action_attempts WHERE case_id = @case_id),
+                   (SELECT COUNT(*) FROM phrase_feedback WHERE case_id = @case_id)
+            FROM moderation_cases c
+            INNER JOIN moderation_feedback f ON f.case_id = c.case_id
+            WHERE c.case_id = @case_id;
+            """;
+        command.Parameters.AddWithValue("@case_id", caseId);
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("executed", reader.GetString(0));
+        Assert.Equal(actionName, reader.GetString(1));
+        Assert.Equal(
+            timeoutSeconds,
+            reader.IsDBNull(2) ? (int?)null : reader.GetInt32(2));
+        Assert.Equal(reason.Length == 0 ? null : reason, reader.IsDBNull(3) ? null : reader.GetString(3));
+        Assert.False(reader.GetBoolean(4));
+        Assert.True(reader.GetBoolean(5));
+        Assert.True(reader.GetBoolean(6));
+        Assert.Equal(0, reader.GetInt32(7));
+        Assert.Equal(1, reader.GetInt32(8));
+    }
+
     [Fact]
     public async Task ExecuteAsync_AllowsValidatedEditedFieldsAndPersistsFinalRequest()
     {
@@ -319,6 +455,34 @@ public sealed class TwitchModerationExecutorTests
         Assert.False(result.TwitchExecuted);
         Assert.Null(helix.Ban);
         Assert.Null(helix.Timeout);
+    }
+
+    [Theory]
+    [InlineData("moderator")]
+    [InlineData("lead_moderator")]
+    [InlineData("vip")]
+    [InlineData("bot-badge")]
+    public async Task ExecuteAsync_AutomaticRoleWhitelistBlocksExistingCase(
+        string badgeSetId)
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var helix = new RecordingHelixClient();
+        var fixture = await CreateBanFixtureAsync(
+            database,
+            helix,
+            badgeSetId: badgeSetId);
+
+        var result = await fixture.Executor.ExecuteAsync(
+            CreateBanRequest(fixture.CaseId));
+
+        Assert.Equal(
+            ModerationExecutionOutcome.IntegrityBlocked,
+            result.Outcome);
+        Assert.Equal("sender_role_whitelisted", result.StatusCode);
+        Assert.False(result.TwitchExecuted);
+        Assert.Null(helix.Delete);
+        Assert.Null(helix.Timeout);
+        Assert.Null(helix.Ban);
     }
 
     [Fact]
@@ -820,7 +984,8 @@ public sealed class TwitchModerationExecutorTests
     private static async Task<BanFixture> CreateBanFixtureAsync(
         TestDatabase database,
         RecordingHelixClient helix,
-        string moderatorUserId = "moderator-1")
+        string moderatorUserId = "moderator-1",
+        string? badgeSetId = null)
     {
         const string channelId = "channel-ban";
         var infrastructureNormalizer =
@@ -850,7 +1015,13 @@ public sealed class TwitchModerationExecutorTests
             "viewer",
             "Viewer",
             "schwere beleidigung",
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            badges: badgeSetId is null
+                ? null
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [badgeSetId] = "1",
+                });
         var snapshot = new ChatMessageSnapshot(
             identity,
             new CoreChatTextNormalizer().Process(identity.OriginalText),
@@ -910,6 +1081,9 @@ public sealed class TwitchModerationExecutorTests
 
     private sealed class RecordingHelixClient : ITwitchHelixClient
     {
+        public (string BroadcasterId, string ModeratorId, string MessageId)?
+            Delete { get; private set; }
+
         public (string BroadcasterId, string ModeratorId, string UserId, int Seconds, string Reason)?
             Timeout { get; private set; }
 
@@ -969,7 +1143,8 @@ public sealed class TwitchModerationExecutorTests
             string messageId,
             CancellationToken cancellationToken = default)
         {
-            throw new InvalidOperationException("The edited action must use timeout.");
+            Delete = (broadcasterId, moderatorId, messageId);
+            return Task.CompletedTask;
         }
 
         public Task TimeoutUserAsync(

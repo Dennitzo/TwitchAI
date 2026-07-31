@@ -442,7 +442,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 new(
                     ModerationPipelineEventKind.WhitelistSkipped,
                     "stale_case_privileged_sender",
-                    "The stale moderation case belongs to the broadcaster or a moderator and was skipped.",
+                    "The stale moderation case belongs to an automatically whitelisted Twitch role and was skipped.",
                     message,
                     caseId: caseId));
             return;
@@ -681,7 +681,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 new(
                     ModerationPipelineEventKind.WhitelistSkipped,
                     "privileged_sender",
-                    "Messages from the broadcaster and moderators bypass local moderation.",
+                    "Messages from broadcasters, moderators, VIPs, and identified chat bots bypass local moderation.",
                     snapshot));
             return;
         }
@@ -766,7 +766,21 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 await _inferenceSignal.WaitAsync(source.Token).ConfigureAwait(false);
                 while (_batcher.TryDequeue(out var batch) && batch is not null)
                 {
-                    await AnalyzeBatchAsync(batch, source.Token).ConfigureAwait(false);
+                    PublishRunningAiRun(batch);
+                    try
+                    {
+                        await AnalyzeBatchAsync(batch, source.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (source.IsCancellationRequested)
+                    {
+                        PublishFailedAiRun(batch, "cancelled");
+                        throw;
+                    }
+                    catch (Exception exception)
+                    {
+                        PublishFailedAiRun(batch, exception.GetType().Name);
+                        throw;
+                    }
                 }
             }
         }
@@ -1226,6 +1240,12 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         CoreEffectivePolicySnapshot latestPolicy,
         CancellationToken cancellationToken)
     {
+        // The batch has already been dequeued, so its previous Queued activity
+        // is no longer part of the real queue. Close that
+        // lifecycle before creating replacement batches; otherwise the footer
+        // keeps the old correlation ID as a permanent "Wartet" entry.
+        PublishSupersededAiRun(batch, "policy_revision_changed");
+
         var rules = await GetRulesAsync(
                 batch.Context.Channel.ChannelId,
                 latestPolicy,
@@ -1261,6 +1281,15 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             }
 
             PublishBatchIngressUpdates(result);
+        }
+
+        // A policy replacement must not restart the ordinary ten-second
+        // collection window for messages that already formed a sealed batch.
+        // Seal the refreshed remainder immediately so it is drained by the
+        // inference loop as soon as this stale batch returns.
+        if (_batcher.Flush(_timeProvider.GetUtcNow()) is { } refreshedBatch)
+        {
+            SignalSealedBatch(refreshedBatch);
         }
 
         Publish(
@@ -1345,33 +1374,9 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
 
     private bool IsPrivilegedSender(ChatMessageIdentityV1 identity)
     {
-        var userId = identity.TwitchUserId;
-        if (string.Equals(userId, identity.ChannelId, StringComparison.Ordinal)
-            || string.Equals(
-                userId,
-                _options.TwitchApi.BroadcasterId,
-                StringComparison.Ordinal)
-            || string.Equals(
-                userId,
-                _options.TwitchApi.ModeratorUserId,
-                StringComparison.Ordinal)
-            || string.Equals(
-                userId,
-                identity.SharedChatSourceChannelId,
-                StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        return identity.Badges.Keys.Any(
-            badge => string.Equals(
-                    badge,
-                    "broadcaster",
-                    StringComparison.OrdinalIgnoreCase)
-                || string.Equals(
-                    badge,
-                    "moderator",
-                    StringComparison.OrdinalIgnoreCase));
+        return TwitchChatBadgeRoles.HasAutomaticModerationBypass(
+            identity,
+            _options.TwitchApi);
     }
 
     private static bool HasSameBatchingCategory(
@@ -1423,6 +1428,14 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
 
     private void PublishBatchIngressUpdates(BatchIngressResult ingress)
     {
+        foreach (var batchId in ingress.RemovedQueuedBatchIds)
+        {
+            PublishSupersededAiRun(
+                batchId,
+                1,
+                "queue_overflow");
+        }
+
         foreach (var batch in ingress.UpdatedQueuedBatches)
         {
             PublishQueuedAiRun(batch);
@@ -1457,6 +1470,66 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 TotalTokens: null,
                 ElapsedMilliseconds: null,
                 batch.SealedAtUtc));
+    }
+
+    private void PublishRunningAiRun(ModerationBatch batch)
+    {
+        PublishAiRunState(batch, LocalAiRunState.Running);
+    }
+
+    private void PublishFailedAiRun(
+        ModerationBatch batch,
+        string errorCode)
+    {
+        PublishAiRunState(batch, LocalAiRunState.Failed, errorCode);
+    }
+
+    private void PublishAiRunState(
+        ModerationBatch batch,
+        LocalAiRunState state,
+        string? errorCode = null)
+    {
+        _aiRunActivityMonitor?.Publish(
+            new LocalAiRunActivity(
+                batch.BatchId.ToString("D"),
+                state,
+                batch.Messages.Count,
+                _options.LmStudio.Model,
+                PromptTokens: null,
+                CompletionTokens: null,
+                TotalTokens: null,
+                ElapsedMilliseconds: null,
+                _timeProvider.GetUtcNow(),
+                errorCode));
+    }
+
+    private void PublishSupersededAiRun(
+        ModerationBatch batch,
+        string reasonCode)
+    {
+        PublishSupersededAiRun(
+            batch.BatchId,
+            batch.Messages.Count,
+            reasonCode);
+    }
+
+    private void PublishSupersededAiRun(
+        Guid batchId,
+        int messageCount,
+        string reasonCode)
+    {
+        _aiRunActivityMonitor?.Publish(
+            new LocalAiRunActivity(
+                batchId.ToString("D"),
+                LocalAiRunState.Superseded,
+                messageCount,
+                _options.LmStudio.Model,
+                PromptTokens: null,
+                CompletionTokens: null,
+                TotalTokens: null,
+                ElapsedMilliseconds: null,
+                _timeProvider.GetUtcNow(),
+                reasonCode));
     }
 
     private void PublishAvailability(TwitchChatEvent chatEvent, string statusCode)

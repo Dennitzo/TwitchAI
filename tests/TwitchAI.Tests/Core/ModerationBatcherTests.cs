@@ -149,13 +149,18 @@ public sealed class ModerationBatcherTests
             MaximumQueuedMessages: 4);
         var sut = new ModerationBatcher(options);
         var context = Context("509658", "policy");
+        ModerationBatch? firstSealedBatch = null;
 
         for (var index = 1; index <= 4; index++)
         {
-            sut.Enqueue(
+            var result = sut.Enqueue(
                 Message(index, context),
                 context,
                 Baseline.AddMilliseconds(index));
+            if (index == 2)
+            {
+                firstSealedBatch = Assert.Single(result.NewlySealedBatches);
+            }
         }
 
         var overflow = sut.Enqueue(
@@ -164,10 +169,91 @@ public sealed class ModerationBatcherTests
             Baseline.AddSeconds(1));
 
         Assert.Equal(1, overflow.DroppedOldestMessages);
+        Assert.Empty(overflow.RemovedQueuedBatchIds);
+        var updatedBatch = Assert.Single(overflow.UpdatedQueuedBatches);
+        Assert.Equal(firstSealedBatch?.BatchId, updatedBatch.BatchId);
+        Assert.Equal(
+            ["m2"],
+            updatedBatch.Messages.Select(item => item.TemporaryMessageId));
         Assert.Equal(4, sut.WaitingMessageCount);
         Assert.True(sut.TryDequeue(out var oldestRemaining));
         Assert.NotNull(oldestRemaining);
         Assert.Equal(["m2"], oldestRemaining.Messages.Select(item => item.TemporaryMessageId));
+    }
+
+    [Fact]
+    public void Enqueue_AtQueueLimitReportsFullyRemovedReadyBatch()
+    {
+        var options = new ModerationBatcherOptions(
+            MaximumMessages: 1,
+            MaximumCollectionDelay: TimeSpan.FromSeconds(10),
+            MaximumMessageCharacters: 6_000,
+            MaximumQueuedMessages: 2);
+        var sut = new ModerationBatcher(options);
+        var context = Context("509658", "policy");
+        var first = sut.Enqueue(Message(1, context), context, Baseline);
+        var firstBatch = Assert.Single(first.NewlySealedBatches);
+        sut.Enqueue(
+            Message(2, context),
+            context,
+            Baseline.AddMilliseconds(1));
+
+        var overflow = sut.Enqueue(
+            Message(3, context),
+            context,
+            Baseline.AddMilliseconds(2));
+
+        Assert.Equal(1, overflow.DroppedOldestMessages);
+        Assert.Equal([firstBatch.BatchId], overflow.RemovedQueuedBatchIds);
+        Assert.Empty(overflow.UpdatedQueuedBatches);
+        Assert.Equal(2, sut.WaitingMessageCount);
+        Assert.True(sut.TryDequeue(out var second));
+        Assert.Equal(
+            ["m2"],
+            second?.Messages.Select(item => item.TemporaryMessageId));
+        Assert.True(sut.TryDequeue(out var third));
+        Assert.Equal(
+            ["m3"],
+            third?.Messages.Select(item => item.TemporaryMessageId));
+    }
+
+    [Fact]
+    public void Enqueue_OverflowThenTailAppendReportsOnlyFinalBatchShape()
+    {
+        var options = new ModerationBatcherOptions(
+            MaximumMessages: 3,
+            MaximumCollectionDelay: TimeSpan.FromSeconds(10),
+            MaximumMessageCharacters: 6_000,
+            MaximumQueuedMessages: 3);
+        var sut = new ModerationBatcher(options);
+        var context = Context("509658", "policy");
+        sut.Enqueue(Message(1, context), context, Baseline);
+        sut.Enqueue(
+            Message(2, context),
+            context,
+            Baseline.AddMilliseconds(1));
+        var third = sut.Enqueue(
+            Message(3, context),
+            context,
+            Baseline.AddMilliseconds(2));
+        var originalBatch = Assert.Single(third.NewlySealedBatches);
+
+        var overflow = sut.Enqueue(
+            Message(4, context),
+            context,
+            Baseline.AddMilliseconds(3));
+
+        Assert.Equal(1, overflow.DroppedOldestMessages);
+        Assert.Empty(overflow.RemovedQueuedBatchIds);
+        var updatedBatch = Assert.Single(overflow.UpdatedQueuedBatches);
+        Assert.Equal(originalBatch.BatchId, updatedBatch.BatchId);
+        Assert.Equal(
+            ["m2", "m3", "m4"],
+            updatedBatch.Messages.Select(item => item.TemporaryMessageId));
+        Assert.Equal(3, sut.WaitingMessageCount);
+        Assert.True(sut.TryDequeue(out var queued));
+        Assert.Equal(updatedBatch, queued);
+        Assert.False(sut.TryDequeue(out _));
     }
 
     [Fact]

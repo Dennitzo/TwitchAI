@@ -18,6 +18,8 @@ internal static class LocalAppSettingKeys
 {
     public const string RemoveIdenticalAiQueueMessages =
         "RemoveIdenticalAiQueueMessages";
+
+    public const string ReadOnlyMode = "ReadOnlyMode";
 }
 
 internal static class LocalAppStorageExtensions

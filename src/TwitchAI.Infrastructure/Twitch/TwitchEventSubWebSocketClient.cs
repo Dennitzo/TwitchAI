@@ -3,6 +3,8 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using TwitchAI.Core.Contracts;
+using TwitchAI.Core.Services;
 using TwitchAI.Infrastructure.Persistence;
 
 namespace TwitchAI.Infrastructure.Twitch;
@@ -28,7 +30,8 @@ public sealed record TwitchChatMessageEvent(
     bool IsModerator,
     IReadOnlyDictionary<string, string> Badges,
     string? SourceBroadcasterId,
-    string? SourceMessageId)
+    string? SourceMessageId,
+    IReadOnlyDictionary<string, string>? SourceBadges = null)
     : TwitchEventSubEvent(EventMessageId, BroadcasterId, ObservedAt);
 
 public sealed record TwitchCategoryChangedEvent(
@@ -109,6 +112,7 @@ public sealed class TwitchEventSubWebSocketClient :
     private readonly IEventSubDedupeStore _dedupeStore;
     private readonly ITwitchConnectionReadiness _connectionReadiness;
     private readonly TwitchApiOptions _options;
+    private readonly ITwitchRuntimeModeSettings _runtimeMode;
     private readonly object _activeWriterGate = new();
     private ChannelWriter<TwitchEventSubEvent>? _activeWriter;
     private string? _activeBroadcasterId;
@@ -117,12 +121,14 @@ public sealed class TwitchEventSubWebSocketClient :
         ITwitchHelixClient helixClient,
         IEventSubDedupeStore dedupeStore,
         ITwitchConnectionReadiness connectionReadiness,
-        InfrastructureOptions options)
+        InfrastructureOptions options,
+        ITwitchRuntimeModeSettings? runtimeMode = null)
     {
         _helixClient = helixClient;
         _dedupeStore = dedupeStore;
         _connectionReadiness = connectionReadiness;
         _options = options.TwitchApi;
+        _runtimeMode = runtimeMode ?? new TwitchRuntimeModeSettings();
     }
 
     public IAsyncEnumerable<TwitchEventSubEvent> ReadAllAsync(
@@ -550,14 +556,20 @@ public sealed class TwitchEventSubWebSocketClient :
             ["broadcaster_user_id"] = channel.BroadcasterId,
         };
 
-        TwitchEventSubSubscriptionRequest[] subscriptions =
-        [
+        var subscriptions = new List<TwitchEventSubSubscriptionRequest>
+        {
             new("channel.update", "2", channelCondition, sessionId),
             new("channel.chat.message", "1", chatCondition, sessionId),
-            new("channel.chat.message_delete", "1", chatCondition, sessionId),
-            new("channel.chat.clear_user_messages", "1", chatCondition, sessionId),
-            new("channel.chat.clear", "1", chatCondition, sessionId),
-        ];
+        };
+        if (!_runtimeMode.IsReadOnly)
+        {
+            subscriptions.AddRange(
+            [
+                new("channel.chat.message_delete", "1", chatCondition, sessionId),
+                new("channel.chat.clear_user_messages", "1", chatCondition, sessionId),
+                new("channel.chat.clear", "1", chatCondition, sessionId),
+            ]);
+        }
 
         foreach (var subscription in subscriptions)
         {
@@ -677,7 +689,7 @@ public sealed class TwitchEventSubWebSocketClient :
             RequiredString(subscription, "status"));
     }
 
-    private static TwitchChatMessageEvent ParseChatMessage(
+    internal static TwitchChatMessageEvent ParseChatMessage(
         string eventMessageId,
         string broadcasterId,
         DateTimeOffset observedAt,
@@ -687,20 +699,8 @@ public sealed class TwitchEventSubWebSocketClient :
         var chatterUserId = RequiredString(@event, "chatter_user_id");
         var sourceBroadcasterId =
             NullIfEmpty(OptionalString(@event, "source_broadcaster_user_id"));
-        var badges = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (@event.TryGetProperty("badges", out var badgesProperty) &&
-            badgesProperty.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var badge in badgesProperty.EnumerateArray())
-            {
-                var setId = NullIfEmpty(OptionalString(badge, "set_id"));
-                if (setId is not null)
-                {
-                    badges[setId] =
-                        NullIfEmpty(OptionalString(badge, "id")) ?? "1";
-                }
-            }
-        }
+        var badges = ParseBadges(@event, "badges");
+        var sourceBadges = ParseBadges(@event, "source_badges");
 
         var isModerator =
             string.Equals(
@@ -711,8 +711,10 @@ public sealed class TwitchEventSubWebSocketClient :
                 chatterUserId,
                 sourceBroadcasterId,
                 StringComparison.Ordinal) ||
-            badges.ContainsKey("moderator") ||
-            badges.ContainsKey("broadcaster");
+            TwitchChatBadgeRoles.HasModeratorRole(badges.Keys) ||
+            TwitchChatBadgeRoles.HasModeratorRole(sourceBadges.Keys) ||
+            badges.ContainsKey(TwitchChatBadgeRoles.Broadcaster) ||
+            sourceBadges.ContainsKey(TwitchChatBadgeRoles.Broadcaster);
 
         return new TwitchChatMessageEvent(
             eventMessageId,
@@ -726,7 +728,33 @@ public sealed class TwitchEventSubWebSocketClient :
             isModerator,
             badges,
             sourceBroadcasterId,
-            NullIfEmpty(OptionalString(@event, "source_message_id")));
+            NullIfEmpty(OptionalString(@event, "source_message_id")),
+            sourceBadges);
+    }
+
+    private static Dictionary<string, string> ParseBadges(
+        JsonElement @event,
+        string propertyName)
+    {
+        var badges = new Dictionary<string, string>(
+            StringComparer.OrdinalIgnoreCase);
+        if (!@event.TryGetProperty(propertyName, out var badgesProperty)
+            || badgesProperty.ValueKind != JsonValueKind.Array)
+        {
+            return badges;
+        }
+
+        foreach (var badge in badgesProperty.EnumerateArray())
+        {
+            var setId = NullIfEmpty(OptionalString(badge, "set_id"));
+            if (setId is not null)
+            {
+                badges[setId] =
+                    NullIfEmpty(OptionalString(badge, "id")) ?? "1";
+            }
+        }
+
+        return badges;
     }
 
     private static SessionWelcome ParseWelcome(JsonElement root)

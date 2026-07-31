@@ -21,6 +21,8 @@ public sealed class ModerationUiBridge : IDisposable
     private readonly Dictionary<string, LocalAiRunActivity> _aiRunsByCorrelationId =
         new(StringComparer.Ordinal);
     private readonly LinkedList<string> _aiRunOrder = [];
+    private readonly HashSet<string> _supersededAiRunIds =
+        new(StringComparer.Ordinal);
     private DispatcherQueue? _dispatcher;
     private long _aiRunVersion;
     private int _aiRunDispatchScheduled;
@@ -110,19 +112,39 @@ public sealed class ModerationUiBridge : IDisposable
     {
         lock (_aiRunGate)
         {
-            if (IsDisposed
-                || IsOlderThanCurrentActivity(eventArgs.Activity))
+            if (IsDisposed)
             {
                 return;
             }
 
-            _aiRunsByCorrelationId[eventArgs.Activity.CorrelationId] =
-                eventArgs.Activity;
-            _aiRunOrder.Remove(eventArgs.Activity.CorrelationId);
-            _aiRunOrder.AddFirst(eventArgs.Activity.CorrelationId);
-            PruneCompletedAiRuns();
+            if (eventArgs.Activity.State == LocalAiRunState.Superseded)
+            {
+                // Batch IDs are unique for the process lifetime. Keep a small
+                // in-memory tombstone so an older queued notification that was
+                // published concurrently cannot resurrect the removed footer
+                // item after the policy replacement was already observed.
+                _supersededAiRunIds.Add(eventArgs.Activity.CorrelationId);
+                _aiRunsByCorrelationId.Remove(eventArgs.Activity.CorrelationId);
+                _aiRunOrder.Remove(eventArgs.Activity.CorrelationId);
+                _aiRunVersion++;
+            }
+            else
+            {
+                if (_supersededAiRunIds.Contains(
+                        eventArgs.Activity.CorrelationId)
+                    || IsOlderThanCurrentActivity(eventArgs.Activity))
+                {
+                    return;
+                }
 
-            _aiRunVersion++;
+                _aiRunsByCorrelationId[eventArgs.Activity.CorrelationId] =
+                    eventArgs.Activity;
+                _aiRunOrder.Remove(eventArgs.Activity.CorrelationId);
+                _aiRunOrder.AddFirst(eventArgs.Activity.CorrelationId);
+                PruneCompletedAiRuns();
+
+                _aiRunVersion++;
+            }
         }
 
         ScheduleAiRunProjection();

@@ -1,3 +1,5 @@
+using TwitchAI.Core.Contracts;
+using TwitchAI.Core.Services;
 using TwitchAI.Infrastructure.Persistence;
 
 namespace TwitchAI.Infrastructure.Twitch;
@@ -36,17 +38,20 @@ public sealed class TwitchChatReplyExecutor : ITwitchChatReplyExecutor
     private readonly ITwitchHelixClient _helixClient;
     private readonly ITwitchConnectionReadiness _connectionReadiness;
     private readonly InfrastructureOptions _options;
+    private readonly ITwitchRuntimeModeSettings _runtimeMode;
 
     public TwitchChatReplyExecutor(
         IChatReplyStore store,
         ITwitchHelixClient helixClient,
         ITwitchConnectionReadiness connectionReadiness,
-        InfrastructureOptions options)
+        InfrastructureOptions options,
+        ITwitchRuntimeModeSettings? runtimeMode = null)
     {
         _store = store;
         _helixClient = helixClient;
         _connectionReadiness = connectionReadiness;
         _options = options;
+        _runtimeMode = runtimeMode ?? new TwitchRuntimeModeSettings();
     }
 
     public async Task<ChatReplyExecutionResult> ExecuteAsync(
@@ -54,7 +59,8 @@ public sealed class TwitchChatReplyExecutor : ITwitchChatReplyExecutor
         long expectedRowVersion,
         CancellationToken cancellationToken = default)
     {
-        if (!_connectionReadiness.IsSessionReady)
+        var enteredAsReadOnly = _runtimeMode.IsReadOnly;
+        if (!enteredAsReadOnly && !_connectionReadiness.IsSessionReady)
         {
             return Rejected(
                 "twitch_not_connected",
@@ -138,6 +144,25 @@ public sealed class TwitchChatReplyExecutor : ITwitchChatReplyExecutor
                 ChatReplyExecutionOutcome.Failed,
                 "reply_integrity_changed",
                 $"{message} Die Antwort wurde nicht gesendet.",
+                proposal.RowVersion + 1);
+        }
+
+        if (enteredAsReadOnly || _runtimeMode.IsReadOnly)
+        {
+            await _store
+                .CompleteExecutionAsync(
+                    proposal.ProposalId,
+                    proposal.RowVersion,
+                    "executed",
+                    twitchResponseId: null,
+                    dropCode: "read_only_not_sent",
+                    dropMessage: "Read-Only: Die Antwort wurde nicht an Twitch gesendet.",
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return new ChatReplyExecutionResult(
+                ChatReplyExecutionOutcome.Succeeded,
+                "read_only_not_sent",
+                "Read-Only: Die Chat-Antwort wurde lokal bestätigt und nicht an Twitch gesendet.",
                 proposal.RowVersion + 1);
         }
 

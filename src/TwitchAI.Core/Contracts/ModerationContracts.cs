@@ -89,6 +89,11 @@ public interface IModerationQueueRuntimeSettings
     bool RemoveIdenticalMessages { get; }
 }
 
+public interface ITwitchRuntimeModeSettings
+{
+    bool IsReadOnly { get; }
+}
+
 public interface IMessageAvailabilityRegistry
 {
     void Observe(ChatMessageSnapshot message);

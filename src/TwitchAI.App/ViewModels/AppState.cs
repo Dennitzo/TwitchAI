@@ -48,6 +48,9 @@ public sealed partial class AppState : ObservableObject
     public partial bool IsTwitchConnectionReady { get; set; }
 
     [ObservableProperty]
+    public partial bool IsReadOnlyMode { get; set; }
+
+    [ObservableProperty]
     public partial int SkippedOverloadCount { get; set; }
 
     [ObservableProperty]

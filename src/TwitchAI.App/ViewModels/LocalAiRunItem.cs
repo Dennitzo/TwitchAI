@@ -91,6 +91,7 @@ public sealed partial class LocalAiRunItem : ObservableObject
         LocalAiRunState.Queued => "Wartet",
         LocalAiRunState.Running => "Arbeitet",
         LocalAiRunState.Succeeded => "Erfolgreich",
+        LocalAiRunState.Superseded => "Ersetzt",
         _ => ErrorCode == "cancelled" ? "Abgebrochen" : "Fehler",
     };
 

@@ -61,7 +61,7 @@ public sealed class CoreTwitchEventSubClient : ITwitchEventSubClient
 
                     case TwitchChatMessageEvent message:
                     {
-                        var badges = PreservePrivilegeBadge(message);
+                        var badges = PreservePrivilegeBadges(message);
                         var identity = ChatMessageIdentityV1.Create(
                             message.EventMessageId,
                             message.MessageId,
@@ -207,24 +207,45 @@ public sealed class CoreTwitchEventSubClient : ITwitchEventSubClient
         }
     }
 
-    private static IReadOnlyDictionary<string, string> PreservePrivilegeBadge(
+    private static IReadOnlyDictionary<string, string> PreservePrivilegeBadges(
         TwitchChatMessageEvent message)
     {
-        if (!message.IsModerator
-            || message.Badges.Keys.Any(
-                key => string.Equals(
-                        key,
-                        "moderator",
-                        StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(
-                        key,
-                        "broadcaster",
-                        StringComparison.OrdinalIgnoreCase)))
+        Dictionary<string, string>? mergedBadges = null;
+        if (message.SourceBadges is { Count: > 0 } sourceBadges)
         {
-            return message.Badges;
+            foreach (var sourceBadge in sourceBadges)
+            {
+                if (!TwitchChatBadgeRoles.GrantsAutomaticModerationBypass(
+                        sourceBadge.Key)
+                    || message.Badges.Keys.Any(
+                        existing => string.Equals(
+                            existing,
+                            sourceBadge.Key,
+                            StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                mergedBadges ??= new Dictionary<string, string>(
+                    message.Badges,
+                    StringComparer.OrdinalIgnoreCase);
+                mergedBadges[sourceBadge.Key] = sourceBadge.Value;
+            }
         }
 
-        var badges = new Dictionary<string, string>(
+        var badges = mergedBadges ?? message.Badges;
+        var alreadyIdentifiedAsModerator =
+            TwitchChatBadgeRoles.HasModeratorRole(badges.Keys)
+            || badges.Keys.Any(key => string.Equals(
+                key,
+                TwitchChatBadgeRoles.Broadcaster,
+                StringComparison.OrdinalIgnoreCase));
+        if (!message.IsModerator || alreadyIdentifiedAsModerator)
+        {
+            return badges;
+        }
+
+        mergedBadges ??= new Dictionary<string, string>(
             message.Badges,
             StringComparer.OrdinalIgnoreCase);
         var isBroadcaster =
@@ -236,8 +257,11 @@ public sealed class CoreTwitchEventSubClient : ITwitchEventSubClient
                 message.ChatterUserId,
                 message.SourceBroadcasterId,
                 StringComparison.Ordinal);
-        badges[isBroadcaster ? "broadcaster" : "moderator"] = "1";
-        return badges;
+        mergedBadges[
+            isBroadcaster
+                ? TwitchChatBadgeRoles.Broadcaster
+                : TwitchChatBadgeRoles.Moderator] = "1";
+        return mergedBadges;
     }
 
     private static bool HasPersistentDedupeMarker(TwitchEventSubEvent item)

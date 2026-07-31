@@ -1,5 +1,6 @@
 using System.Globalization;
 using TwitchAI.Core.Models;
+using TwitchAI.Core.Services;
 using TwitchAI.Infrastructure;
 using TwitchAI.Infrastructure.Persistence;
 using TwitchAI.Infrastructure.Twitch;
@@ -214,13 +215,42 @@ public sealed class TwitchChatReplyExecutorTests
         Assert.Equal(1, helix.SendCalls);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_ReadOnlyCompletesLocallyWithoutSendingChatMessage()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var (store, proposal) = await AddPendingProposalAsync(database);
+        var helix = new RecordingHelixClient();
+        var executor = CreateExecutor(
+            store,
+            helix,
+            database.Path,
+            broadcasterId: "channel-1",
+            senderId: "moderator-1",
+            sessionReady: false,
+            readOnly: true);
+
+        var result = await executor.ExecuteAsync(
+            proposal.ProposalId,
+            proposal.RowVersion);
+
+        Assert.Equal(ChatReplyExecutionOutcome.Succeeded, result.Outcome);
+        Assert.Equal("read_only_not_sent", result.StatusCode);
+        Assert.Equal(0, helix.SendCalls);
+        var persisted = await ReadProposalStateAsync(database, proposal.ProposalId);
+        Assert.Equal("executed", persisted.Status);
+        Assert.Null(persisted.TwitchResponseId);
+        Assert.Equal("read_only_not_sent", persisted.DropCode);
+    }
+
     private static TwitchChatReplyExecutor CreateExecutor(
         IChatReplyStore store,
         ITwitchHelixClient helix,
         string databasePath,
         string broadcasterId,
         string senderId,
-        bool sessionReady)
+        bool sessionReady,
+        bool readOnly = false)
     {
         var readiness = new TwitchConnectionReadiness();
         readiness.SetSessionReady(
@@ -238,7 +268,8 @@ public sealed class TwitchChatReplyExecutorTests
                     BroadcasterId = broadcasterId,
                     ModeratorUserId = senderId,
                 },
-            });
+            },
+            new TwitchRuntimeModeSettings(readOnly));
     }
 
     private static async Task<(

@@ -277,8 +277,7 @@
                       HorizontalAlignment="Stretch"
                       DisplayMemberPath="DisplayName"
                       ItemsSource="{x:Bind ViolationRuleOptions}"
-                      SelectedValue="{x:Bind RuleCode, Mode=TwoWay}"
-                      SelectedValuePath="Code"
+                      SelectedItem="{x:Bind SelectedViolationRule, Mode=TwoWay}"
                       Visibility="{x:Bind ModerationEditorVisibility, Mode=OneWay}" />
 
                     <TextBox

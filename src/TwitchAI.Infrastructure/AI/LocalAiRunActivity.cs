@@ -6,6 +6,7 @@ public enum LocalAiRunState
     Running,
     Succeeded,
     Failed,
+    Superseded,
 }
 
 public enum LocalAiRunKind

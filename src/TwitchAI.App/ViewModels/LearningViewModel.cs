@@ -374,7 +374,34 @@ public sealed partial class LearningReviewViewModel : ObservableObject
         }
     }
 
-    public PolicyRuleOptionItem? SelectedRule => ResolveSelectedRule();
+    public PolicyRuleOptionItem? SelectedRule
+    {
+        get => ResolveSelectedRule();
+        set
+        {
+            if (value is null)
+            {
+                // WinUI may briefly clear SelectedItem while realizing the
+                // ComboBox. Keep the canonical code and restore its item.
+                if (!_isRestoringRuleSelection)
+                {
+                    try
+                    {
+                        _isRestoringRuleSelection = true;
+                        OnPropertyChanged(nameof(SelectedRule));
+                    }
+                    finally
+                    {
+                        _isRestoringRuleSelection = false;
+                    }
+                }
+
+                return;
+            }
+
+            SelectedRuleCode = value.Code;
+        }
+    }
 
     [ObservableProperty]
     public partial string Action { get; set; } = "timeout";

@@ -125,6 +125,30 @@ public sealed class LmStudioLiveActivityTests
     }
 
     [Fact]
+    public void ActivityMonitor_PublishesSupersededLifecycleState()
+    {
+        var sut = new LocalAiRunActivityMonitor();
+        LocalAiRunActivity? observed = null;
+        sut.ActivityChanged += (_, args) => observed = args.Activity;
+        var activity = new LocalAiRunActivity(
+            "batch-replaced",
+            LocalAiRunState.Superseded,
+            MessageCount: 4,
+            ModelId: "openai/gpt-oss-20b",
+            PromptTokens: null,
+            CompletionTokens: null,
+            TotalTokens: null,
+            ElapsedMilliseconds: null,
+            DateTimeOffset.UtcNow,
+            ErrorCode: "policy_revision_changed");
+
+        sut.Publish(activity);
+
+        Assert.Same(activity, observed);
+        Assert.Equal(LocalAiRunState.Superseded, observed!.State);
+    }
+
+    [Fact]
     public async Task CompleteModerationAsync_SchemaEnumeratesOnlyActiveRuleCodes()
     {
         var responseBody = JsonSerializer.Serialize(

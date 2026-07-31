@@ -133,7 +133,7 @@ public sealed class ModerationCoordinatorTests
     }
 
     [Fact]
-    public async Task BroadcasterAndModeratorMessagesBypassWhitelistAndLocalModel()
+    public async Task TwitchRoleMessagesBypassWhitelistAndLocalModel()
     {
         var batcher = new RecordingModerationBatcher();
         await using var harness = CoordinatorHarness.Create(
@@ -145,7 +145,7 @@ public sealed class ModerationCoordinatorTests
             item =>
                 item.Kind == ModerationPipelineEventKind.WhitelistSkipped
                 && item.StatusCode == "privileged_sender",
-            count: 5);
+            count: 8);
 
         await harness.Coordinator.StartAsync();
         harness.EventSub.Publish(
@@ -182,6 +182,33 @@ public sealed class ModerationCoordinatorTests
                 {
                     ["BrOaDcAsTeR"] = "1",
                 }));
+        harness.EventSub.Publish(
+            MessageEvent(
+                6,
+                "Lead moderator bot message",
+                userId: "lead-moderator-bot",
+                badges: new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["LeAd_MoDeRaToR"] = "1",
+                }));
+        harness.EventSub.Publish(
+            MessageEvent(
+                7,
+                "Official chat bot message",
+                userId: "official-chat-bot",
+                badges: new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["BoT-BaDgE"] = "1",
+                }));
+        harness.EventSub.Publish(
+            MessageEvent(
+                8,
+                "VIP message",
+                userId: "channel-vip",
+                badges: new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["ViP"] = "1",
+                }));
 
         await skipped.Task.WaitAsync(TimeSpan.FromSeconds(3));
         await Task.Delay(TimeSpan.FromMilliseconds(150));
@@ -198,6 +225,33 @@ public sealed class ModerationCoordinatorTests
         Assert.DoesNotContain(
             harness.AiRunActivities,
             item => item.State == LocalAiRunState.Queued);
+    }
+
+    [Fact]
+    public async Task BotLikeLoginWithoutBadgeStillUsesNormalWhitelistPipeline()
+    {
+        var batcher = new RecordingModerationBatcher();
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidEnvelope,
+            batcher: batcher);
+        var queued = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.ChatQueued);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(
+            MessageEvent(
+                1,
+                "Ordinary message",
+                userId: "unmarked-bot-account",
+                login: "ExampleBot"));
+
+        await queued.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(1, harness.Whitelist.GetCallCount);
+        Assert.Equal(1, batcher.EnqueueCallCount);
+        Assert.Equal(1, batcher.WaitingMessageCount);
     }
 
     [Fact]
@@ -458,6 +512,85 @@ public sealed class ModerationCoordinatorTests
         Assert.Equal(0, harness.Repair.CallCount);
         Assert.Equal(1, harness.Cases.AddCallCount);
         Assert.True(harness.PolicyStore.GetCallCount >= 23);
+
+        var activities = harness.AiRunActivities.ToArray();
+        var superseded = Assert.Single(
+            activities,
+            item => item.State == LocalAiRunState.Superseded);
+        Assert.Equal("policy_revision_changed", superseded.ErrorCode);
+        Assert.Contains(
+            activities,
+            item => item.State == LocalAiRunState.Queued
+                && string.Equals(
+                    item.CorrelationId,
+                    superseded.CorrelationId,
+                    StringComparison.Ordinal));
+        Assert.Contains(
+            activities,
+            item => item.State == LocalAiRunState.Running
+                && string.Equals(
+                    item.CorrelationId,
+                    superseded.CorrelationId,
+                    StringComparison.Ordinal));
+        Assert.Contains(
+            activities,
+            item => item.State == LocalAiRunState.Queued
+                && !string.Equals(
+                    item.CorrelationId,
+                    superseded.CorrelationId,
+                    StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task PolicyRevisionChangeDoesNotRestartCollectionDelay()
+    {
+        var batcher = new ModerationBatcher(
+            new ModerationBatcherOptions(
+                MaximumMessages: 20,
+                MaximumCollectionDelay: TimeSpan.FromSeconds(10),
+                MaximumMessageCharacters: 6_000,
+                MaximumQueuedMessages: 500));
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidEnvelope,
+            generalRevisionForCall: call => call <= 3 ? 1 : 2,
+            batcher: batcher);
+        var queued = CompletionAfter(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.ChatQueued,
+            count: 2);
+        var stale = CompletionFor(
+            harness.Coordinator,
+            item => item.StatusCode == "stale_policy_requeued");
+        var created = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.CaseCreated);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(MessageEvent(1, "Erste Nachricht"));
+        harness.EventSub.Publish(MessageEvent(2, "Zweite Nachricht"));
+        await queued.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        harness.EventSub.Publish(
+            new TwitchChatEvent(
+                TwitchChatEventKind.EventGap,
+                "event-gap-policy-refresh",
+                Baseline.AddSeconds(1),
+                Message: null,
+                ChannelId,
+                TargetMessageId: null,
+                TargetUserId: null,
+                ChannelContext: null));
+
+        await stale.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await created.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(1, harness.LocalModel.CallCount);
+        Assert.Equal(0, batcher.WaitingMessageCount);
+        Assert.Contains(
+            harness.AiRunActivities,
+            item => item.State == LocalAiRunState.Superseded
+                && item.ErrorCode == "policy_revision_changed");
     }
 
     [Fact]
