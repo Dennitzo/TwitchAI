@@ -26,6 +26,7 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
     private readonly IEventSubProcessingBarrier? _eventSubBarrier;
     private readonly IWhitelistFilterAgent? _whitelistFilter;
     private readonly ITwitchRuntimeModeSettings _runtimeMode;
+    private readonly ILearningContextRevision _learningContextRevision;
 
     public TwitchModerationExecutor(
         IModerationCaseRepository caseRepository,
@@ -40,7 +41,8 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
         IEventSubProcessingBarrier? eventSubBarrier = null,
         IWhitelistFilterAgent? whitelistFilter = null,
         ISqliteWriteCoordinator? writeCoordinator = null,
-        ITwitchRuntimeModeSettings? runtimeMode = null)
+        ITwitchRuntimeModeSettings? runtimeMode = null,
+        ILearningContextRevision? learningContextRevision = null)
     {
         _caseRepository = caseRepository;
         _availabilityStore = availabilityStore;
@@ -55,6 +57,8 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
         _eventSubBarrier = eventSubBarrier;
         _whitelistFilter = whitelistFilter;
         _runtimeMode = runtimeMode ?? new TwitchRuntimeModeSettings();
+        _learningContextRevision = learningContextRevision
+            ?? LearningContextRevision.ProcessWide;
     }
 
     public async ValueTask<ModerationExecutionResult> ExecuteAsync(
@@ -919,6 +923,8 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             cancellationToken).ConfigureAwait(false);
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        _learningContextRevision.Advance();
+
         return new ModerationExecutionResult(
             ModerationExecutionOutcome.Succeeded,
             HumanApproved: true,
@@ -1092,6 +1098,11 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (learningAccepted)
+        {
+            _learningContextRevision.Advance();
+        }
+
         return new ModerationExecutionResult(
             completion.Outcome,
             HumanApproved: true,

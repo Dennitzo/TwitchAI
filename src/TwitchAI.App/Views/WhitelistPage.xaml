@@ -5,6 +5,7 @@
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
   xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:local="using:TwitchAI.App.Views"
   xmlns:tv="using:WinUI.TableView"
   xmlns:vm="using:TwitchAI.App.ViewModels"
   Background="Transparent"
@@ -23,17 +24,26 @@
         <TextBlock Style="{StaticResource PageTitleStyle}" Text="Whitelist" />
         <TextBlock
           Foreground="{ThemeResource MutedTextBrush}"
-          Text="Whitelisted Nachrichten und User-Logins werden lokal aussortiert und niemals an LM Studio gesendet."
+          Text="Exakte Einträge überspringen die AI; erlaubte Learning-Beispiele dienen ihr als semantischer Kontext."
           TextWrapping="Wrap" />
       </StackPanel>
 
       <InfoBar
+        x:Name="PageInfoBar"
         IsClosable="False"
         IsOpen="True"
         Message="Neue Zeilen sind zunächst exakte Nachrichten. Über die Spalte „User“ lassen sie sich als Twitch-Login behandeln. Der Vergleich erfolgt invariant in Lowercase; die Originaleingabe bleibt erhalten."
         Severity="Informational"
         Title="Nachricht oder User-Login" />
 
+      <SelectorBar
+        x:Name="ViewSelector"
+        SelectionChanged="OnViewSelectorSelectionChanged">
+        <SelectorBarItem x:Name="PhraseSelectorItem" Text="Phrasen" />
+        <SelectorBarItem x:Name="LearningSelectorItem" Text="Learning" />
+      </SelectorBar>
+
+      <StackPanel x:Name="PhraseView" Spacing="18">
       <Border Style="{StaticResource CardStyle}">
         <StackPanel Spacing="12">
           <Grid>
@@ -226,6 +236,11 @@
           </tv:TableView>
         </Grid>
       </Border>
+      </StackPanel>
+
+      <local:LearningDatasetPanel
+        x:Name="LearningPanel"
+        Visibility="Collapsed" />
     </StackPanel>
   </ScrollViewer>
 </Page>

@@ -2308,5 +2308,94 @@ internal static class SchemaMigrations
 
             DROP TABLE twitchai_v15_affected_policy_scopes;
             """),
+        new(
+            16,
+            "Add editable learning-example overrides and removal tombstones",
+            """
+            CREATE TABLE learning_example_overrides (
+                source_kind       TEXT NOT NULL CHECK(source_kind IN (
+                                      'twitch_moderation','manual_test')),
+                source_id         INTEGER NOT NULL CHECK(source_id > 0),
+                original_text     TEXT NOT NULL CHECK(length(original_text) BETWEEN 1 AND 500),
+                lower_text        TEXT NOT NULL CHECK(length(lower_text) BETWEEN 1 AND 500),
+                learning_decision TEXT NOT NULL CHECK(learning_decision IN (
+                                      'moderate','allow')),
+                policy_set        TEXT NOT NULL CHECK(policy_set IN (
+                                      'general','backseatgaming')),
+                rule_code         TEXT NOT NULL CHECK(length(rule_code) > 0),
+                action            TEXT NOT NULL CHECK(action IN (
+                                      'none','delete','timeout','ban')),
+                timeout_seconds   INTEGER,
+                reason            TEXT NOT NULL DEFAULT '',
+                is_removed        INTEGER NOT NULL DEFAULT 0 CHECK(is_removed IN (0,1)),
+                row_version       INTEGER NOT NULL DEFAULT 1 CHECK(row_version > 0),
+                created_utc       TEXT NOT NULL,
+                updated_utc       TEXT NOT NULL,
+                PRIMARY KEY(source_kind, source_id),
+                CHECK (
+                    (learning_decision = 'allow'
+                     AND action = 'none'
+                     AND timeout_seconds IS NULL)
+                    OR
+                    (learning_decision = 'moderate'
+                     AND action IN ('delete','timeout','ban')
+                     AND (
+                         (action = 'timeout'
+                          AND timeout_seconds BETWEEN 1 AND 1209600)
+                         OR
+                         (action <> 'timeout' AND timeout_seconds IS NULL)
+                     ))
+                ),
+                CHECK (
+                    (policy_set = 'backseatgaming'
+                     AND rule_code = 'BACKSEATGAMING')
+                    OR
+                    (policy_set = 'general'
+                     AND rule_code <> 'BACKSEATGAMING')
+                )
+            ) STRICT;
+
+            CREATE INDEX ix_learning_example_overrides_active
+                ON learning_example_overrides(
+                    is_removed, learning_decision, policy_set, updated_utc DESC);
+            """),
+        new(
+            17,
+            "Exclude IRL from Backseatgaming",
+            """
+            INSERT INTO twitch_categories(
+                category_id, display_name, last_seen_utc, last_verified_utc)
+            VALUES(
+                '509672', 'IRL', strftime('%Y-%m-%dT%H:%M:%fZ','now'), NULL)
+            ON CONFLICT(category_id) DO UPDATE SET
+                display_name = excluded.display_name,
+                last_seen_utc = excluded.last_seen_utc;
+
+            INSERT INTO policy_category_exclusions(
+                scope_id, category_id, enabled, row_version,
+                created_utc, updated_utc, archived_utc)
+            SELECT
+                scope_id, '509672', 1, 1,
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                NULL
+            FROM policy_sets
+            WHERE broadcaster_id = '*'
+              AND set_code = 'backseatgaming'
+              AND archived_utc IS NULL
+            ON CONFLICT(scope_id, category_id) DO UPDATE SET
+                enabled = 1,
+                row_version = policy_category_exclusions.row_version + 1,
+                updated_utc = excluded.updated_utc,
+                archived_utc = NULL;
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE broadcaster_id = '*'
+              AND set_code = 'backseatgaming'
+              AND archived_utc IS NULL;
+            """),
     ];
 }

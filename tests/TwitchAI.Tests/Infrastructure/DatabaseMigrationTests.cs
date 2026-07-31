@@ -31,7 +31,8 @@ public sealed class DatabaseMigrationTests
         Assert.Contains("chat_reply_templates", tables);
         Assert.Contains("chat_reply_proposals", tables);
         Assert.Contains("manual_learning_examples", tables);
-        Assert.Equal(["32982", "509658"], categories);
+        Assert.Contains("learning_example_overrides", tables);
+        Assert.Equal(["32982", "509658", "509672"], categories);
 
         await using var seedCommand = connection.CreateCommand();
         seedCommand.CommandText =
@@ -61,9 +62,65 @@ public sealed class DatabaseMigrationTests
         var journalMode = await ScalarAsync<string>(connection, "PRAGMA journal_mode;");
         var foreignKeys = await ScalarAsync<long>(connection, "PRAGMA foreign_keys;");
 
-        Assert.Equal(15, migrationCount);
+        Assert.Equal(17, migrationCount);
         Assert.Equal("wal", journalMode, ignoreCase: true);
         Assert.Equal(1, foreignKeys);
+    }
+
+    [Fact]
+    public async Task Version17_AddsIrlCategoryAndBackseatgamingExclusionIdempotently()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(16);
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var connection = await database.OpenConnectionAsync();
+        var irlCategories = await ReadStringsAsync(
+            connection,
+            """
+            SELECT category_id || '|' || display_name
+            FROM twitch_categories
+            WHERE category_id = '509672';
+            """);
+        var excludedCategories = await ReadStringsAsync(
+            connection,
+            """
+            SELECT exclusion.category_id
+            FROM policy_category_exclusions exclusion
+            INNER JOIN policy_sets policy
+                ON policy.scope_id = exclusion.scope_id
+            WHERE policy.broadcaster_id = '*'
+              AND policy.set_code = 'backseatgaming'
+              AND policy.enabled = 1
+              AND policy.archived_utc IS NULL
+              AND exclusion.enabled = 1
+              AND exclusion.archived_utc IS NULL
+              AND exclusion.category_id IN ('509658', '509672')
+            ORDER BY exclusion.category_id;
+            """);
+        var exclusionCounts = await ReadStringsAsync(
+            connection,
+            """
+            SELECT category_id || '|' || COUNT(*)
+            FROM policy_category_exclusions
+            WHERE category_id IN ('509658', '509672')
+            GROUP BY category_id
+            ORDER BY category_id;
+            """);
+        var foreignKeyViolations = await ReadStringsAsync(
+            connection,
+            "PRAGMA foreign_key_check;");
+
+        Assert.Equal(["509672|IRL"], irlCategories);
+        Assert.Equal(["509658", "509672"], excludedCategories);
+        Assert.Equal(["509658|1", "509672|1"], exclusionCounts);
+        Assert.Empty(foreignKeyViolations);
+        Assert.Equal(
+            17L,
+            await ScalarAsync<long>(
+                connection,
+                "SELECT MAX(version) FROM schema_migrations;"));
     }
 
     [Fact]
@@ -87,7 +144,7 @@ public sealed class DatabaseMigrationTests
             ORDER BY name;
             """);
 
-        Assert.Equal(15, migrationVersion);
+        Assert.Equal(17, migrationVersion);
         Assert.Equal(
             ["chat_reply_proposals", "chat_reply_templates"],
             tables);
@@ -341,7 +398,7 @@ public sealed class DatabaseMigrationTests
                 WHERE change_reason = 'historical reason fixture';
                 """));
         Assert.Equal(
-            15L,
+            17L,
             await ScalarAsync<long>(
                 verify,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -509,7 +566,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            backseatRevisionBefore + 1,
+            backseatRevisionBefore + 2,
             await ScalarAsync<long>(
                 verify,
                 """

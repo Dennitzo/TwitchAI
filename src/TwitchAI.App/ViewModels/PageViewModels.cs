@@ -22,8 +22,6 @@ namespace TwitchAI.App.ViewModels;
 
 public sealed partial class ModerationQueueViewModel : ObservableObject
 {
-    private static readonly SemaphoreSlim ViolationRuleLoadGate = new(1, 1);
-
     private readonly AppState _state;
     private readonly ITwitchModerationExecutor _executor;
     private readonly IModerationReviewFeedbackService _feedbackService;
@@ -206,50 +204,48 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         CancellationToken cancellationToken = default)
     {
         var items = (targetCases ?? Cases.ToArray())
-            .Where(item => !item.IsChatReply)
+            .Where(item => !item.IsChatReply && !item.HasViolationRuleSnapshot)
             .ToArray();
         if (items.Length == 0)
         {
             return;
         }
 
-        await ViolationRuleLoadGate
-            .WaitAsync(cancellationToken)
-            .ConfigureAwait(true);
-        try
+        // Legacy/restored cases do not carry the live policy snapshot. Load
+        // configuration once and resolve the effective policy once per
+        // channel/category instead of performing N+1 serialized database
+        // queries for every visible card.
+        var definitions = await _configuration
+            .LoadPolicyRulesAsync(cancellationToken);
+        var groups = items.GroupBy(
+            item => (item.ChannelId, item.CategoryId));
+        foreach (var group in groups)
         {
-            var definitions = await _configuration
-                .LoadPolicyRulesAsync(cancellationToken);
-            foreach (var item in items)
+            cancellationToken.ThrowIfCancellationRequested();
+            var effectivePolicy = await _policyStore.GetEffectivePolicyAsync(
+                group.Key.ChannelId,
+                group.Key.CategoryId,
+                cancellationToken);
+            var activeCodes = effectivePolicy.Rules
+                .Select(rule => rule.RuleCode)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var options = definitions
+                .Where(definition => activeCodes.Contains(definition.RuleCode))
+                .Select(
+                    definition => new ViolationCategoryOption(
+                        definition.PolicySet,
+                        definition.RuleCode,
+                        definition.DisplayName,
+                        definition.PublicReason,
+                        definition.DefaultAction,
+                        definition.DefaultTimeoutSeconds))
+                .ToArray();
+
+            foreach (var item in group)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var effectivePolicy = await _policyStore.GetEffectivePolicyAsync(
-                    item.ChannelId,
-                    item.CategoryId,
-                    cancellationToken);
-                var activeCodes = effectivePolicy.Rules
-                    .Select(rule => rule.RuleCode)
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                var options = definitions
-                    .Where(definition => activeCodes.Contains(definition.RuleCode))
-                    .Select(
-                        definition => new PolicyRuleOptionItem(
-                            definition.RuleId,
-                            definition.PolicySet,
-                            definition.RuleCode,
-                            definition.DisplayName,
-                            definition.PublicReason,
-                            definition.DefaultAction,
-                            definition.DefaultTimeoutSeconds))
-                    .ToArray();
                 var persistedRuleCode = item.RuleCode?.Trim();
-                var selectedRuleCode = options.FirstOrDefault(
-                        option => !string.IsNullOrWhiteSpace(persistedRuleCode)
-                            && string.Equals(
-                                option.Code,
-                                persistedRuleCode,
-                                StringComparison.OrdinalIgnoreCase))
-                    ?.Code;
+                var selectedRuleCode = persistedRuleCode;
                 selectedRuleCode ??= options.FirstOrDefault(
                         option => item.LocalMatchCodes.Contains(
                             option.Code,
@@ -279,16 +275,12 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
                     options,
                     selectedRuleCode,
                     applyFallbackDefaults);
-                if (item.SelectedViolationRule is null)
+                if (!item.HasViolationRuleSnapshot)
                 {
                     item.AvailabilityLabel =
-                        "Keine aktive Verstoßkategorie verfügbar";
+                        "Vorschlagskategorie ist nicht mehr aktiv";
                 }
             }
-        }
-        finally
-        {
-            ViolationRuleLoadGate.Release();
         }
     }
 
@@ -549,12 +541,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
     private static (PolicySetCode PolicySet, string RuleCode)
         ResolveViolationRule(ModerationCaseItem item)
     {
-        var selected = item.ViolationRuleOptions.FirstOrDefault(
-            option => string.Equals(
-                option.Code,
-                item.RuleCode,
-                StringComparison.OrdinalIgnoreCase));
-        selected ??= item.SelectedViolationRule;
+        var selected = item.FindViolationRule(item.RuleCode);
         if (selected is not null)
         {
             return (ParsePolicySet(selected.PolicySet), selected.Code);
@@ -2944,6 +2931,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             .GetChannelAsync(target.BroadcasterId, cancellationToken);
         var justChatting = await _helixClient
             .GetGameByNameAsync("Just Chatting", cancellationToken);
+        var irl = await _helixClient
+            .GetGameByNameAsync("IRL", cancellationToken);
         if (justChatting is null
             || !string.Equals(
                 justChatting.Id,
@@ -2958,9 +2947,24 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 "Die Twitch-Kategorie-ID für Just Chatting konnte nicht verifiziert werden.");
         }
 
+        if (irl is null
+            || !string.Equals(
+                irl.Id,
+                EffectivePolicyResolver.BootstrapIrlCategoryId,
+                StringComparison.Ordinal)
+            || !string.Equals(irl.Name, "IRL", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Die Twitch-Kategorie-ID für IRL konnte nicht verifiziert werden.");
+        }
+
         await PersistVerifiedCategoryAsync(
             justChatting.Id,
             justChatting.Name,
+            cancellationToken);
+        await PersistVerifiedCategoryAsync(
+            irl.Id,
+            irl.Name,
             cancellationToken);
 
         _localStorage.SetString(
@@ -2972,6 +2976,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             _options.TwitchApi.ModeratorUserId);
         _localStorage.SetString("ChannelLogin", ChannelLogin);
         _localStorage.SetString("JustChattingCategoryId", justChatting.Id);
+        _localStorage.SetString("IrlCategoryId", irl.Id);
 
         _state.ChannelDisplayName = target.BroadcasterName;
         _state.CategoryName = channelInfo?.CategoryName ?? "Kategorie unbekannt";

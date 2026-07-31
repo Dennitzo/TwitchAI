@@ -6,10 +6,12 @@ using TwitchAI.Core.Models;
 namespace TwitchAI.Core.Services;
 
 public sealed class EffectivePolicyResolver(
-    string justChattingCategoryId = EffectivePolicyResolver.BootstrapJustChattingCategoryId)
+    string justChattingCategoryId = EffectivePolicyResolver.BootstrapJustChattingCategoryId,
+    string irlCategoryId = EffectivePolicyResolver.BootstrapIrlCategoryId)
     : IEffectivePolicyResolver
 {
     public const string BootstrapJustChattingCategoryId = "509658";
+    public const string BootstrapIrlCategoryId = "509672";
 
     public EffectivePolicySnapshot Resolve(
         ChannelContextSnapshot channelContext,
@@ -29,6 +31,10 @@ public sealed class EffectivePolicyResolver(
             && !string.Equals(
                 channelContext.CategoryId,
                 justChattingCategoryId,
+                StringComparison.Ordinal)
+            && !string.Equals(
+                channelContext.CategoryId,
+                irlCategoryId,
                 StringComparison.Ordinal))
         {
             revisions.Add(

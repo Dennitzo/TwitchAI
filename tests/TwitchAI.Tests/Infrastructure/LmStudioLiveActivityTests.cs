@@ -107,6 +107,54 @@ public sealed class LmStudioLiveActivityTests
     }
 
     [Fact]
+    public async Task CompleteModerationAsync_MalformedInnerEnvelopeIsReturnedUnchangedForRepair()
+    {
+        const string malformedEnvelope = "{this is not valid json";
+        var responseBody = JsonSerializer.Serialize(
+            new
+            {
+                model = "openai/gpt-oss-20b",
+                choices = new[]
+                {
+                    new
+                    {
+                        message = new { content = malformedEnvelope },
+                        finish_reason = "stop",
+                    },
+                },
+                usage = new
+                {
+                    prompt_tokens = 17,
+                    completion_tokens = 5,
+                    total_tokens = 22,
+                },
+            });
+        var handler = new StaticResponseHandler(HttpStatusCode.OK, responseBody);
+        using var httpClient = CreateHttpClient(handler);
+        var metrics = new RecordingMetricsStore();
+        var monitor = new LocalAiRunActivityMonitor();
+        var activities = new List<LocalAiRunActivity>();
+        monitor.ActivityChanged += (_, args) => activities.Add(args.Activity);
+        var sut = new LmStudioClient(
+            httpClient,
+            metrics,
+            new EmptyCredentialVault(),
+            CreateOptions(),
+            monitor);
+
+        var completion = await sut.CompleteModerationAsync(Request());
+
+        Assert.Equal(malformedEnvelope, completion.RawEnvelope);
+        Assert.Equal(
+            [LocalAiRunState.Running, LocalAiRunState.Succeeded],
+            activities.Select(item => item.State));
+        Assert.Equal(22, completion.Usage.TotalTokens);
+        var stored = Assert.Single(metrics.Records);
+        Assert.True(stored.Succeeded);
+        Assert.Null(stored.ErrorCode);
+    }
+
+    [Fact]
     public void ActivityMonitor_RejectsInvalidBatchMetadata()
     {
         var sut = new LocalAiRunActivityMonitor();
@@ -146,6 +194,31 @@ public sealed class LmStudioLiveActivityTests
 
         Assert.Same(activity, observed);
         Assert.Equal(LocalAiRunState.Superseded, observed!.State);
+    }
+
+    [Fact]
+    public void ActivityMonitor_FaultySubscriberDoesNotBlockFollowingSubscribers()
+    {
+        var sut = new LocalAiRunActivityMonitor();
+        var activity = new LocalAiRunActivity(
+            "batch-observer-failure",
+            LocalAiRunState.Running,
+            MessageCount: 2,
+            ModelId: "openai/gpt-oss-20b",
+            PromptTokens: null,
+            CompletionTokens: null,
+            TotalTokens: null,
+            ElapsedMilliseconds: null,
+            DateTimeOffset.UtcNow);
+        LocalAiRunActivity? observed = null;
+        sut.ActivityChanged += (_, _) =>
+            throw new InvalidOperationException("Detached UI observer.");
+        sut.ActivityChanged += (_, args) => observed = args.Activity;
+
+        var exception = Record.Exception(() => sut.Publish(activity));
+
+        Assert.Null(exception);
+        Assert.Same(activity, observed);
     }
 
     [Fact]

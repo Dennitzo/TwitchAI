@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace TwitchAI.Infrastructure.AI;
 
 public enum LocalAiRunState
@@ -51,6 +53,28 @@ public sealed class LocalAiRunActivityMonitor : ILocalAiRunActivityMonitor
         ArgumentException.ThrowIfNullOrWhiteSpace(activity.CorrelationId);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(activity.MessageCount);
 
-        ActivityChanged?.Invoke(this, new LocalAiRunActivityEventArgs(activity));
+        var handlers = ActivityChanged;
+        if (handlers is null)
+        {
+            return;
+        }
+
+        var eventArgs = new LocalAiRunActivityEventArgs(activity);
+        foreach (EventHandler<LocalAiRunActivityEventArgs> handler
+                 in handlers.GetInvocationList())
+        {
+            try
+            {
+                handler(this, eventArgs);
+            }
+            catch (Exception exception)
+            {
+                // Activity projection is diagnostic UI state. A detached or
+                // faulty observer must never abort the actual AI request or
+                // the live moderation pipeline.
+                Debug.WriteLine(
+                    $"Local AI activity observer failed: {exception}");
+            }
+        }
     }
 }

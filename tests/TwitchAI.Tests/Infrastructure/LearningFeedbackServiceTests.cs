@@ -30,6 +30,12 @@ public sealed class LearningFeedbackServiceTests
 
         Assert.True(saved.Saved);
         Assert.NotNull(saved.ManualExampleId);
+        Assert.Equal(2, fixture.LearningRevision.Current);
+        var duplicate = await fixture.Service.SaveAsync(
+            fixture.Review,
+            LearningFeedbackDecision.ConfirmedViolation);
+        Assert.Equal(saved.ManualExampleId, duplicate.ManualExampleId);
+        Assert.Equal(2, fixture.LearningRevision.Current);
         await using var connection = await database.OpenConnectionAsync();
         await using var command = connection.CreateCommand();
         command.CommandText =
@@ -80,6 +86,7 @@ public sealed class LearningFeedbackServiceTests
             LearningFeedbackDecision.MarkedAllowed);
 
         Assert.True(saved.Saved);
+        Assert.Equal(2, fixture.LearningRevision.Current);
         await using var connection = await database.OpenConnectionAsync();
         await using var command = connection.CreateCommand();
         command.CommandText =
@@ -125,6 +132,7 @@ public sealed class LearningFeedbackServiceTests
 
         Assert.False(result.Saved);
         Assert.Null(result.ManualExampleId);
+        Assert.Equal(1, fixture.LearningRevision.Current);
         await using var connection = await database.OpenConnectionAsync();
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT COUNT(*) FROM manual_learning_examples;";
@@ -165,10 +173,12 @@ public sealed class LearningFeedbackServiceTests
         var phraseStateBefore = await ReadPhraseStateAsync(database);
         var policyStateBefore = await ReadPolicyStateAsync(database);
         var feedbackCountBefore = await ReadCountAsync(database, "phrase_feedback");
+        var editorLearningRevision = new LearningContextRevision();
         var editor = new UniversalDatabaseEditor(
             database.ConnectionFactory,
             new DatabaseCatalog(),
-            [fixture.PolicyStore]);
+            [fixture.PolicyStore],
+            learningContextRevision: editorLearningRevision);
 
         await editor.SaveRowAsync(
             "manual_learning_examples",
@@ -181,6 +191,8 @@ public sealed class LearningFeedbackServiceTests
                 ["actual_timeout_seconds"] = null,
             });
 
+        Assert.Equal(2, editorLearningRevision.Current);
+
         Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
         Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
         Assert.Equal(feedbackCountBefore, await ReadCountAsync(database, "phrase_feedback"));
@@ -191,6 +203,7 @@ public sealed class LearningFeedbackServiceTests
             [saved.ManualExampleId.Value]);
 
         Assert.Equal(1, deleted);
+        Assert.Equal(3, editorLearningRevision.Current);
         Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
         Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
         Assert.Equal(feedbackCountBefore, await ReadCountAsync(database, "phrase_feedback"));
@@ -244,12 +257,14 @@ public sealed class LearningFeedbackServiceTests
             coreRule.RuleCode,
             coreRule.PublicReason,
             [trigger]);
+        var learningRevision = new LearningContextRevision();
         var service = new SqliteLearningFeedbackService(
             database.ConnectionFactory,
             policyStore,
             normalizer,
-            [policyStore]);
-        return new Fixture(policyStore, service, review);
+            [policyStore],
+            learningContextRevision: learningRevision);
+        return new Fixture(policyStore, service, review, learningRevision);
     }
 
     private static async Task InsertTwitchRetrievalExampleAsync(
@@ -401,5 +416,6 @@ public sealed class LearningFeedbackServiceTests
     private sealed record Fixture(
         SqlitePolicyStore PolicyStore,
         SqliteLearningFeedbackService Service,
-        LearningReviewItem Review);
+        LearningReviewItem Review,
+        LearningContextRevision LearningRevision);
 }

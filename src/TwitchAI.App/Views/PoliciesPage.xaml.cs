@@ -10,6 +10,8 @@ namespace TwitchAI.App.Views;
 public sealed partial class PoliciesPage : Page
 {
     private readonly IUniversalDatabaseEditor _databaseEditor;
+    private readonly IConfigurationPageSectionPreferenceStore
+        _sectionPreferenceStore;
     private readonly TableColumnWidthPersistenceController
         _columnWidthPersistence;
 
@@ -17,7 +19,16 @@ public sealed partial class PoliciesPage : Page
     {
         ViewModel = App.Current.GetService<PoliciesViewModel>();
         _databaseEditor = App.Current.GetService<IUniversalDatabaseEditor>();
+        _sectionPreferenceStore = App.Current.GetService<
+            IConfigurationPageSectionPreferenceStore>();
         InitializeComponent();
+        LearningPanel.Configure(LearningDatasetViewMode.GeneralModeration);
+        ViewSelector.SelectedItem =
+            _sectionPreferenceStore.GetOrDefault(
+                ConfigurationPageSectionScopes.Blacklist)
+            == ConfigurationPageSection.Learning
+                ? LearningSelectorItem
+                : PhraseSelectorItem;
         _columnWidthPersistence =
             new TableColumnWidthPersistenceController(
                 PhraseTable,
@@ -28,6 +39,36 @@ public sealed partial class PoliciesPage : Page
     }
 
     public PoliciesViewModel ViewModel { get; }
+
+    private async void OnViewSelectorSelectionChanged(
+        SelectorBar sender,
+        SelectorBarSelectionChangedEventArgs args)
+    {
+        var showLearning = ReferenceEquals(
+            sender.SelectedItem,
+            LearningSelectorItem);
+        _sectionPreferenceStore.Save(
+            ConfigurationPageSectionScopes.Blacklist,
+            showLearning
+                ? ConfigurationPageSection.Learning
+                : ConfigurationPageSection.Phrases);
+        PhraseView.Visibility = showLearning
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        LearningPanel.Visibility = showLearning
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        PageInfoBar.Title = showLearning
+            ? "Bestätigtes General-Learning"
+            : "Allgemeines Regelset";
+        PageInfoBar.Message = showLearning
+            ? "Diese menschlich bestätigten Moderationsbeispiele werden als semantischer Kontext an die lokale AI übergeben."
+            : "Diese Phrasen gelten in jeder Twitch-Kategorie und können direkt in der Tabelle bearbeitet werden.";
+        if (showLearning)
+        {
+            await LearningPanel.RefreshAsync();
+        }
+    }
 
     private async void Page_Loaded(object sender, RoutedEventArgs e)
     {

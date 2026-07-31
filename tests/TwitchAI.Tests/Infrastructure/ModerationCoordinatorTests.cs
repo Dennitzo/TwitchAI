@@ -381,6 +381,12 @@ public sealed class ModerationCoordinatorTests
 
         Assert.Equal("moderation_case_created", pipelineEvent.StatusCode);
         Assert.Equal("message-1", pipelineEvent.ChatMessage?.Identity.TwitchMessageId);
+        Assert.Contains(
+            pipelineEvent.ActiveRules,
+            rule => string.Equals(
+                rule.RuleCode,
+                ModerationRuleCodes.GeneralPhrase,
+                StringComparison.Ordinal));
         Assert.Equal(1, harness.LocalModel.CallCount);
         Assert.Equal(0, harness.Repair.CallCount);
         Assert.Equal(1, harness.Cases.AddCallCount);
@@ -458,6 +464,52 @@ public sealed class ModerationCoordinatorTests
         Assert.Equal(1, harness.LocalModel.CallCount);
         Assert.Equal(1, harness.Repair.CallCount);
         Assert.Equal(0, harness.Cases.AddCallCount);
+    }
+
+    [Fact]
+    public async Task FailedAiBatchDoesNotStopCoordinatorAndNextBatchIsProcessed()
+    {
+        var modelAttempt = 0;
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: request =>
+            {
+                if (Interlocked.Increment(ref modelAttempt) == 1)
+                {
+                    throw new HttpRequestException("LM Studio connection failed.");
+                }
+
+                return ValidEnvelope(request);
+            });
+        var events = new ConcurrentQueue<ModerationPipelineEventArgs>();
+        harness.Coordinator.EventReceived += (_, item) => events.Enqueue(item);
+        var failed = CompletionFor(
+            harness.Coordinator,
+            item =>
+                item.Kind == ModerationPipelineEventKind.BatchRejected
+                && item.StatusCode == "ai_batch_failed");
+        var created = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.CaseCreated);
+
+        await harness.Coordinator.StartAsync();
+        PublishMessages(harness.EventSub, startIndex: 1, count: 20);
+
+        var failedEvent = await failed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.IsType<HttpRequestException>(failedEvent.Exception);
+        Assert.True(harness.Coordinator.IsRunning);
+
+        PublishMessages(harness.EventSub, startIndex: 21, count: 20);
+        var createdEvent = await created.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal("message-21", createdEvent.ChatMessage?.Identity.TwitchMessageId);
+        Assert.Equal(2, harness.LocalModel.CallCount);
+        Assert.Equal(1, harness.Cases.AddCallCount);
+        Assert.True(harness.Coordinator.IsRunning);
+        Assert.DoesNotContain(
+            events,
+            item => item.Kind == ModerationPipelineEventKind.Faulted);
     }
 
     [Fact]
@@ -594,6 +646,78 @@ public sealed class ModerationCoordinatorTests
     }
 
     [Fact]
+    public async Task LearningRevisionChangeDuringInferenceRequeuesWithoutCreatingStaleCase()
+    {
+        var firstRequestStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstRequest = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempt = 0;
+        var learningRevision = new LearningContextRevision();
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidEnvelope,
+            asyncModelResponse: async (request, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref attempt) == 1)
+                {
+                    firstRequestStarted.TrySetResult();
+                    await releaseFirstRequest.Task.WaitAsync(cancellationToken);
+                }
+
+                return ValidEnvelope(request);
+            },
+            learningContextRevision: learningRevision);
+        var requeued = CompletionFor(
+            harness.Coordinator,
+            item =>
+                item.Kind == ModerationPipelineEventKind.StaleLearningRequeued
+                && item.StatusCode == "stale_learning_requeued");
+        var created = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.CaseCreated);
+
+        await harness.Coordinator.StartAsync();
+        PublishMessages(harness.EventSub, 20);
+        await firstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        learningRevision.Advance();
+        releaseFirstRequest.TrySetResult();
+
+        await requeued.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await created.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(2, harness.LocalModel.CallCount);
+        Assert.Equal(1, harness.Cases.AddCallCount);
+        Assert.Contains(
+            harness.AiRunActivities,
+            item => item.State == LocalAiRunState.Superseded
+                && item.ErrorCode == "learning_context_changed");
+    }
+
+    [Fact]
+    public async Task BatchPassesEveryLowercaseMessageToLearningRetrieval()
+    {
+        var retrieval = new RecordingRetrievalExampleStore();
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidEnvelope,
+            retrievalExampleStore: retrieval);
+        var created = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.CaseCreated);
+
+        await harness.Coordinator.StartAsync();
+        PublishMessages(harness.EventSub, 20);
+        await created.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        var query = Assert.Single(retrieval.Queries);
+        Assert.Equal(20, query.Count);
+        Assert.Equal("toxische nachricht 1", query[0]);
+        Assert.Equal("toxische nachricht 20", query[^1]);
+    }
+
+    [Fact]
     public async Task ReanalyzeStaleCaseQueuesCurrentPolicyAndCreatesFreshCase()
     {
         var normalizer = new CoreChatTextNormalizer();
@@ -680,7 +804,15 @@ public sealed class ModerationCoordinatorTests
 
     private static void PublishMessages(FakeEventSubClient eventSub, int count)
     {
-        for (var index = 1; index <= count; index++)
+        PublishMessages(eventSub, startIndex: 1, count);
+    }
+
+    private static void PublishMessages(
+        FakeEventSubClient eventSub,
+        int startIndex,
+        int count)
+    {
+        for (var index = startIndex; index < startIndex + count; index++)
         {
             eventSub.Publish(MessageEvent(index, $"Toxische Nachricht {index}"));
         }
@@ -857,14 +989,20 @@ public sealed class ModerationCoordinatorTests
             ITwitchConnectionReadiness? connectionReadiness = null,
             Func<ModerationRequestEnvelopeV3, string>?
                 repairResponseFactory = null,
-            IReadOnlySet<string>? whitelistedLogins = null)
+            IReadOnlySet<string>? whitelistedLogins = null,
+            Func<ModerationRequestEnvelopeV3, CancellationToken, ValueTask<string>>?
+                asyncModelResponse = null,
+            ILearningContextRevision? learningContextRevision = null,
+            IRetrievalExampleStore? retrievalExampleStore = null)
         {
             var eventSub = new FakeEventSubClient();
             var whitelistSource = new FakeWhitelistPhraseSource(
                 whitelist,
                 whitelistedLogins ?? Set());
             var policyStore = new FakePolicyStore(generalRevisionForCall ?? (_ => 1));
-            var localModel = new FakeLocalModerationClient(modelResponse);
+            var localModel = asyncModelResponse is null
+                ? new FakeLocalModerationClient(modelResponse)
+                : new FakeLocalModerationClient(asyncModelResponse);
             var repair = new FakeRepairClient(
                 repairResponseFactory ?? (_ => repairResponse));
             var cases = caseRepository ?? new FakeCaseRepository();
@@ -894,12 +1032,14 @@ public sealed class ModerationCoordinatorTests
                 localModel,
                 repair,
                 new ModerationEnvelopeValidator(),
-                new EmptyRetrievalExampleStore(),
+                retrievalExampleStore ?? new EmptyRetrievalExampleStore(),
                 cases,
                 new MessageAvailabilityRegistry(),
                 options,
                 aiRunActivityMonitor: aiRunMonitor,
-                connectionReadiness: connectionReadiness);
+                connectionReadiness: connectionReadiness,
+                learningContextRevision: learningContextRevision
+                    ?? new LearningContextRevision());
             return new CoordinatorHarness(
                 coordinator,
                 eventSub,
@@ -1118,9 +1258,21 @@ public sealed class ModerationCoordinatorTests
     }
 
     private sealed class FakeLocalModerationClient(
-        Func<ModerationRequestEnvelopeV3, string> responseFactory)
+        Func<ModerationRequestEnvelopeV3, CancellationToken, ValueTask<string>>
+            responseFactory)
         : ILocalModerationClient
     {
+        public FakeLocalModerationClient(
+            Func<ModerationRequestEnvelopeV3, string> responseFactory)
+            : this(
+                (request, cancellationToken) =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return ValueTask.FromResult(responseFactory(request));
+                })
+        {
+        }
+
         private readonly ConcurrentQueue<ModerationRequestEnvelopeV3> _requests = [];
         private int _callCount;
 
@@ -1128,14 +1280,14 @@ public sealed class ModerationCoordinatorTests
 
         public IReadOnlyList<ModerationRequestEnvelopeV3> Requests => _requests.ToArray();
 
-        public ValueTask<string> ModerateAsync(
+        public async ValueTask<string> ModerateAsync(
             ModerationRequestEnvelopeV3 request,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             _requests.Enqueue(request);
             Interlocked.Increment(ref _callCount);
-            return ValueTask.FromResult(responseFactory(request));
+            return await responseFactory(request, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -1176,6 +1328,34 @@ public sealed class ModerationCoordinatorTests
                 EffectivePolicyResolver.BootstrapJustChattingCategoryId,
                 categoryId);
             Assert.NotNull(policy);
+            return ValueTask.FromResult<IReadOnlyList<RetrievalExample>>([]);
+        }
+    }
+
+    private sealed class RecordingRetrievalExampleStore : IRetrievalExampleStore
+    {
+        private readonly ConcurrentQueue<IReadOnlyList<string>> _queries = [];
+
+        public IReadOnlyList<IReadOnlyList<string>> Queries => _queries.ToArray();
+
+        public ValueTask<IReadOnlyList<RetrievalExample>> GetRelevantAsync(
+            string channelId,
+            string? categoryId,
+            CoreEffectivePolicy policy,
+            CancellationToken cancellationToken = default) =>
+            GetRelevantAsync(channelId, categoryId, policy, [], cancellationToken);
+
+        public ValueTask<IReadOnlyList<RetrievalExample>> GetRelevantAsync(
+            string channelId,
+            string? categoryId,
+            CoreEffectivePolicy policy,
+            IReadOnlyList<string> queryLowerTexts,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Assert.Equal(ChannelId, channelId);
+            Assert.NotNull(policy);
+            _queries.Enqueue(queryLowerTexts.ToArray());
             return ValueTask.FromResult<IReadOnlyList<RetrievalExample>>([]);
         }
     }

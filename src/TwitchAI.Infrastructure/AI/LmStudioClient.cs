@@ -240,14 +240,16 @@ public sealed class LmStudioClient : ILmStudioClient
 
             var content = choice.GetProperty("message").GetProperty("content").GetString()
                 ?? throw new InvalidDataException("LM Studio returned an empty moderation envelope.");
-
-            // The Core layer performs strict domain validation. Infrastructure still rejects
-            // malformed JSON so response_format failures are visible immediately.
-            using var envelopeDocument = JsonDocument.Parse(content);
-            if (envelopeDocument.RootElement.ValueKind != JsonValueKind.Object)
+            if (string.IsNullOrWhiteSpace(content))
             {
-                throw new InvalidDataException("LM Studio moderation envelope is not a JSON object.");
+                throw new InvalidDataException(
+                    "LM Studio returned an empty moderation envelope.");
             }
+
+            // Return the model payload unchanged. The domain validator owns
+            // parsing and can send malformed JSON through the single bounded
+            // repair request. Parsing here used to terminate the whole live
+            // inference loop before that recovery path could run.
 
             stopwatch.Stop();
             var usage = ParseUsage(

@@ -4,13 +4,15 @@ namespace TwitchAI.Tests.Infrastructure;
 
 public sealed class PolicyStoreTests
 {
-    [Fact]
-    public async Task JustChatting_UsesGeneralPolicyOnly()
+    [Theory]
+    [InlineData("509658")]
+    [InlineData("509672")]
+    public async Task NonGameplayCategory_UsesGeneralPolicyOnly(string categoryId)
     {
         await using var database = await TestDatabase.CreateAsync();
         var sut = CreateStore(database);
 
-        var policy = await sut.GetEffectivePolicyAsync("channel-1", "509658");
+        var policy = await sut.GetEffectivePolicyAsync("channel-1", categoryId);
 
         Assert.Equal(3, policy.GeneralRevision);
         Assert.Equal(0, policy.CategoryRevision);
@@ -49,7 +51,7 @@ public sealed class PolicyStoreTests
 
         Assert.Equal("32982", policy.CategoryId);
         Assert.Equal(3, policy.GeneralRevision);
-        Assert.Equal(3, policy.CategoryRevision);
+        Assert.Equal(4, policy.CategoryRevision);
         Assert.Equal(20, policy.Rules.Count);
         var rule = Assert.Single(
             policy.Rules,
@@ -76,7 +78,7 @@ public sealed class PolicyStoreTests
 
         Assert.Equal(GlobalPolicyStorage.BroadcasterId, policy.BroadcasterId);
         Assert.Equal(3, policy.GeneralRevision);
-        Assert.Equal(3, policy.CategoryRevision);
+        Assert.Equal(4, policy.CategoryRevision);
         Assert.Contains(
             policy.Rules,
             item => item.RuleCode == GlobalPolicyStorage.GeneralRuleCode);
@@ -167,7 +169,7 @@ public sealed class PolicyStoreTests
     }
 
     [Fact]
-    public async Task EveryKnownNonJustChattingCategory_UsesBackseatgaming()
+    public async Task EveryKnownNonExcludedCategory_UsesBackseatgaming()
     {
         await using var database = await TestDatabase.CreateAsync();
         await using (var connection = await database.OpenConnectionAsync())

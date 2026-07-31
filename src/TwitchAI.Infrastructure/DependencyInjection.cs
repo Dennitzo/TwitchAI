@@ -23,6 +23,8 @@ public static class DependencyInjection
 
         services.AddSingleton<ISqliteWriteCoordinator>(
             SqliteWriteCoordinator.ProcessWide);
+        services.AddSingleton<CoreContracts.ILearningContextRevision>(
+            LearningContextRevision.ProcessWide);
         services.AddSingleton<ISqliteConnectionFactory, SqliteConnectionFactory>();
         services.AddSingleton<IDatabaseInitializer, DatabaseInitializer>();
         services.AddSingleton<IHostedService, DatabaseInitializationHostedService>();
@@ -78,6 +80,9 @@ public static class DependencyInjection
         services.AddSingleton<
             CoreContracts.ILearningFeedbackService,
             SqliteLearningFeedbackService>();
+        services.AddSingleton<
+            CoreContracts.ILearningDatasetService,
+            SqliteLearningDatasetService>();
 
         services.AddSingleton<ITwitchCredentialVault, WindowsPasswordVaultCredentialStore>();
         services.AddSingleton<ITwitchAccessTokenProvider, TwitchAccessTokenProvider>();

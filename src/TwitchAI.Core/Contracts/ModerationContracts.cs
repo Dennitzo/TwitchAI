@@ -164,6 +164,18 @@ public interface ILearningFeedbackService
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// Tracks the process-local generation of the effective learning context.
+/// Writers advance the generation only after a successful learning commit;
+/// inference consumers use it to reject results based on stale examples.
+/// </summary>
+public interface ILearningContextRevision
+{
+    long Current { get; }
+
+    long Advance();
+}
+
 public interface IModerationCaseRepository
 {
     ValueTask<ModerationCase?> GetAsync(

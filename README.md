@@ -28,7 +28,9 @@ Moderationsaktion wird niemals automatisch ausgeführt.
 - .NET SDK `10.0.302` (siehe `global.json`)
 - Visual Studio 2026 oder eine Installation mit WinUI-/MSIX-Buildtools
 - LM Studio mit lokal geladenem Modell `openai/gpt-oss-20b`
-- eine Twitch-Anwendung vom Typ Public Client mit aktivem Device Code Flow
+- eine registrierte Twitch Developer Application. TwitchAI verwendet den
+  Device Code Flow und benötigt in den Einstellungen ausschließlich deren
+  Client-ID, keinen Client Secret.
 
 ## Erster Start
 
@@ -41,6 +43,12 @@ Moderationsaktion wird niemals automatisch ausgeführt.
 4. **Mit Twitch verbinden** wählen, den Device-Code im Browser bestätigen und
    die Verbindung prüfen.
 5. LM Studio prüfen und anschließend im Header **Analyse starten** wählen.
+
+Zeigt Twitch beim Aktivieren **„Falscher Code!“**, den alten Browser-Tab
+schließen und die Verbindung in TwitchAI erneut starten. Die Anwendung öffnet
+daraufhin die exakt von Twitch gelieferte URL mit einem frischen Gerätecode.
+Ein fehlgeschlagener Refresh einer älteren Sitzung blockiert diesen neuen
+Autorisierungsablauf nicht.
 
 Die Anwendung verlangt diese Twitch-Scopes:
 
@@ -63,7 +71,7 @@ unter `%LOCALAPPDATA%\TwitchAI`. Der Datenbankpfad ist
    Nachrichten gebündelt. Kategorie- oder Regelwechsel schließen ein Batch
    sofort.
 4. General-Regeln gelten immer. Backseatgaming gilt für bekannte Kategorien
-   außer Just Chatting; bei unbekannter Kategorie wird konservativ nur General
+   außer Just Chatting und IRL; bei unbekannter Kategorie wird konservativ nur General
    verwendet.
 5. LM Studio liefert ein streng validiertes
    `twitchai.moderation.response.v3`. Ein ungültiges Envelope erhält höchstens

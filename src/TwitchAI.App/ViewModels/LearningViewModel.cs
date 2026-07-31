@@ -220,19 +220,18 @@ public sealed partial class LearningViewModel : ObservableObject
 
 public sealed partial class LearningReviewViewModel : ObservableObject
 {
-    private bool _isRestoringRuleSelection;
     private bool _suppressRuleDefaults;
     private string _selectedRuleCode = string.Empty;
 
     public LearningReviewViewModel(LearningTestResult result)
     {
         Result = result;
-        RuleOptions = new ObservableCollection<PolicyRuleOptionItem>(
-            result.ActiveRules
-                .OrderBy(rule => rule.PolicySet)
-                .ThenBy(rule => rule.Priority)
-                .ThenBy(rule => rule.Title, StringComparer.CurrentCultureIgnoreCase)
-                .Select(ToOption));
+        RuleOptions = result.ActiveRules
+            .OrderBy(rule => rule.PolicySet)
+            .ThenBy(rule => rule.Priority)
+            .ThenBy(rule => rule.Title, StringComparer.CurrentCultureIgnoreCase)
+            .Select(ViolationCategoryOption.FromDefinition)
+            .ToArray();
         TriggerPhrases = new ObservableCollection<TriggerPhraseItem>(
             result.ProposedTriggerPhrases
                 .Where(phrase => !string.IsNullOrWhiteSpace(phrase))
@@ -249,7 +248,7 @@ public sealed partial class LearningReviewViewModel : ObservableObject
                     option.Code,
                     ModerationRuleCodes.OtherAbuse,
                     StringComparison.Ordinal))
-            ?? RuleOptions.FirstOrDefault()
+            ?? (RuleOptions.Count > 0 ? RuleOptions[0] : null)
             ?? throw new InvalidOperationException(
                 "Für den Lerntest ist keine Verstoßkategorie verfügbar.");
 
@@ -323,84 +322,40 @@ public sealed partial class LearningReviewViewModel : ObservableObject
         ? "Kategorie lokal ergänzt"
         : "Kategorie von der AI";
 
-    public ObservableCollection<PolicyRuleOptionItem> RuleOptions { get; }
+    public IReadOnlyList<ViolationCategoryOption> RuleOptions { get; }
 
     public ObservableCollection<TriggerPhraseItem> TriggerPhrases { get; }
 
-    public string SelectedRuleCode
+    public string SelectedRuleCode => _selectedRuleCode;
+
+    public string SelectedRuleDisplayName =>
+        ResolveSelectedRule()?.DisplayName
+        ?? ViolationCategoryOption.GetFallbackDisplayName(_selectedRuleCode);
+
+    public bool TrySelectRule(string? ruleCode)
     {
-        get => _selectedRuleCode;
-        set
+        var selectedRule = FindRule(ruleCode);
+        if (selectedRule is null)
         {
-            var selectedRule = FindRule(value);
-            if (selectedRule is null)
-            {
-                // WinUI can transiently push an empty SelectedValue while the
-                // ComboBox initializes. Keep the canonical selection and push
-                // it back to the control so the category cannot appear empty.
-                if (!_isRestoringRuleSelection
-                    && ResolveSelectedRule() is not null)
-                {
-                    try
-                    {
-                        _isRestoringRuleSelection = true;
-                        OnPropertyChanged(nameof(SelectedRuleCode));
-                        OnPropertyChanged(nameof(SelectedRule));
-                        OnPropertyChanged(nameof(PolicySetLabel));
-                    }
-                    finally
-                    {
-                        _isRestoringRuleSelection = false;
-                    }
-                }
-
-                return;
-            }
-
-            if (!SetProperty(
-                    ref _selectedRuleCode,
-                    selectedRule.Code,
-                    nameof(SelectedRuleCode)))
-            {
-                return;
-            }
-
-            OnPropertyChanged(nameof(SelectedRule));
-            OnPropertyChanged(nameof(PolicySetLabel));
-            if (!_suppressRuleDefaults)
-            {
-                ApplyRuleDefaults(selectedRule);
-            }
+            return false;
         }
-    }
 
-    public PolicyRuleOptionItem? SelectedRule
-    {
-        get => ResolveSelectedRule();
-        set
+        if (!SetProperty(
+                ref _selectedRuleCode,
+                selectedRule.Code,
+                nameof(SelectedRuleCode)))
         {
-            if (value is null)
-            {
-                // WinUI may briefly clear SelectedItem while realizing the
-                // ComboBox. Keep the canonical code and restore its item.
-                if (!_isRestoringRuleSelection)
-                {
-                    try
-                    {
-                        _isRestoringRuleSelection = true;
-                        OnPropertyChanged(nameof(SelectedRule));
-                    }
-                    finally
-                    {
-                        _isRestoringRuleSelection = false;
-                    }
-                }
-
-                return;
-            }
-
-            SelectedRuleCode = value.Code;
+            return true;
         }
+
+        OnPropertyChanged(nameof(SelectedRuleDisplayName));
+        OnPropertyChanged(nameof(PolicySetLabel));
+        if (!_suppressRuleDefaults)
+        {
+            ApplyRuleDefaults(selectedRule);
+        }
+
+        return true;
     }
 
     [ObservableProperty]
@@ -424,9 +379,9 @@ public sealed partial class LearningReviewViewModel : ObservableObject
             : Visibility.Collapsed;
 
     public string PolicySetLabel =>
-        SelectedRule?.PolicySet ?? Result.ProposedPolicySet.ToString();
+        ResolveSelectedRule()?.PolicySet ?? Result.ProposedPolicySet.ToString();
 
-    private void ApplyRuleDefaults(PolicyRuleOptionItem selectedRule)
+    private void ApplyRuleDefaults(ViolationCategoryOption selectedRule)
     {
         var normalized =
             ModerationActionRules.NormalizeAiSuggestionForRule(
@@ -504,13 +459,13 @@ public sealed partial class LearningReviewViewModel : ObservableObject
                 .ToArray());
     }
 
-    private PolicyRuleOptionItem? ResolveSelectedRule() =>
+    private ViolationCategoryOption? ResolveSelectedRule() =>
         FindRule(_selectedRuleCode)
         ?? FindRule(Result.ProposedRuleCode)
         ?? FindRule(ModerationRuleCodes.OtherAbuse)
-        ?? RuleOptions.FirstOrDefault();
+        ?? (RuleOptions.Count > 0 ? RuleOptions[0] : null);
 
-    private PolicyRuleOptionItem? FindRule(string? ruleCode) =>
+    private ViolationCategoryOption? FindRule(string? ruleCode) =>
         string.IsNullOrWhiteSpace(ruleCode)
             ? null
             : RuleOptions.FirstOrDefault(
@@ -518,17 +473,6 @@ public sealed partial class LearningReviewViewModel : ObservableObject
                     option.Code,
                     ruleCode,
                     StringComparison.OrdinalIgnoreCase));
-
-    private static PolicyRuleOptionItem ToOption(
-        ModerationRuleDefinition rule) =>
-        new(
-            0,
-            rule.PolicySet.ToString(),
-            rule.RuleCode,
-            rule.Title,
-            rule.PublicReason,
-            ToActionValue(rule.DefaultAction),
-            rule.DefaultTimeoutSeconds);
 
     private static string ToActionValue(ModerationActionKind action) =>
         action switch

@@ -1,12 +1,16 @@
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using TwitchAI.App.ViewModels;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.System;
 
 namespace TwitchAI.App.Views;
 
 public sealed partial class SettingsPage : Page
 {
     private bool _isPageLoaded;
+    private int _twitchOperationInProgress;
 
     public SettingsPage()
     {
@@ -174,6 +178,11 @@ public sealed partial class SettingsPage : Page
 
     private async void OnConnectTwitchClicked(object sender, RoutedEventArgs e)
     {
+        if (!TryBeginTwitchOperation())
+        {
+            return;
+        }
+
         try
         {
             var restoredSession = await ViewModel.RestoreTwitchSessionAsync();
@@ -194,41 +203,8 @@ public sealed partial class SettingsPage : Page
             }
 
             var authorization = await ViewModel.StartDeviceAuthorizationAsync();
-            var content = new StackPanel
+            if (await RunDeviceAuthorizationDialogAsync(authorization))
             {
-                Spacing = 12,
-            };
-            content.Children.Add(
-                new TextBlock
-                {
-                    Text = "Öffne die Twitch-Seite und gib diesen einmaligen Code ein:",
-                    TextWrapping = TextWrapping.Wrap,
-                });
-            content.Children.Add(
-                new TextBlock
-                {
-                    FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Consolas"),
-                    FontSize = 26,
-                    Text = authorization.UserCode,
-                });
-            content.Children.Add(
-                new HyperlinkButton
-                {
-                    Content = authorization.VerificationUri.ToString(),
-                    NavigateUri = authorization.VerificationUri,
-                });
-            var dialog = new ContentDialog
-            {
-                XamlRoot = XamlRoot,
-                Title = "Twitch Device Code",
-                Content = content,
-                PrimaryButtonText = "Freigabe abgeschlossen",
-                CloseButtonText = "Abbrechen",
-                DefaultButton = ContentDialogButton.Primary,
-            };
-            if (await dialog.ShowAsync() == ContentDialogResult.Primary)
-            {
-                await ViewModel.CompleteDeviceAuthorizationAsync(authorization);
                 await ShowMessageAsync(
                     "Twitch verbunden",
                     "Konto, Moderator-ID und Zielkanal wurden über Twitch verifiziert.");
@@ -238,10 +214,19 @@ public sealed partial class SettingsPage : Page
         {
             await ShowMessageAsync("Twitch-Verbindung fehlgeschlagen", exception.Message);
         }
+        finally
+        {
+            EndTwitchOperation();
+        }
     }
 
     private async void OnCheckTwitchClicked(object sender, RoutedEventArgs e)
     {
+        if (!TryBeginTwitchOperation())
+        {
+            return;
+        }
+
         try
         {
             await ViewModel.CheckTwitchAsync();
@@ -250,6 +235,210 @@ public sealed partial class SettingsPage : Page
         catch (Exception exception)
         {
             await ShowMessageAsync("Twitch-Prüfung fehlgeschlagen", exception.Message);
+        }
+        finally
+        {
+            EndTwitchOperation();
+        }
+    }
+
+    private async Task<bool> RunDeviceAuthorizationDialogAsync(
+        TwitchAI.Infrastructure.Authentication.TwitchDeviceAuthorization authorization)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var browserStatus = new TextBlock
+        {
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources[
+                "MutedTextBrush"],
+            Text = "Die Twitch-Aktivierungsseite wird automatisch geöffnet.",
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var copyStatus = new TextBlock
+        {
+            FontSize = 12,
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources[
+                "MutedTextBrush"],
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var codeBox = new TextBox
+        {
+            FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Consolas"),
+            FontSize = 26,
+            HorizontalTextAlignment = TextAlignment.Center,
+            IsReadOnly = true,
+            MinWidth = 260,
+            Text = authorization.UserCode,
+        };
+        AutomationProperties.SetName(
+            codeBox,
+            "Einmaliger Twitch-Gerätecode");
+
+        var copyButton = new Button
+        {
+            Content = "Code kopieren",
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        AutomationProperties.SetName(copyButton, "Twitch-Gerätecode kopieren");
+        copyButton.Click += (_, _) =>
+        {
+            var package = new DataPackage();
+            package.SetText(authorization.UserCode);
+            Clipboard.SetContent(package);
+            copyStatus.Text = "Code wurde in die Zwischenablage kopiert.";
+        };
+
+        var progress = new ProgressRing
+        {
+            IsActive = true,
+            Width = 18,
+            Height = 18,
+        };
+        var pollingStatus = new TextBlock
+        {
+            Text = "Warte automatisch auf die Freigabe bei Twitch …",
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var pollingRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 10,
+        };
+        pollingRow.Children.Add(progress);
+        pollingRow.Children.Add(pollingStatus);
+
+        var content = new StackPanel
+        {
+            Spacing = 12,
+        };
+        content.Children.Add(
+            new TextBlock
+            {
+                Text = "Gib auf der geöffneten Twitch-Seite exakt diesen einmaligen Code ein:",
+                TextWrapping = TextWrapping.Wrap,
+            });
+        content.Children.Add(codeBox);
+        content.Children.Add(copyButton);
+        content.Children.Add(copyStatus);
+        content.Children.Add(
+            new TextBlock
+            {
+                Text = $"Gültig bis {authorization.ExpiresAt.ToLocalTime():dd.MM.yyyy HH:mm:ss} Uhr (lokale Zeit)",
+                TextWrapping = TextWrapping.Wrap,
+            });
+        content.Children.Add(
+            new HyperlinkButton
+            {
+                Content = authorization.VerificationUri.AbsoluteUri,
+                NavigateUri = authorization.VerificationUri,
+                Padding = new Thickness(0),
+            });
+        content.Children.Add(browserStatus);
+        content.Children.Add(pollingRow);
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = "Twitch-Gerät aktivieren",
+            Content = content,
+            CloseButtonText = "Abbrechen",
+            DefaultButton = ContentDialogButton.Close,
+        };
+
+        // Start polling before showing the browser. This ensures that a Twitch
+        // approval is observed immediately and does not rely on another click.
+        var pollingTask = ViewModel.CompleteDeviceAuthorizationAsync(
+            authorization,
+            cancellation.Token);
+        var dialogTask = ShowDialogAsync(dialog);
+
+        try
+        {
+            var browserOpened = await Launcher.LaunchUriAsync(
+                authorization.VerificationUri);
+            if (!browserOpened)
+            {
+                browserStatus.Text =
+                    "Der Browser konnte nicht automatisch geöffnet werden. Öffne den angezeigten Link manuell.";
+            }
+
+            var firstCompleted = await Task.WhenAny(pollingTask, dialogTask);
+            if (firstCompleted == dialogTask && !pollingTask.IsCompleted)
+            {
+                cancellation.Cancel();
+                await ObserveExpectedCancellationAsync(pollingTask, cancellation.Token);
+                return false;
+            }
+
+            await pollingTask;
+            return true;
+        }
+        finally
+        {
+            if (!pollingTask.IsCompleted)
+            {
+                cancellation.Cancel();
+            }
+
+            if (!dialogTask.IsCompleted)
+            {
+                dialog.Hide();
+            }
+
+            await ObserveDialogCompletionAsync(dialogTask);
+            await ObserveExpectedCancellationAsync(pollingTask, cancellation.Token);
+        }
+    }
+
+    private bool TryBeginTwitchOperation()
+    {
+        if (Interlocked.CompareExchange(ref _twitchOperationInProgress, 1, 0) != 0)
+        {
+            return false;
+        }
+
+        ConnectTwitchButton.IsEnabled = false;
+        CheckTwitchButton.IsEnabled = false;
+        return true;
+    }
+
+    private void EndTwitchOperation()
+    {
+        Interlocked.Exchange(ref _twitchOperationInProgress, 0);
+        ConnectTwitchButton.IsEnabled = true;
+        CheckTwitchButton.IsEnabled = true;
+    }
+
+    private static async Task<ContentDialogResult> ShowDialogAsync(
+        ContentDialog dialog)
+    {
+        return await dialog.ShowAsync();
+    }
+
+    private static async Task ObserveDialogCompletionAsync(
+        Task<ContentDialogResult> dialogTask)
+    {
+        try
+        {
+            await dialogTask;
+        }
+        catch (OperationCanceledException)
+        {
+            // The dialog can be canceled while its page or window is closing.
+        }
+    }
+
+    private static async Task ObserveExpectedCancellationAsync(
+        Task pollingTask,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await pollingTask;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // User cancellation is expected and has been fully observed here.
         }
     }
 
@@ -319,11 +508,27 @@ public sealed partial class SettingsPage : Page
 
     private async Task ShowMessageAsync(string title, string message)
     {
+        var messageText = new TextBlock
+        {
+            IsTextSelectionEnabled = true,
+            MaxWidth = 520,
+            Text = message,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        AutomationProperties.SetName(messageText, title);
+
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
             Title = title,
-            Content = message,
+            Content = new ScrollViewer
+            {
+                Content = messageText,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                MaxHeight = 240,
+                MaxWidth = 540,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            },
             CloseButtonText = "Schließen",
         };
         await dialog.ShowAsync();

@@ -77,14 +77,24 @@ public sealed class ModerationUiBridge : IDisposable
         }
         else
         {
-            dispatcher.TryEnqueue(
-                () =>
-                {
-                    if (!IsDisposed)
+            try
+            {
+                dispatcher.TryEnqueue(
+                    () =>
                     {
-                        ApplySafely(eventArgs);
-                    }
-                });
+                        if (!IsDisposed)
+                        {
+                            ApplySafely(eventArgs);
+                        }
+                    });
+            }
+            catch (COMException exception)
+                when (exception.HResult is AbortHResult or FailHResult)
+            {
+                Debug.WriteLine(
+                    $"Moderation UI dispatch skipped: "
+                    + $"0x{exception.HResult:X8} {exception.Message}");
+            }
         }
     }
 
@@ -184,10 +194,15 @@ public sealed class ModerationUiBridge : IDisposable
                 _state.SkippedOverloadCount++;
                 break;
             case ModerationPipelineEventKind.BatchRejected:
-                _state.LmStudioStatus = "Ungültige AI-Antwort";
+                _state.LmStudioStatus = eventArgs.StatusCode == "ai_batch_failed"
+                    ? "AI-Fehler · Analyse läuft weiter"
+                    : "Ungültige AI-Antwort · Analyse läuft weiter";
                 break;
             case ModerationPipelineEventKind.StalePolicyRequeued:
                 _state.LmStudioStatus = "Policy geändert · neue Analyse";
+                break;
+            case ModerationPipelineEventKind.StaleLearningRequeued:
+                _state.LmStudioStatus = "Learning geändert · neue Analyse";
                 break;
             case ModerationPipelineEventKind.AvailabilityChanged:
                 ApplyAvailability(eventArgs);
@@ -250,6 +265,17 @@ public sealed class ModerationUiBridge : IDisposable
         {
             item.TriggerPhrases.Add(new TriggerPhraseItem(phrase));
         }
+
+        // The validator selected the rule against this exact immutable policy
+        // snapshot. Hydrate the card before publishing it to the observable
+        // collection so ItemsRepeater never has to render a transient empty
+        // category while a second database lookup is pending.
+        var violationCategories = eventArgs.ActiveRules
+            .Select(ViolationCategoryOption.FromDefinition)
+            .ToArray();
+        item.ReplaceViolationRuleOptions(
+            violationCategories,
+            decision.RuleCode);
 
         var existingIndex = -1;
         for (var index = 0; index < _state.ModerationCases.Count; index++)
@@ -358,11 +384,22 @@ public sealed class ModerationUiBridge : IDisposable
             return;
         }
 
-        if (!dispatcher.TryEnqueue(
-            DispatcherQueuePriority.Low,
-            DrainAiRunProjection))
+        try
+        {
+            if (!dispatcher.TryEnqueue(
+                    DispatcherQueuePriority.Low,
+                    DrainAiRunProjection))
+            {
+                Volatile.Write(ref _aiRunDispatchScheduled, 0);
+            }
+        }
+        catch (COMException exception)
+            when (exception.HResult is AbortHResult or FailHResult)
         {
             Volatile.Write(ref _aiRunDispatchScheduled, 0);
+            Debug.WriteLine(
+                $"AI run UI dispatch skipped: "
+                + $"0x{exception.HResult:X8} {exception.Message}");
         }
     }
 

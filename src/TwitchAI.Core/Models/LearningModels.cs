@@ -56,7 +56,10 @@ public sealed record LearningTestResult(
     int? CompletionTokens,
     int? TotalTokens,
     DateTimeOffset AnalyzedAtUtc,
-    bool UsedRuleFallback);
+    bool UsedRuleFallback)
+{
+    public long LearningContextRevision { get; init; }
+}
 
 public sealed record LearningReviewItem(
     LearningTestResult TestResult,

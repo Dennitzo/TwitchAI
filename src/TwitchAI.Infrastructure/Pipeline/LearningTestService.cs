@@ -25,6 +25,7 @@ public sealed class LearningTestService : ILearningTestService
     private readonly ILmStudioClient _lmStudioClient;
     private readonly ILocalAiRunActivityMonitor? _activityMonitor;
     private readonly IRetrievalExampleStore? _retrievalExampleStore;
+    private readonly ILearningContextRevision _learningContextRevision;
     private readonly LmStudioOptions _lmStudioOptions;
     private readonly TimeProvider _timeProvider;
     private int _analysisInProgress;
@@ -38,7 +39,8 @@ public sealed class LearningTestService : ILearningTestService
         InfrastructureOptions options,
         ILocalAiRunActivityMonitor? activityMonitor = null,
         TimeProvider? timeProvider = null,
-        IRetrievalExampleStore? retrievalExampleStore = null)
+        IRetrievalExampleStore? retrievalExampleStore = null,
+        ILearningContextRevision? learningContextRevision = null)
     {
         _policyStore = policyStore;
         _normalizer = normalizer;
@@ -47,6 +49,8 @@ public sealed class LearningTestService : ILearningTestService
         _lmStudioClient = lmStudioClient;
         _activityMonitor = activityMonitor;
         _retrievalExampleStore = retrievalExampleStore;
+        _learningContextRevision = learningContextRevision
+            ?? LearningContextRevision.ProcessWide;
         _lmStudioOptions = options.LmStudio;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -83,6 +87,7 @@ public sealed class LearningTestService : ILearningTestService
             var storedPolicy = await _policyStore
                 .GetLearningPolicyAsync(cancellationToken)
                 .ConfigureAwait(false);
+            var learningRevision = _learningContextRevision.Current;
             var policy = MapLearningPolicy(storedPolicy);
             var processed = _normalizer.Process(request.OriginalText);
             var phraseRules = await _phraseRuleSource
@@ -98,8 +103,12 @@ public sealed class LearningTestService : ILearningTestService
             var retrievalExamples = _retrievalExampleStore is null
                 ? []
                 : await _retrievalExampleStore
-                    .GetRelevantForLearningTestAsync(policy, cancellationToken)
+                    .GetRelevantForLearningTestAsync(
+                        policy,
+                        processed.LowerText,
+                        cancellationToken)
                     .ConfigureAwait(false);
+            ThrowIfLearningChanged(learningRevision);
             var testId = Guid.NewGuid();
             var correlationId = $"learning-test:{testId:D}";
             var prompt = LearningTestPromptFactory.Create(
@@ -118,6 +127,7 @@ public sealed class LearningTestService : ILearningTestService
                     policy,
                     cancellationToken)
                 .ConfigureAwait(false);
+            ThrowIfLearningChanged(learningRevision);
             var validation = LearningEnvelopeValidator.Validate(
                 completion.RawEnvelope,
                 prompt.Envelope,
@@ -135,6 +145,7 @@ public sealed class LearningTestService : ILearningTestService
                         cancellationToken)
                     .ConfigureAwait(false);
                 completion = repaired;
+                ThrowIfLearningChanged(learningRevision);
                 validation = LearningEnvelopeValidator.Validate(
                     completion.RawEnvelope,
                     prompt.Envelope,
@@ -170,6 +181,8 @@ public sealed class LearningTestService : ILearningTestService
                 throw new InvalidOperationException(
                     "Die Regeln wurden während des Lerntests geändert. Bitte den Test erneut starten.");
             }
+
+            ThrowIfLearningChanged(learningRevision);
 
             var decision = validation.Decision!;
             var selectedRule = policy.FindRule(decision.RuleCode)
@@ -211,7 +224,10 @@ public sealed class LearningTestService : ILearningTestService
                 completion.Usage.CompletionTokens,
                 completion.Usage.TotalTokens,
                 _timeProvider.GetUtcNow(),
-                decision.UsedRuleFallback);
+                decision.UsedRuleFallback)
+            {
+                LearningContextRevision = learningRevision,
+            };
         }
         finally
         {
@@ -228,9 +244,21 @@ public sealed class LearningTestService : ILearningTestService
             .GetLearningPolicyAsync(cancellationToken)
             .ConfigureAwait(false);
         return string.Equals(
-            result.PolicyRevisionFingerprint,
-            LearningPolicyRevisionFingerprint.Create(current),
-            StringComparison.Ordinal);
+                   result.PolicyRevisionFingerprint,
+                   LearningPolicyRevisionFingerprint.Create(current),
+                   StringComparison.Ordinal)
+               && (result.LearningContextRevision == 0
+                   || result.LearningContextRevision ==
+                   _learningContextRevision.Current);
+    }
+
+    private void ThrowIfLearningChanged(long expectedRevision)
+    {
+        if (_learningContextRevision.Current != expectedRevision)
+        {
+            throw new InvalidOperationException(
+                "Der Learning-Kontext wurde während des Lerntests geändert. Bitte den Test erneut starten.");
+        }
     }
 
     private Task<LmStudioModerationCompletion> CompleteAsync(

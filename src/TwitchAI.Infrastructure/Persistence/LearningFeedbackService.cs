@@ -15,13 +15,15 @@ public sealed class SqliteLearningFeedbackService : ILearningFeedbackService
     private readonly ISqliteWriteCoordinator _writeCoordinator;
     private readonly IPolicyStore _policyStore;
     private readonly IChatTextNormalizer _normalizer;
+    private readonly ILearningContextRevision _learningContextRevision;
 
     public SqliteLearningFeedbackService(
         ISqliteConnectionFactory connectionFactory,
         IPolicyStore policyStore,
         IChatTextNormalizer normalizer,
         IEnumerable<IPolicyCacheInvalidator>? cacheInvalidators = null,
-        ISqliteWriteCoordinator? writeCoordinator = null)
+        ISqliteWriteCoordinator? writeCoordinator = null,
+        ILearningContextRevision? learningContextRevision = null)
     {
         _connectionFactory = connectionFactory;
         _policyStore = policyStore;
@@ -31,6 +33,8 @@ public sealed class SqliteLearningFeedbackService : ILearningFeedbackService
         // not invalidate policy caches because they are not policy configuration.
         _ = cacheInvalidators;
         _writeCoordinator = writeCoordinator ?? SqliteWriteCoordinator.ProcessWide;
+        _learningContextRevision = learningContextRevision
+            ?? LearningContextRevision.ProcessWide;
     }
 
     public async ValueTask<LearningFeedbackResult> SaveAsync(
@@ -114,6 +118,8 @@ public sealed class SqliteLearningFeedbackService : ILearningFeedbackService
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
+
+        _learningContextRevision.Advance();
 
         return new LearningFeedbackResult(
             manualExampleId,

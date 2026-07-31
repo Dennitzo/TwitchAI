@@ -68,7 +68,10 @@ public sealed partial class ShellViewModel : ObservableObject
 
     public string LocalAiRunStateLabel =>
         _state.CurrentLocalAiRun.IsPresent
-            ? _state.CurrentLocalAiRun.StateLabel
+            ? _state.CurrentLocalAiRun.State == LocalAiRunState.Failed
+                && _state.IsAnalysisRunning
+                    ? "Fehler · Analyse läuft weiter"
+                    : _state.CurrentLocalAiRun.StateLabel
             : "Bereit";
 
     public string LocalAiRunBatchLabel =>

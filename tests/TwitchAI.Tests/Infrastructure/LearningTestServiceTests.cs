@@ -478,6 +478,40 @@ public sealed class LearningTestServiceTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_RejectsResultWhenLearningChangedDuringInference()
+    {
+        var revision = new LearningContextRevision();
+        var lmStudio = new FakeLmStudioClient(request =>
+        {
+            revision.Advance();
+            return Completion(Allow(ReadTestId(request.UserPrompt), "G_OTHER_ABUSE"));
+        });
+        var sut = CreateService(lmStudio, learningRevision: revision);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await sut.AnalyzeAsync(
+                new LearningTestRequest("harmlos")));
+
+        Assert.Contains("Learning-Kontext", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("erneut starten", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task IsPolicyCurrentAsync_RejectsCompletedResultAfterLearningChange()
+    {
+        var revision = new LearningContextRevision();
+        var lmStudio = new FakeLmStudioClient(request =>
+            Completion(Allow(ReadTestId(request.UserPrompt), "G_OTHER_ABUSE")));
+        var sut = CreateService(lmStudio, learningRevision: revision);
+        var result = await sut.AnalyzeAsync(new LearningTestRequest("harmlos"));
+        Assert.True(await sut.IsPolicyCurrentAsync(result));
+
+        revision.Advance();
+
+        Assert.False(await sut.IsPolicyCurrentAsync(result));
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_AllowsOnlyOneRunningTest()
     {
         var release = new TaskCompletionSource(
@@ -540,7 +574,8 @@ public sealed class LearningTestServiceTests
         IPolicyStore? store = null,
         ILocalAiRunActivityMonitor? monitor = null,
         IPhraseRuleSource? phraseSource = null,
-        IRetrievalExampleStore? retrieval = null) =>
+        IRetrievalExampleStore? retrieval = null,
+        ILearningContextRevision? learningRevision = null) =>
         new(
             store ?? new FakePolicyStore(Policy("policy-1")),
             new TwitchAI.Core.Services.ChatTextNormalizer(),
@@ -550,7 +585,8 @@ public sealed class LearningTestServiceTests
             new InfrastructureOptions(),
             monitor,
             timeProvider: null,
-            retrieval);
+            retrieval,
+            learningRevision);
 
     private static StoredPolicy Policy(string hash)
     {

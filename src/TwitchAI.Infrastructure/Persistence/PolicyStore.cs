@@ -134,10 +134,18 @@ public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
             backseatScopeId,
             now,
             cancellationToken).ConfigureAwait(false);
-        await InsertJustChattingExclusionAsync(
+        await InsertCategoryExclusionAsync(
             connection,
             transaction,
             backseatScopeId,
+            GlobalPolicyStorage.JustChattingCategoryId,
+            now,
+            cancellationToken).ConfigureAwait(false);
+        await InsertCategoryExclusionAsync(
+            connection,
+            transaction,
+            backseatScopeId,
+            GlobalPolicyStorage.IrlCategoryId,
             now,
             cancellationToken).ConfigureAwait(false);
 
@@ -732,10 +740,11 @@ public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task InsertJustChattingExclusionAsync(
+    private static async Task InsertCategoryExclusionAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         long backseatScopeId,
+        string categoryId,
         string now,
         CancellationToken cancellationToken)
     {
@@ -749,9 +758,7 @@ public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
             VALUES(@scope_id, @category_id, 1, 1, @now, @now);
             """;
         command.Parameters.AddWithValue("@scope_id", backseatScopeId);
-        command.Parameters.AddWithValue(
-            "@category_id",
-            GlobalPolicyStorage.JustChattingCategoryId);
+        command.Parameters.AddWithValue("@category_id", categoryId);
         command.Parameters.AddWithValue("@now", now);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }

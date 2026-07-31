@@ -10,6 +10,8 @@ namespace TwitchAI.App.Views;
 public sealed partial class WhitelistPage : Page
 {
     private readonly IUniversalDatabaseEditor _databaseEditor;
+    private readonly IConfigurationPageSectionPreferenceStore
+        _sectionPreferenceStore;
     private readonly TableColumnWidthPersistenceController
         _columnWidthPersistence;
 
@@ -17,7 +19,16 @@ public sealed partial class WhitelistPage : Page
     {
         ViewModel = App.Current.GetService<WhitelistViewModel>();
         _databaseEditor = App.Current.GetService<IUniversalDatabaseEditor>();
+        _sectionPreferenceStore = App.Current.GetService<
+            IConfigurationPageSectionPreferenceStore>();
         InitializeComponent();
+        LearningPanel.Configure(LearningDatasetViewMode.Allowed);
+        ViewSelector.SelectedItem =
+            _sectionPreferenceStore.GetOrDefault(
+                ConfigurationPageSectionScopes.Whitelist)
+            == ConfigurationPageSection.Learning
+                ? LearningSelectorItem
+                : PhraseSelectorItem;
         _columnWidthPersistence =
             new TableColumnWidthPersistenceController(
                 PhraseTable,
@@ -28,6 +39,36 @@ public sealed partial class WhitelistPage : Page
     }
 
     public WhitelistViewModel ViewModel { get; }
+
+    private async void OnViewSelectorSelectionChanged(
+        SelectorBar sender,
+        SelectorBarSelectionChangedEventArgs args)
+    {
+        var showLearning = ReferenceEquals(
+            sender.SelectedItem,
+            LearningSelectorItem);
+        _sectionPreferenceStore.Save(
+            ConfigurationPageSectionScopes.Whitelist,
+            showLearning
+                ? ConfigurationPageSection.Learning
+                : ConfigurationPageSection.Phrases);
+        PhraseView.Visibility = showLearning
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+        LearningPanel.Visibility = showLearning
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        PageInfoBar.Title = showLearning
+            ? "Semantisches Erlaubt-Learning"
+            : "Nachricht oder User-Login";
+        PageInfoBar.Message = showLearning
+            ? "Als erlaubt bestätigte Beispiele unterstützen die AI-Entscheidung, überspringen die Analyse aber niemals."
+            : "Neue Zeilen sind zunächst exakte Nachrichten. Über die Spalte „User“ lassen sie sich als Twitch-Login behandeln. Der Vergleich erfolgt invariant in Lowercase; die Originaleingabe bleibt erhalten.";
+        if (showLearning)
+        {
+            await LearningPanel.RefreshAsync();
+        }
+    }
 
     private async void Page_Loaded(object sender, RoutedEventArgs e)
     {

@@ -276,8 +276,12 @@
                       Header="Verstoßkategorie"
                       HorizontalAlignment="Stretch"
                       DisplayMemberPath="DisplayName"
-                      ItemsSource="{x:Bind ViolationRuleOptions}"
-                      SelectedItem="{x:Bind SelectedViolationRule, Mode=TwoWay}"
+                      ItemsSource="{x:Bind ViolationRuleOptions, Mode=OneWay}"
+                      PlaceholderText="{x:Bind ViolationCategoryDisplayName, Mode=OneWay}"
+                      SelectedValue="{x:Bind RuleCode, Mode=OneWay}"
+                      SelectedValuePath="Code"
+                      SelectionChanged="OnViolationCategorySelectionChanged"
+                      Tag="{x:Bind}"
                       Visibility="{x:Bind ModerationEditorVisibility, Mode=OneWay}" />
 
                     <TextBox

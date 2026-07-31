@@ -96,6 +96,27 @@ public sealed partial class LearningPage : Page
         PlaceReviewElement(ActionButtons, row: 5, column: 0);
     }
 
+    private void OnViolationCategorySelectionChanged(
+        object sender,
+        SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox
+            {
+                SelectedValue: string selectedRuleCode,
+            }
+            || ViewModel.Review is not { } review)
+        {
+            // Review replacement can briefly clear the native selector. The
+            // immutable review model keeps the canonical rule code intact.
+            return;
+        }
+
+        if (!review.TrySelectRule(selectedRuleCode))
+        {
+            ((ComboBox)sender).SelectedValue = review.SelectedRuleCode;
+        }
+    }
+
     private async void OnStartTestClicked(object sender, RoutedEventArgs e)
     {
         try

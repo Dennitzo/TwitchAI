@@ -65,7 +65,10 @@ public sealed partial class AppState : ObservableObject
 
 public sealed partial class ModerationCaseItem : ObservableObject
 {
-    private bool _suppressViolationRuleFallback;
+    private bool _suppressViolationRuleDefaults;
+    private bool _hasViolationRuleSnapshot;
+    private string? _ruleCode;
+    private IReadOnlyList<ViolationCategoryOption> _violationRuleOptions = [];
 
     public required long CaseId { get; init; }
 
@@ -132,13 +135,63 @@ public sealed partial class ModerationCaseItem : ObservableObject
     [ObservableProperty]
     public partial string PolicySet { get; set; } = "General";
 
-    [ObservableProperty]
-    public partial string? RuleCode { get; set; }
+    public string? RuleCode
+    {
+        get => _ruleCode;
+        set
+        {
+            var normalized = string.IsNullOrWhiteSpace(value)
+                ? null
+                : value.Trim();
 
-    [ObservableProperty]
-    public partial PolicyRuleOptionItem? SelectedViolationRule { get; set; }
+            // A recycled WinUI ComboBox can briefly report no selection.
+            // Once a validated code exists, a visual transition must never
+            // erase the canonical domain value.
+            if (normalized is null && _ruleCode is not null)
+            {
+                OnPropertyChanged(nameof(RuleCode));
+                return;
+            }
 
-    public ObservableCollection<PolicyRuleOptionItem> ViolationRuleOptions { get; } = [];
+            if (!SetProperty(ref _ruleCode, normalized))
+            {
+                return;
+            }
+
+            EnsureProvisionalViolationRule();
+            OnPropertyChanged(nameof(ViolationCategoryDisplayName));
+            OnPropertyChanged(nameof(CanExecute));
+
+            if (!_suppressViolationRuleDefaults
+                && _hasViolationRuleSnapshot
+                && FindViolationRule(normalized) is { } selectedRule)
+            {
+                ApplyViolationRuleDefaults(selectedRule);
+            }
+        }
+    }
+
+    public IReadOnlyList<ViolationCategoryOption> ViolationRuleOptions
+    {
+        get => _violationRuleOptions;
+        private set
+        {
+            if (!SetProperty(ref _violationRuleOptions, value))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(ViolationCategoryDisplayName));
+            // Resolve the unchanged code against the new immutable snapshot.
+            OnPropertyChanged(nameof(RuleCode));
+        }
+    }
+
+    public bool HasViolationRuleSnapshot => _hasViolationRuleSnapshot;
+
+    public string ViolationCategoryDisplayName =>
+        FindViolationRule(RuleCode)?.DisplayName
+        ?? ViolationCategoryOption.GetFallbackDisplayName(RuleCode);
 
     [ObservableProperty]
     public partial double Confidence { get; set; }
@@ -182,9 +235,8 @@ public sealed partial class ModerationCaseItem : ObservableObject
             || (IsChatReply && Status == "Fehlgeschlagen"));
 
     private bool HasUsableViolationRule =>
-        SelectedViolationRule is not null
-        || (!string.IsNullOrWhiteSpace(RuleCode)
-            && PolicySet is "General" or "Backseatgaming");
+        !string.IsNullOrWhiteSpace(RuleCode)
+        && PolicySet is "General" or "Backseatgaming";
 
     partial void OnIsBusyChanged(bool value)
     {
@@ -198,96 +250,101 @@ public sealed partial class ModerationCaseItem : ObservableObject
         OnPropertyChanged(nameof(CanDiscard));
     }
 
-    partial void OnRuleCodeChanged(string? value)
-    {
-        OnPropertyChanged(nameof(CanExecute));
-        if (_suppressViolationRuleFallback)
-        {
-            return;
-        }
-
-        var matchingOption = ViolationRuleOptions.FirstOrDefault(
-            option => string.Equals(
-                option.Code,
-                value,
-                StringComparison.OrdinalIgnoreCase));
-        if (!ReferenceEquals(SelectedViolationRule, matchingOption))
-        {
-            SelectedViolationRule = matchingOption;
-        }
-    }
-
     partial void OnPolicySetChanged(string value) =>
         OnPropertyChanged(nameof(CanExecute));
 
-    partial void OnSelectedViolationRuleChanged(PolicyRuleOptionItem? value)
+    public bool TrySelectViolationRule(string? ruleCode)
     {
-        if (value is null)
+        var selected = FindViolationRule(ruleCode);
+        if (selected is null)
         {
-            // WinUI temporarily clears SelectedItem while the option source is
-            // refreshed. Keep the validated/persisted rule code so this visual
-            // transition cannot disable the operator actions.
-            OnPropertyChanged(nameof(CanExecute));
-            return;
+            return false;
         }
 
-        if (!string.Equals(
-                RuleCode,
-                value.Code,
-                StringComparison.Ordinal))
-        {
-            RuleCode = value.Code;
-        }
-
-        if (_suppressViolationRuleFallback)
-        {
-            return;
-        }
-
-        ApplyViolationRuleDefaults(value);
+        RuleCode = selected.Code;
+        return true;
     }
 
+    public ViolationCategoryOption? FindViolationRule(string? ruleCode) =>
+        string.IsNullOrWhiteSpace(ruleCode)
+            ? null
+            : ViolationRuleOptions.FirstOrDefault(
+                option => string.Equals(
+                    option.Code,
+                    ruleCode,
+                    StringComparison.OrdinalIgnoreCase));
+
     public void ReplaceViolationRuleOptions(
-        IReadOnlyList<PolicyRuleOptionItem> options,
+        IReadOnlyList<ViolationCategoryOption> options,
         string? selectedRuleCode,
         bool applyFallbackDefaults = false)
     {
         ArgumentNullException.ThrowIfNull(options);
-        _suppressViolationRuleFallback = true;
+        var distinctOptions = options
+            .Where(option => !string.IsNullOrWhiteSpace(option.Code))
+            .GroupBy(option => option.Code, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToArray();
+        var hasPolicySnapshot = distinctOptions.Length > 0;
+        var requestedCode = string.IsNullOrWhiteSpace(selectedRuleCode)
+            ? RuleCode
+            : selectedRuleCode.Trim();
+        requestedCode ??= string.Equals(
+            PolicySet,
+            PolicySetCode.Backseatgaming.ToString(),
+            StringComparison.OrdinalIgnoreCase)
+                ? ModerationRuleCodes.Backseatgaming
+                : ModerationRuleCodes.OtherAbuse;
+        var selectedOption = distinctOptions.FirstOrDefault(
+            option => !string.IsNullOrWhiteSpace(requestedCode)
+                && string.Equals(
+                    option.Code,
+                    requestedCode,
+                    StringComparison.OrdinalIgnoreCase));
+
+        if (selectedOption is null && !string.IsNullOrWhiteSpace(requestedCode))
+        {
+            selectedOption = ViolationCategoryOption.CreateFallback(
+                requestedCode,
+                PolicySet,
+                Action,
+                TimeoutSeconds,
+                Reason,
+                markUnavailable: distinctOptions.Length > 0);
+            distinctOptions = [selectedOption, .. distinctOptions];
+        }
+        else if (selectedOption is null && distinctOptions.Length > 0)
+        {
+            selectedOption = distinctOptions[0];
+            applyFallbackDefaults = true;
+        }
+
+        _suppressViolationRuleDefaults = true;
         try
         {
-            SynchronizeViolationRuleOptions(options);
-
-            var selectedOption = ViolationRuleOptions.FirstOrDefault(
-                option => !string.IsNullOrWhiteSpace(selectedRuleCode)
-                    && string.Equals(
-                        option.Code,
-                        selectedRuleCode.Trim(),
-                        StringComparison.OrdinalIgnoreCase));
-
-            if (selectedOption is null && ViolationRuleOptions.Count > 0)
+            ViolationRuleOptions = distinctOptions;
+            if (selectedOption is not null)
             {
-                selectedOption = ViolationRuleOptions[0];
-                applyFallbackDefaults = true;
+                RuleCode = selectedOption.Code;
             }
 
-            SelectedViolationRule = selectedOption;
-            RuleCode = selectedOption?.Code;
+            _hasViolationRuleSnapshot = hasPolicySnapshot;
         }
         finally
         {
-            _suppressViolationRuleFallback = false;
+            _suppressViolationRuleDefaults = false;
         }
 
-        if (applyFallbackDefaults && SelectedViolationRule is { } fallback)
+        OnPropertyChanged(nameof(HasViolationRuleSnapshot));
+        OnPropertyChanged(nameof(ViolationCategoryDisplayName));
+        OnPropertyChanged(nameof(CanExecute));
+        if (applyFallbackDefaults && selectedOption is not null)
         {
-            RuleCode = fallback.Code;
-            ApplyViolationRuleDefaults(fallback);
-            OnPropertyChanged(nameof(CanExecute));
+            ApplyViolationRuleDefaults(selectedOption);
         }
     }
 
-    private void ApplyViolationRuleDefaults(PolicyRuleOptionItem rule)
+    private void ApplyViolationRuleDefaults(ViolationCategoryOption rule)
     {
         var sourceAction = rule.DefaultAction?.Trim().ToLowerInvariant() switch
         {
@@ -312,54 +369,25 @@ public sealed partial class ModerationCaseItem : ObservableObject
         Reason = rule.PublicReason;
     }
 
-    private void SynchronizeViolationRuleOptions(
-        IReadOnlyList<PolicyRuleOptionItem> options)
+    private void EnsureProvisionalViolationRule()
     {
-        var desiredCodes = options
-            .Select(option => option.Code)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        for (var index = ViolationRuleOptions.Count - 1; index >= 0; index--)
+        if (string.IsNullOrWhiteSpace(RuleCode)
+            || FindViolationRule(RuleCode) is not null)
         {
-            if (!desiredCodes.Contains(ViolationRuleOptions[index].Code))
-            {
-                ViolationRuleOptions.RemoveAt(index);
-            }
+            return;
         }
 
-        for (var desiredIndex = 0; desiredIndex < options.Count; desiredIndex++)
-        {
-            var desired = options[desiredIndex];
-            var existingIndex = -1;
-            for (var index = 0; index < ViolationRuleOptions.Count; index++)
-            {
-                if (string.Equals(
-                        ViolationRuleOptions[index].Code,
-                        desired.Code,
-                        StringComparison.OrdinalIgnoreCase))
-                {
-                    existingIndex = index;
-                    break;
-                }
-            }
-
-            if (existingIndex < 0)
-            {
-                ViolationRuleOptions.Insert(desiredIndex, desired);
-                continue;
-            }
-
-            var existing = ViolationRuleOptions[existingIndex];
-            if (existingIndex != desiredIndex)
-            {
-                ViolationRuleOptions.Move(existingIndex, desiredIndex);
-            }
-
-            if (!existing.Equals(desired))
-            {
-                ViolationRuleOptions[desiredIndex] = desired;
-            }
-        }
+        ViolationRuleOptions =
+        [
+            ViolationCategoryOption.CreateFallback(
+                RuleCode,
+                PolicySet,
+                Action,
+                TimeoutSeconds,
+                Reason,
+                markUnavailable: false),
+            .. ViolationRuleOptions,
+        ];
     }
 
     public ObservableCollection<TriggerPhraseItem> TriggerPhrases { get; } = [];
@@ -523,6 +551,94 @@ public sealed record PolicyRuleOptionItem(
     int? DefaultTimeoutSeconds)
 {
     public string DisplayLabel => $"{DisplayName} · {Code}";
+}
+
+/// <summary>
+/// Immutable UI projection of a moderation rule. The Twitch/AI rule code is
+/// the stable identity; the ComboBox must never rely on object identity.
+/// </summary>
+public sealed record ViolationCategoryOption(
+    string PolicySet,
+    string Code,
+    string DisplayName,
+    string PublicReason,
+    string DefaultAction,
+    int? DefaultTimeoutSeconds)
+{
+    public static ViolationCategoryOption FromDefinition(
+        ModerationRuleDefinition definition) =>
+        new(
+            definition.PolicySet.ToString(),
+            definition.RuleCode,
+            definition.Title,
+            definition.PublicReason,
+            definition.DefaultAction.ToString().ToLowerInvariant(),
+            definition.DefaultTimeoutSeconds);
+
+    public static ViolationCategoryOption CreateFallback(
+        string ruleCode,
+        string? policySet,
+        string? action,
+        double timeoutSeconds,
+        string? reason,
+        bool markUnavailable) =>
+        new(
+            string.Equals(
+                policySet,
+                PolicySetCode.Backseatgaming.ToString(),
+                StringComparison.OrdinalIgnoreCase)
+                || string.Equals(
+                    ruleCode,
+                    ModerationRuleCodes.Backseatgaming,
+                    StringComparison.OrdinalIgnoreCase)
+                    ? PolicySetCode.Backseatgaming.ToString()
+                    : PolicySetCode.General.ToString(),
+            ruleCode,
+            markUnavailable
+                ? $"{GetFallbackDisplayName(ruleCode)} · nicht mehr aktiv"
+                : GetFallbackDisplayName(ruleCode),
+            string.IsNullOrWhiteSpace(reason)
+                ? "Verstoß gegen die Chatregeln."
+                : reason,
+            action?.Trim().ToLowerInvariant() switch
+            {
+                "delete" => "delete",
+                "ban" => "ban",
+                _ => "timeout",
+            },
+            double.IsFinite(timeoutSeconds)
+                && timeoutSeconds >= 1
+                && timeoutSeconds <= int.MaxValue
+                    ? checked((int)Math.Truncate(timeoutSeconds))
+                    : ModerationActionRules.DefaultTimeoutSeconds);
+
+    public static string GetFallbackDisplayName(string? ruleCode) =>
+        ruleCode?.Trim().ToUpperInvariant() switch
+        {
+            "G_SEXUALIZATION" => "Sexualisierung",
+            "G_SEXUAL_EXPLICIT" => "Explizit sexueller Inhalt",
+            "G_INSULT" => "Beleidigung",
+            "G_HARASSMENT" => "Belästigung / Mobbing",
+            "G_RACISM" => "Rassismus",
+            "G_SEXISM" => "Sexismus",
+            "G_LGBTQ_HATE" => "Queerfeindlichkeit",
+            "G_ABLEISM" => "Behindertenfeindlichkeit",
+            "G_HATE_OTHER" => "Sonstige Hassrede",
+            "G_THREAT" => "Direkte Drohung",
+            "G_VIOLENCE" => "Gewaltverherrlichung",
+            "G_PERSONAL_DATA" => "Persönliche Daten / Doxxing",
+            "G_SELF_HARM_INCITEMENT" =>
+                "Aufforderung zur Selbstverletzung",
+            "G_SPAM" => "Spam",
+            "G_SCAM" => "Betrug / Phishing",
+            "G_DISRUPTION" => "Chatstörung",
+            "G_ADVERTISING" => "Werbung",
+            "G_BEGGING" => "Gebettel",
+            "G_OTHER_ABUSE" => "Sonstiger General-Verstoß",
+            "BACKSEATGAMING" => "Backseatgaming",
+            { Length: > 0 } value => value,
+            _ => "Kategorie wird geladen",
+        };
 }
 
 public sealed partial class WhitelistPhraseItem : ObservableObject

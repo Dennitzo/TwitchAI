@@ -102,6 +102,33 @@ public sealed class TwitchAccessTokenProviderTests
         Assert.Empty(oauth.ValidatedAccessTokens);
     }
 
+    [Fact]
+    public async Task GetAccessToken_WhenRefreshRequiresClientSecret_PreservesHttpFailure()
+    {
+        var expiredToken = CreateToken("expired-access", "stored-refresh") with
+        {
+            ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+        };
+        var vault = new FakeCredentialVault(expiredToken);
+        var expected = new HttpRequestException(
+            "missing client secret",
+            null,
+            HttpStatusCode.BadRequest);
+        var oauth = new FakeOAuthClient
+        {
+            RefreshException = expected,
+        };
+        using var sut = new TwitchAccessTokenProvider(vault, oauth);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(
+            () => sut.GetAccessTokenAsync());
+
+        Assert.Same(expected, exception);
+        Assert.Equal(1, oauth.RefreshCalls);
+        Assert.Equal(0, vault.SaveCalls);
+        Assert.Same(expiredToken, vault.StoredToken);
+    }
+
     private static TwitchTokenSet CreateToken(string accessToken, string refreshToken)
     {
         return new TwitchTokenSet(
@@ -157,6 +184,8 @@ public sealed class TwitchAccessTokenProviderTests
 
         public Exception? ValidationException { get; init; }
 
+        public Exception? RefreshException { get; init; }
+
         public List<string> ValidatedAccessTokens { get; } = [];
 
         public int RefreshCalls { get; private set; }
@@ -179,6 +208,11 @@ public sealed class TwitchAccessTokenProviderTests
             CancellationToken cancellationToken = default)
         {
             RefreshCalls++;
+            if (RefreshException is not null)
+            {
+                return Task.FromException<TwitchTokenSet>(RefreshException);
+            }
+
             return Task.FromResult(RefreshedToken);
         }
 

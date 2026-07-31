@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UserControl
+  x:Class="TwitchAI.App.Views.LearningDatasetPanel"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:tv="using:WinUI.TableView"
+  xmlns:vm="using:TwitchAI.App.ViewModels"
+  Loaded="OnLoaded"
+  mc:Ignorable="d">
+  <StackPanel Spacing="12">
+    <TextBlock
+      Foreground="{ThemeResource MutedTextBrush}"
+      Text="{x:Bind ViewModel.Description, Mode=OneWay}"
+      TextWrapping="Wrap" />
+
+    <Border Padding="0" Style="{StaticResource CardStyle}">
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="*" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Grid
+          Padding="12,10"
+          Background="{ThemeResource LayerStrongBrush}"
+          ColumnSpacing="12"
+          RowSpacing="8">
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+          </Grid.RowDefinitions>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+          </Grid.ColumnDefinitions>
+          <AutoSuggestBox
+            x:Name="SearchBox"
+            Grid.ColumnSpan="2"
+            AutomationProperties.Name="Learning-Beispiele durchsuchen"
+            PlaceholderText="Learning durchsuchen …"
+            QueryIcon="Find"
+            Text="{x:Bind ViewModel.SearchText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+            TextChanged="OnSearchTextChanged" />
+          <StackPanel
+            Grid.Row="1"
+            VerticalAlignment="Center"
+            Orientation="Horizontal"
+            Spacing="8">
+            <ProgressRing
+              Width="18"
+              Height="18"
+              IsActive="{x:Bind ViewModel.IsBusy, Mode=OneWay}" />
+            <TextBlock
+              VerticalAlignment="Center"
+              Foreground="{ThemeResource MutedTextBrush}"
+              Text="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+              TextTrimming="CharacterEllipsis" />
+          </StackPanel>
+          <Button
+            x:Name="RemoveButton"
+            Grid.Row="1"
+            Grid.Column="1"
+            AutomationProperties.Name="Ausgewählte Beispiele aus dem Learning entfernen"
+            Click="OnRemoveSelectedClicked"
+            Foreground="{ThemeResource DangerBrush}"
+            IsEnabled="{x:Bind ViewModel.CanRemoveSelected, Mode=OneWay}"
+            Style="{StaticResource SubtleButtonStyle}">
+            <StackPanel Orientation="Horizontal" Spacing="7">
+              <SymbolIcon Symbol="Delete" />
+              <TextBlock Text="Aus Learning entfernen" />
+            </StackPanel>
+          </Button>
+        </Grid>
+
+        <InfoBar
+          x:Name="ErrorInfoBar"
+          Grid.Row="1"
+          Margin="12,8,12,0"
+          IsClosable="True"
+          IsOpen="{x:Bind ViewModel.HasError, Mode=OneWay}"
+          Message="{x:Bind ViewModel.StatusMessage, Mode=OneWay}"
+          Severity="Error"
+          Title="Learning-Daten konnten nicht geändert werden" />
+
+        <tv:TableView
+          x:Name="LearningTable"
+          Grid.Row="2"
+          Height="460"
+          AutomationProperties.Name="Sortierbare und editierbare Learning-Beispiele"
+          AutoGenerateColumns="False"
+          CellEditEnded="OnCellEditEnded"
+          CanFilterColumns="False"
+          CanReorderColumns="False"
+          CanResizeColumns="True"
+          CanSortColumns="True"
+          IsReadOnly="False"
+          ItemsSource="{x:Bind ViewModel.Items, Mode=OneWay}"
+          MaxColumnWidth="900"
+          MinColumnWidth="72"
+          SelectionChanged="OnSelectionChanged"
+          SelectionMode="Multiple"
+          ShowExportOptions="False"
+          Sorting="OnSorting">
+          <tv:TableView.Columns>
+            <tv:TableViewTextColumn
+              Binding="{Binding DisplayId}"
+              CanResize="True"
+              CanSort="True"
+              Header="ID"
+              IsReadOnly="True"
+              SortMemberPath="DisplayId"
+              Tag="DisplayId"
+              Width="90" />
+            <tv:TableViewTextColumn
+              Binding="{Binding OriginalText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+              CanResize="True"
+              CanSort="True"
+              Header="Chatnachricht"
+              IsReadOnly="False"
+              SortMemberPath="OriginalText"
+              Tag="OriginalText"
+              Width="2*" />
+            <tv:TableViewTemplateColumn
+              CanResize="True"
+              CanSort="True"
+              Header="Verstoßkategorie"
+              IsReadOnly="False"
+              SortMemberPath="RuleCode"
+              Tag="RuleCode"
+              Width="250">
+              <tv:TableViewTemplateColumn.CellTemplate>
+                <DataTemplate x:DataType="vm:LearningDatasetItem">
+                  <TextBlock
+                    VerticalAlignment="Center"
+                    Text="{x:Bind CategoryTitle, Mode=OneWay}"
+                    TextTrimming="CharacterEllipsis"
+                    ToolTipService.ToolTip="{x:Bind CategoryTitle, Mode=OneWay}" />
+                </DataTemplate>
+              </tv:TableViewTemplateColumn.CellTemplate>
+              <tv:TableViewTemplateColumn.EditingTemplate>
+                <DataTemplate x:DataType="vm:LearningDatasetItem">
+                  <ComboBox
+                    MinWidth="220"
+                    DisplayMemberPath="DisplayName"
+                    ItemsSource="{x:Bind RuleOptions}"
+                    SelectedValue="{x:Bind RuleCode, Mode=TwoWay}"
+                    SelectedValuePath="Code" />
+                </DataTemplate>
+              </tv:TableViewTemplateColumn.EditingTemplate>
+            </tv:TableViewTemplateColumn>
+            <tv:TableViewTemplateColumn
+              x:Name="ActionColumn"
+              CanResize="True"
+              CanSort="True"
+              Header="Aktion"
+              IsReadOnly="False"
+              SortMemberPath="Action"
+              Tag="Action"
+              Width="155">
+              <tv:TableViewTemplateColumn.CellTemplate>
+                <DataTemplate x:DataType="vm:LearningDatasetItem">
+                  <TextBlock
+                    VerticalAlignment="Center"
+                    Text="{x:Bind ActionLabel, Mode=OneWay}" />
+                </DataTemplate>
+              </tv:TableViewTemplateColumn.CellTemplate>
+              <tv:TableViewTemplateColumn.EditingTemplate>
+                <DataTemplate x:DataType="vm:LearningDatasetItem">
+                  <ComboBox
+                    MinWidth="135"
+                    DisplayMemberPath="DisplayName"
+                    ItemsSource="{x:Bind ActionOptions}"
+                    SelectedValue="{x:Bind ActionCode, Mode=TwoWay}"
+                    SelectedValuePath="Code" />
+                </DataTemplate>
+              </tv:TableViewTemplateColumn.EditingTemplate>
+            </tv:TableViewTemplateColumn>
+            <tv:TableViewNumberColumn
+              x:Name="TimeoutColumn"
+              Binding="{Binding TimeoutSeconds, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+              CanResize="True"
+              CanSort="True"
+              Header="Sekunden"
+              IsReadOnly="False"
+              SortMemberPath="TimeoutSeconds"
+              Tag="TimeoutSeconds"
+              Width="110" />
+            <tv:TableViewTextColumn
+              Binding="{Binding Reason, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+              CanResize="True"
+              CanSort="True"
+              Header="Begründung"
+              IsReadOnly="False"
+              SortMemberPath="Reason"
+              Tag="Reason"
+              Width="2*" />
+            <tv:TableViewTextColumn
+              Binding="{Binding SourceLabel}"
+              CanResize="True"
+              CanSort="True"
+              Header="Quelle"
+              IsReadOnly="True"
+              SortMemberPath="SourceLabel"
+              Tag="SourceLabel"
+              Width="150" />
+            <tv:TableViewTextColumn
+              Binding="{Binding OccurredAtLocal}"
+              CanResize="True"
+              CanSort="True"
+              Header="Zeitpunkt"
+              IsReadOnly="True"
+              SortMemberPath="OccurredAtUtc"
+              Tag="OccurredAtUtc"
+              Width="170" />
+          </tv:TableView.Columns>
+        </tv:TableView>
+
+        <Grid
+          Grid.Row="3"
+          Padding="12,10"
+          ColumnSpacing="8">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="Auto" />
+          </Grid.ColumnDefinitions>
+          <Button
+            Click="OnPreviousPageClicked"
+            Content="Zurück"
+            IsEnabled="{x:Bind ViewModel.CanGoPrevious, Mode=OneWay}"
+            Style="{StaticResource SubtleButtonStyle}" />
+          <TextBlock
+            Grid.Column="1"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Foreground="{ThemeResource MutedTextBrush}"
+            Text="{x:Bind ViewModel.PageLabel, Mode=OneWay}" />
+          <Button
+            Grid.Column="2"
+            Click="OnNextPageClicked"
+            Content="Weiter"
+            IsEnabled="{x:Bind ViewModel.CanGoNext, Mode=OneWay}"
+            Style="{StaticResource SubtleButtonStyle}" />
+        </Grid>
+      </Grid>
+    </Border>
+  </StackPanel>
+</UserControl>

@@ -30,17 +30,21 @@ public sealed class SqliteModerationReviewFeedbackService
     private readonly ISqliteConnectionFactory _connectionFactory;
     private readonly ISqliteWriteCoordinator _writeCoordinator;
     private readonly IChatTextNormalizer _normalizer;
+    private readonly ILearningContextRevision _learningContextRevision;
 
     public SqliteModerationReviewFeedbackService(
         IModerationCaseRepository caseRepository,
         ISqliteConnectionFactory connectionFactory,
         IChatTextNormalizer normalizer,
-        ISqliteWriteCoordinator? writeCoordinator = null)
+        ISqliteWriteCoordinator? writeCoordinator = null,
+        ILearningContextRevision? learningContextRevision = null)
     {
         _caseRepository = caseRepository;
         _connectionFactory = connectionFactory;
         _normalizer = normalizer;
         _writeCoordinator = writeCoordinator ?? SqliteWriteCoordinator.ProcessWide;
+        _learningContextRevision = learningContextRevision
+            ?? LearningContextRevision.ProcessWide;
     }
 
     public async ValueTask<ModerationExecutionResult> DiscardAsync(
@@ -270,6 +274,11 @@ public sealed class SqliteModerationReviewFeedbackService
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
+        if (learnAsAllowed)
+        {
+            _learningContextRevision.Advance();
+        }
+
         return new ModerationExecutionResult(
             ModerationExecutionOutcome.Succeeded,
             HumanApproved: learnAsAllowed,
@@ -409,6 +418,11 @@ public sealed class SqliteModerationReviewFeedbackService
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (learn)
+        {
+            _learningContextRevision.Advance();
+        }
+
         return new ModerationExecutionResult(
             ModerationExecutionOutcome.AlreadyUnavailable,
             HumanApproved: true,

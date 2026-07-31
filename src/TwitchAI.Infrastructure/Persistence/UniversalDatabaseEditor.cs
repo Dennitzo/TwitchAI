@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using Microsoft.Data.Sqlite;
+using TwitchAI.Core.Contracts;
 
 namespace TwitchAI.Infrastructure.Persistence;
 
@@ -36,11 +37,20 @@ public sealed class UniversalDatabaseEditor : IUniversalDatabaseEditor
         "policy_category_exclusions",
         "whitelist_phrases",
     ];
+    private static readonly HashSet<string> LearningContextTables =
+    [
+        "manual_learning_examples",
+        "moderation_feedback",
+        "moderation_cases",
+        "chat_message_snapshots",
+        "learning_example_overrides",
+    ];
 
     private readonly ISqliteConnectionFactory _connectionFactory;
     private readonly IDatabaseCatalog _catalog;
     private readonly ISqliteWriteCoordinator _writeCoordinator;
     private readonly IReadOnlyList<IPolicyCacheInvalidator> _cacheInvalidators;
+    private readonly ILearningContextRevision _learningContextRevision;
     private readonly ConcurrentDictionary<string, TableSchema> _schemaCache =
         new(StringComparer.Ordinal);
 
@@ -48,12 +58,15 @@ public sealed class UniversalDatabaseEditor : IUniversalDatabaseEditor
         ISqliteConnectionFactory connectionFactory,
         IDatabaseCatalog catalog,
         IEnumerable<IPolicyCacheInvalidator> cacheInvalidators,
-        ISqliteWriteCoordinator? writeCoordinator = null)
+        ISqliteWriteCoordinator? writeCoordinator = null,
+        ILearningContextRevision? learningContextRevision = null)
     {
         _connectionFactory = connectionFactory;
         _catalog = catalog;
         _cacheInvalidators = cacheInvalidators.ToArray();
         _writeCoordinator = writeCoordinator ?? SqliteWriteCoordinator.ProcessWide;
+        _learningContextRevision = learningContextRevision
+            ?? LearningContextRevision.ProcessWide;
     }
 
     public async Task SaveRowAsync(
@@ -114,6 +127,7 @@ public sealed class UniversalDatabaseEditor : IUniversalDatabaseEditor
             .ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         InvalidateCaches(tableName);
+        AdvanceLearningContextIfAffected(tableName);
     }
 
     public async Task<int> DeleteRowsAsync(
@@ -172,7 +186,20 @@ public sealed class UniversalDatabaseEditor : IUniversalDatabaseEditor
             .ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         InvalidateCaches(tableName);
+        if (deleted > 0)
+        {
+            AdvanceLearningContextIfAffected(tableName);
+        }
+
         return deleted;
+    }
+
+    private void AdvanceLearningContextIfAffected(string tableName)
+    {
+        if (LearningContextTables.Contains(tableName))
+        {
+            _learningContextRevision.Advance();
+        }
     }
 
     private static async Task InsertAsync(
@@ -369,6 +396,14 @@ public sealed class UniversalDatabaseEditor : IUniversalDatabaseEditor
             }
         }
 
+        deleted += await DeleteLearningOverrideAsync(
+                connection,
+                transaction,
+                schema.Name,
+                primaryKeyValue,
+                cancellationToken)
+            .ConfigureAwait(false);
+
         await using var delete = connection.CreateCommand();
         delete.Transaction = transaction;
         delete.CommandText =
@@ -377,6 +412,37 @@ public sealed class UniversalDatabaseEditor : IUniversalDatabaseEditor
         delete.Parameters.AddWithValue("@primary_key", primaryKeyValue);
         deleted += await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         return deleted;
+    }
+
+    private static async Task<int> DeleteLearningOverrideAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string tableName,
+        object sourceId,
+        CancellationToken cancellationToken)
+    {
+        var sourceKind = tableName switch
+        {
+            "moderation_cases" => "twitch_moderation",
+            "manual_learning_examples" => "manual_test",
+            _ => null,
+        };
+        if (sourceKind is null)
+        {
+            return 0;
+        }
+
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            DELETE FROM learning_example_overrides
+            WHERE source_kind = @source_kind
+              AND source_id = @source_id;
+            """;
+        command.Parameters.AddWithValue("@source_kind", sourceKind);
+        command.Parameters.AddWithValue("@source_id", sourceId);
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<TableSchema> GetSchemaAsync(

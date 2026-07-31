@@ -27,6 +27,7 @@ public enum ModerationPipelineEventKind
     DroppedOverload,
     BatchRejected,
     StalePolicyRequeued,
+    StaleLearningRequeued,
     AvailabilityChanged,
     Faulted,
 }
@@ -49,7 +50,8 @@ public sealed class ModerationPipelineEventArgs : EventArgs
         long? aiLatencyMilliseconds = null,
         IReadOnlyList<PolicySetCode>? activePolicySets = null,
         Exception? exception = null,
-        ChatReplyProposalRecord? chatReplyProposal = null)
+        ChatReplyProposalRecord? chatReplyProposal = null,
+        IReadOnlyList<ModerationRuleDefinition>? activeRules = null)
     {
         Kind = kind;
         StatusCode = statusCode;
@@ -65,6 +67,7 @@ public sealed class ModerationPipelineEventArgs : EventArgs
         LocalMatchCodes = localMatchCodes ?? [];
         AiLatencyMilliseconds = aiLatencyMilliseconds;
         ActivePolicySets = activePolicySets ?? [];
+        ActiveRules = activeRules?.ToArray() ?? [];
         Exception = exception;
         ChatReplyProposal = chatReplyProposal;
     }
@@ -96,6 +99,8 @@ public sealed class ModerationPipelineEventArgs : EventArgs
     public long? AiLatencyMilliseconds { get; }
 
     public IReadOnlyList<PolicySetCode> ActivePolicySets { get; }
+
+    public IReadOnlyList<ModerationRuleDefinition> ActiveRules { get; }
 
     public Exception? Exception { get; }
 
@@ -138,6 +143,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
     private readonly IModerationRepairClient _repairClient;
     private readonly IModerationEnvelopeValidator _envelopeValidator;
     private readonly IRetrievalExampleStore _retrievalExampleStore;
+    private readonly ILearningContextRevision _learningContextRevision;
     private readonly IModerationCaseRepository _caseRepository;
     private readonly IMessageAvailabilityRegistry _availabilityRegistry;
     private readonly IMessageAvailabilityStore? _availabilityStore;
@@ -177,7 +183,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         ILocalAiRunActivityMonitor? aiRunActivityMonitor = null,
         TimeProvider? timeProvider = null,
         ITwitchConnectionReadiness? connectionReadiness = null,
-        IChatReplyStore? chatReplyStore = null)
+        IChatReplyStore? chatReplyStore = null,
+        ILearningContextRevision? learningContextRevision = null)
     {
         _eventSubClient = eventSubClient;
         _channelContextService = channelContextService;
@@ -192,6 +199,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         _repairClient = repairClient;
         _envelopeValidator = envelopeValidator;
         _retrievalExampleStore = retrievalExampleStore;
+        _learningContextRevision = learningContextRevision
+            ?? LearningContextRevision.ProcessWide;
         _caseRepository = caseRepository;
         _availabilityRegistry = availabilityRegistry;
         _availabilityStore = availabilityStore;
@@ -779,7 +788,12 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     catch (Exception exception)
                     {
                         PublishFailedAiRun(batch, exception.GetType().Name);
-                        throw;
+                        Publish(
+                            new(
+                                ModerationPipelineEventKind.BatchRejected,
+                                "ai_batch_failed",
+                                "The local AI batch failed; live analysis continues with the next batch.",
+                                exception: exception));
                     }
                 }
             }
@@ -811,13 +825,24 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             return;
         }
 
+        var learningRevision = _learningContextRevision.Current;
         var retrievalExamples = await _retrievalExampleStore
             .GetRelevantAsync(
                 batch.Context.Channel.ChannelId,
                 batch.Context.Channel.CategoryId,
                 batch.Context.EffectivePolicy,
+                batch.Messages
+                    .Select(item => item.Message.Text.LowerText)
+                    .ToArray(),
                 cancellationToken)
             .ConfigureAwait(false);
+        if (_learningContextRevision.Current != learningRevision)
+        {
+            await RequeueForLearningAsync(batch, latestPolicy, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
         var replyTemplateMap = await CreateReplyTemplateSnapshotAsync(
                 batch,
                 cancellationToken)
@@ -864,6 +889,16 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 .ValidateWithMissingRuleFallback(rawResponse, analysisBatch);
         }
 
+        // A changed learning set always requires a fresh request, even when the
+        // old response happened to be invalid. Otherwise that whole batch would
+        // be discarded instead of being evaluated with the corrected examples.
+        if (_learningContextRevision.Current != learningRevision)
+        {
+            await RequeueForLearningAsync(batch, latestPolicy, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
         if (!validation.IsValid)
         {
             Publish(
@@ -888,6 +923,13 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 StringComparison.Ordinal))
         {
             await RequeueForPolicyAsync(batch, latestPolicy, cancellationToken)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        if (_learningContextRevision.Current != learningRevision)
+        {
+            await RequeueForLearningAsync(batch, latestPolicy, cancellationToken)
                 .ConfigureAwait(false);
             return;
         }
@@ -1144,7 +1186,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     caseId,
                     caseRowVersion: persistedCase?.RowVersion ?? 1,
                     localMatchCodes: localMatchCodes,
-                    aiLatencyMilliseconds: aiLatencyMilliseconds));
+                    aiLatencyMilliseconds: aiLatencyMilliseconds,
+                    activeRules: batch.Context.EffectivePolicy.ActiveRules));
         }
     }
 
@@ -1240,27 +1283,72 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         CoreEffectivePolicySnapshot latestPolicy,
         CancellationToken cancellationToken)
     {
-        // The batch has already been dequeued, so its previous Queued activity
-        // is no longer part of the real queue. Close that
-        // lifecycle before creating replacement batches; otherwise the footer
-        // keeps the old correlation ID as a permanent "Wartet" entry.
-        PublishSupersededAiRun(batch, "policy_revision_changed");
-
-        var rules = await GetRulesAsync(
-                batch.Context.Channel.ChannelId,
+        await RequeueBatchAsync(
+                batch,
                 latestPolicy,
+                refreshLocalMatches: true,
+                supersededReason: "policy_revision_changed",
+                eventKind: ModerationPipelineEventKind.StalePolicyRequeued,
+                statusCode: "stale_policy_requeued",
+                eventMessage:
+                    "A batch used an old policy revision and was queued for fresh analysis.",
                 cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    private Task RequeueForLearningAsync(
+        ModerationBatch batch,
+        CoreEffectivePolicySnapshot latestPolicy,
+        CancellationToken cancellationToken)
+    {
+        return RequeueBatchAsync(
+            batch,
+            latestPolicy,
+            refreshLocalMatches: false,
+            supersededReason: "learning_context_changed",
+            eventKind: ModerationPipelineEventKind.StaleLearningRequeued,
+            statusCode: "stale_learning_requeued",
+            eventMessage:
+                "The learning context changed during inference; the batch was queued for fresh analysis.",
+            cancellationToken);
+    }
+
+    private async Task RequeueBatchAsync(
+        ModerationBatch batch,
+        CoreEffectivePolicySnapshot latestPolicy,
+        bool refreshLocalMatches,
+        string supersededReason,
+        ModerationPipelineEventKind eventKind,
+        string statusCode,
+        string eventMessage,
+        CancellationToken cancellationToken)
+    {
+        // The source batch has already been dequeued. Close its activity before
+        // publishing the freshly sealed replacement so the persistent footer
+        // cannot retain a stale "Wartet" entry.
+        PublishSupersededAiRun(batch, supersededReason);
+
+        IReadOnlyList<PhraseRule> rules = [];
+        if (refreshLocalMatches)
+        {
+            rules = await GetRulesAsync(
+                    batch.Context.Channel.ChannelId,
+                    latestPolicy,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
 
         foreach (var queued in batch.Messages)
         {
-            var refreshed = queued with
-            {
-                LocalMatches = _blacklistMatcher.Match(
-                    queued.Message.Text,
-                    latestPolicy,
-                    rules),
-            };
+            var refreshed = refreshLocalMatches
+                ? queued with
+                {
+                    LocalMatches = _blacklistMatcher.Match(
+                        queued.Message.Text,
+                        latestPolicy,
+                        rules),
+                }
+                : queued;
             var result = _batcher.Enqueue(
                 refreshed,
                 new ModerationBatchContext(batch.Context.Channel, latestPolicy),
@@ -1283,20 +1371,14 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             PublishBatchIngressUpdates(result);
         }
 
-        // A policy replacement must not restart the ordinary ten-second
-        // collection window for messages that already formed a sealed batch.
-        // Seal the refreshed remainder immediately so it is drained by the
-        // inference loop as soon as this stale batch returns.
+        // Re-analysis must not restart the original ten-second collection
+        // window. The replacement runs as soon as this stale attempt returns.
         if (_batcher.Flush(_timeProvider.GetUtcNow()) is { } refreshedBatch)
         {
             SignalSealedBatch(refreshedBatch);
         }
 
-        Publish(
-            new(
-                ModerationPipelineEventKind.StalePolicyRequeued,
-                "stale_policy_requeued",
-                "A batch used an old policy revision and was queued for fresh analysis."));
+        Publish(new(eventKind, statusCode, eventMessage));
     }
 
     private async ValueTask<CoreEffectivePolicySnapshot> ResolvePolicyAsync(

@@ -79,6 +79,7 @@ public sealed class TwitchModerationExecutorTests
                 RuleCode: ModerationRuleCodes.GeneralPhrase),
             corePolicy.RevisionFingerprint);
         var helix = new RecordingHelixClient();
+        var learningRevision = new LearningContextRevision();
         var executor = new TwitchModerationExecutor(
             repository,
             new SqliteMessageAvailabilityStore(
@@ -95,7 +96,8 @@ public sealed class TwitchModerationExecutorTests
                 DatabasePath = database.Path,
                 TwitchApi = new TwitchApiOptions(),
             },
-            runtimeMode: new TwitchRuntimeModeSettings(isReadOnly: true));
+            runtimeMode: new TwitchRuntimeModeSettings(isReadOnly: true),
+            learningContextRevision: learningRevision);
 
         var result = await executor.ExecuteAsync(
             new ModerationExecutionRequest(
@@ -113,6 +115,7 @@ public sealed class TwitchModerationExecutorTests
         Assert.False(result.TwitchExecuted);
         Assert.True(result.LearningAccepted);
         Assert.Equal("read_only_learning_saved", result.StatusCode);
+        Assert.Equal(2, learningRevision.Current);
         Assert.Null(helix.Delete);
         Assert.Null(helix.Timeout);
         Assert.Null(helix.Ban);
@@ -198,6 +201,7 @@ public sealed class TwitchModerationExecutorTests
                 RuleCode: ModerationRuleCodes.GeneralPhrase),
             corePolicy.RevisionFingerprint);
         var helix = new RecordingHelixClient();
+        var learningRevision = new LearningContextRevision();
         var executor = new TwitchModerationExecutor(
             caseRepository,
             new SqliteMessageAvailabilityStore(
@@ -216,7 +220,8 @@ public sealed class TwitchModerationExecutorTests
                 {
                     ModeratorUserId = "moderator-1",
                 },
-            });
+            },
+            learningContextRevision: learningRevision);
 
         var result = await executor.ExecuteAsync(
             new ModerationExecutionRequest(
@@ -231,6 +236,7 @@ public sealed class TwitchModerationExecutorTests
 
         Assert.Equal(ModerationExecutionOutcome.Succeeded, result.Outcome);
         Assert.True(result.TwitchExecuted);
+        Assert.Equal(2, learningRevision.Current);
         Assert.Equal(0, helix.GetBannedUserCalls);
         Assert.Equal(
             (channelId, "moderator-1", "user-1", 42, "edited reason"),
@@ -667,10 +673,12 @@ public sealed class TwitchModerationExecutorTests
             await command.ExecuteNonQueryAsync();
         }
 
+        var learningRevision = new LearningContextRevision();
         var service = new SqliteModerationReviewFeedbackService(
             repository,
             database.ConnectionFactory,
-            infrastructureNormalizer);
+            infrastructureNormalizer,
+            learningContextRevision: learningRevision);
         var request = new ModerationExecutionRequest(
             caseId,
             ExpectedRowVersion: 1,
@@ -687,6 +695,7 @@ public sealed class TwitchModerationExecutorTests
         Assert.Equal(ModerationExecutionOutcome.AlreadyUnavailable, first.Outcome);
         Assert.False(first.LearningAccepted);
         Assert.Equal("unavailable_review_already_saved", second.StatusCode);
+        Assert.Equal(1, learningRevision.Current);
         await using var verify = await database.OpenConnectionAsync();
         await using var verifyCommand = verify.CreateCommand();
         verifyCommand.CommandText =
@@ -898,10 +907,12 @@ public sealed class TwitchModerationExecutorTests
                 Confidence: 0.8,
                 RuleCode: ModerationRuleCodes.GeneralPhrase),
             policy.RevisionFingerprint);
+        var learningRevision = new LearningContextRevision();
         var service = new SqliteModerationReviewFeedbackService(
             repository,
             database.ConnectionFactory,
-            infrastructureNormalizer);
+            infrastructureNormalizer,
+            learningContextRevision: learningRevision);
 
         var result = await service.DiscardAsync(
             caseId,
@@ -913,6 +924,7 @@ public sealed class TwitchModerationExecutorTests
 
         Assert.Equal(ModerationExecutionOutcome.Succeeded, result.Outcome);
         Assert.True(result.LearningAccepted);
+        Assert.Equal(2, learningRevision.Current);
         var discarded = await repository.GetAsync(caseId);
         Assert.NotNull(discarded);
         Assert.Equal(CoreModerationCaseStatus.Discarded, discarded.Status);

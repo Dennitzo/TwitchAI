@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using TwitchAI.Core.Contracts;
 
 namespace TwitchAI.Infrastructure.Persistence;
 
@@ -63,6 +64,7 @@ public sealed class DatabaseRowDeletionService : IDatabaseRowDeletionService
     private readonly ISqliteWriteCoordinator _writeCoordinator;
     private readonly TimeProvider _timeProvider;
     private readonly IReadOnlyList<IPolicyCacheInvalidator> _cacheInvalidators;
+    private readonly ILearningContextRevision _learningContextRevision;
     private readonly object _confirmationGate = new();
     private readonly Dictionary<string, PendingConfirmation> _confirmations =
         new(StringComparer.Ordinal);
@@ -71,12 +73,15 @@ public sealed class DatabaseRowDeletionService : IDatabaseRowDeletionService
         ISqliteConnectionFactory connectionFactory,
         ISqliteWriteCoordinator? writeCoordinator = null,
         TimeProvider? timeProvider = null,
-        IEnumerable<IPolicyCacheInvalidator>? cacheInvalidators = null)
+        IEnumerable<IPolicyCacheInvalidator>? cacheInvalidators = null,
+        ILearningContextRevision? learningContextRevision = null)
     {
         _connectionFactory = connectionFactory;
         _writeCoordinator = writeCoordinator ?? SqliteWriteCoordinator.ProcessWide;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _cacheInvalidators = cacheInvalidators?.ToArray() ?? [];
+        _learningContextRevision = learningContextRevision
+            ?? LearningContextRevision.ProcessWide;
     }
 
     public async Task<DatabaseRowDeletionPreview> PreviewAsync(
@@ -251,6 +256,18 @@ public sealed class DatabaseRowDeletionService : IDatabaseRowDeletionService
         }
 
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (execution.DeletedRows.Any(item =>
+                item.RowCount > 0
+                && item.TableName is
+                    "manual_learning_examples" or
+                    "moderation_feedback" or
+                    "moderation_cases" or
+                    "chat_message_snapshots" or
+                    "learning_example_overrides"))
+        {
+            _learningContextRevision.Advance();
+        }
+
         if (normalized.TableName == "moderation_cases" &&
             execution.PolicyDataChanged)
         {
@@ -434,6 +451,19 @@ public sealed class DatabaseRowDeletionService : IDatabaseRowDeletionService
             transaction,
             "action_attempts",
             "SELECT COUNT(*) FROM action_attempts WHERE case_id = @case_id;",
+            caseId,
+            cancellationToken).ConfigureAwait(false);
+        await AddImpactAsync(
+            impacts,
+            connection,
+            transaction,
+            "learning_example_overrides",
+            """
+            SELECT COUNT(*)
+            FROM learning_example_overrides
+            WHERE source_kind = 'twitch_moderation'
+              AND source_id = @case_id;
+            """,
             caseId,
             cancellationToken).ConfigureAwait(false);
 
@@ -725,6 +755,17 @@ public sealed class DatabaseRowDeletionService : IDatabaseRowDeletionService
                 connection,
                 transaction,
                 "DELETE FROM action_attempts WHERE case_id = @case_id;",
+                cancellationToken,
+                ("@case_id", caseId))
+            .ConfigureAwait(false);
+        await ExecuteDeleteOrUpdateAsync(
+                connection,
+                transaction,
+                """
+                DELETE FROM learning_example_overrides
+                WHERE source_kind = 'twitch_moderation'
+                  AND source_id = @case_id;
+                """,
                 cancellationToken,
                 ("@case_id", caseId))
             .ConfigureAwait(false);

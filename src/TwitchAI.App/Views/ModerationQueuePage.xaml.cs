@@ -200,6 +200,28 @@ public sealed partial class ModerationQueuePage : Page
         PlaceReviewElement(actionButtons, row: 5, column: 0);
     }
 
+    private void OnViolationCategorySelectionChanged(
+        object sender,
+        SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox
+            {
+                Tag: ModerationCaseItem item,
+                SelectedValue: string selectedRuleCode,
+            })
+        {
+            // A recycled ComboBox can temporarily clear its selection while
+            // WinUI prepares the next card. Selection is display state only;
+            // the validated rule code remains authoritative in the item.
+            return;
+        }
+
+        if (!item.TrySelectViolationRule(selectedRuleCode))
+        {
+            ((ComboBox)sender).SelectedValue = item.RuleCode;
+        }
+    }
+
     private static T? FindNamedChild<T>(Grid root, string name)
         where T : FrameworkElement =>
         root.Children

@@ -56,6 +56,9 @@ public partial class App : Application
                 services.AddSingleton<
                     ITableColumnLayoutStore,
                     TableColumnLayoutStore>();
+                services.AddSingleton<
+                    IConfigurationPageSectionPreferenceStore,
+                    ConfigurationPageSectionPreferenceStore>();
                 services.AddTwitchAIInfrastructure(options =>
                 {
                     options.DatabasePath = Path.Combine(
@@ -129,6 +132,7 @@ public partial class App : Application
                 services.AddSingleton<WhitelistViewModel>();
                 services.AddSingleton<ChatViewModel>();
                 services.AddSingleton<LearningViewModel>();
+                services.AddTransient<LearningDatasetViewModel>();
                 services.AddSingleton<DatabaseViewModel>();
                 services.AddSingleton<AuditViewModel>();
                 services.AddSingleton<SettingsViewModel>();
@@ -203,8 +207,31 @@ public partial class App : Application
 
     private async void OnWindowClosed(object sender, WindowEventArgs args)
     {
-        await _host.StopAsync(TimeSpan.FromSeconds(3));
-        _host.Dispose();
+        // Detach UI projections before stopping the host. Coordinator
+        // cancellation can still publish a final failed/cancelled activity,
+        // but the WinUI dispatcher is already being torn down at this point.
+        GetService<ModerationUiBridge>().Dispose();
+        try
+        {
+            await _host.StopAsync(TimeSpan.FromSeconds(3));
+        }
+        catch (Exception exception)
+        {
+            WriteRuntimeDiagnostic(
+                $"Application shutdown failed:{Environment.NewLine}{exception}");
+        }
+        finally
+        {
+            try
+            {
+                _host.Dispose();
+            }
+            catch (Exception exception)
+            {
+                WriteRuntimeDiagnostic(
+                    $"Application disposal failed:{Environment.NewLine}{exception}");
+            }
+        }
     }
 
     private void OnUnhandledException(

@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.Data.Sqlite;
+using TwitchAI.Core.Models;
 using TwitchAI.Infrastructure.Persistence;
 
 namespace TwitchAI.Tests.Infrastructure;
@@ -7,14 +8,72 @@ namespace TwitchAI.Tests.Infrastructure;
 public sealed class DatabaseRowDeletionServiceTests
 {
     [Fact]
+    public async Task Delete_CasePackage_RemovesOverrideBeforeCaseIdCanBeReused()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var fixture = await InsertClosedCasePackageAsync(database);
+        await InsertTwitchLearningTombstoneAsync(database, fixture.CaseId);
+        var revision = new LearningContextRevision();
+        var service = new DatabaseRowDeletionService(
+            database.ConnectionFactory,
+            learningContextRevision: revision);
+        var request = new DatabaseRowDeletionRequest(
+            "moderation_cases",
+            fixture.CaseId.ToString(CultureInfo.InvariantCulture));
+        var preview = await service.PreviewAsync(request);
+        Assert.Contains(
+            preview.Impacts,
+            item => item.TableName == "learning_example_overrides" &&
+                    item.RowCount == 1);
+
+        await service.DeleteAsync(request, preview.ConfirmationToken!);
+
+        Assert.Equal(2, revision.Current);
+        await using (var connection = await database.OpenConnectionAsync())
+        {
+            Assert.Equal(
+                0L,
+                await ScalarAsync<long>(
+                    connection,
+                    $"""
+                     SELECT COUNT(*)
+                     FROM learning_example_overrides
+                     WHERE source_kind = 'twitch_moderation'
+                       AND source_id = {fixture.CaseId};
+                     """));
+        }
+
+        await InsertReplacementLearningCaseAsync(database, fixture.CaseId);
+        var dataset = new SqliteLearningDatasetService(
+            database.ConnectionFactory,
+            new LearningContextRevision());
+        var page = await dataset.QueryAsync(
+            new LearningDatasetQuery(
+                LearningDecision.Moderate,
+                PolicySetCode.General,
+                SearchText: null,
+                SortColumn: "OccurredAtUtc",
+                Descending: true,
+                Offset: 0,
+                PageSize: 20));
+
+        var replacement = Assert.Single(page.Rows);
+        Assert.Equal($"T-{fixture.CaseId}", replacement.DisplayId);
+        Assert.Equal("Message", replacement.OriginalText);
+        Assert.Equal(0, replacement.RowVersion);
+    }
+
+    [Fact]
     public async Task Delete_ClosedCasePackage_RemovesFkGraphAndRevertsExactFeedbackCounters()
     {
         await using var database = await TestDatabase.CreateAsync();
         var fixture = await InsertClosedCasePackageAsync(database);
         var invalidator = new RecordingPolicyCacheInvalidator();
+        var learningRevision = new LearningContextRevision();
         var service = new DatabaseRowDeletionService(
             database.ConnectionFactory,
-            cacheInvalidators: [invalidator]);
+            cacheInvalidators: [invalidator],
+            learningContextRevision: learningRevision);
         var request = new DatabaseRowDeletionRequest(
             "moderation_cases",
             fixture.CaseId.ToString(CultureInfo.InvariantCulture));
@@ -34,6 +93,7 @@ public sealed class DatabaseRowDeletionServiceTests
 
         Assert.Equal(2, result.PositiveFeedbackReverted);
         Assert.Equal(1, result.NegativeFeedbackReverted);
+        Assert.Equal(2, learningRevision.Current);
         var invalidation = Assert.Single(invalidator.Changes);
         Assert.Equal(GlobalPolicyStorage.BroadcasterId, invalidation.BroadcasterId);
         Assert.Null(invalidation.ScopeKind);
@@ -480,6 +540,79 @@ public sealed class DatabaseRowDeletionServiceTests
             CultureInfo.InvariantCulture);
         await transaction.CommitAsync();
         return caseId;
+    }
+
+    private static async Task InsertTwitchLearningTombstoneAsync(
+        TestDatabase database,
+        long caseId)
+    {
+        await using var connection = await database.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO learning_example_overrides(
+                source_kind, source_id, original_text, lower_text,
+                learning_decision, policy_set, rule_code, action,
+                timeout_seconds, reason, is_removed, row_version,
+                created_utc, updated_utc)
+            VALUES(
+                'twitch_moderation', @case_id, 'Alte Quelle', 'alte quelle',
+                'moderate', 'general', 'G_OTHER_ABUSE', 'timeout',
+                600, 'Alter Grund.', 1, 1, @now, @now);
+            """;
+        command.Parameters.AddWithValue("@case_id", caseId);
+        command.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToString("O"));
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static async Task InsertReplacementLearningCaseAsync(
+        TestDatabase database,
+        long caseId)
+    {
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        var messageId = $"replacement-message-{caseId}";
+        await using var connection = await database.OpenConnectionAsync();
+        await using var transaction = connection.BeginTransaction();
+        await InsertMessageAsync(
+            connection,
+            transaction,
+            messageId,
+            $"replacement-event-{caseId}",
+            now);
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            INSERT INTO moderation_cases(
+                case_id, twitch_message_id, broadcaster_id, chatter_user_id,
+                chatter_name_snapshot, message_text_original,
+                message_text_normalized, effective_policy_hash,
+                model_id, envelope_json, proposed_action,
+                proposed_timeout_seconds, violation_rule_code, reason,
+                policy_set, confidence, status, row_version,
+                created_utc, resolved_utc)
+            VALUES(
+                @case_id, @message_id, 'replacement-channel', 'replacement-user',
+                'Replacement', 'Message', 'message', 'replacement-policy',
+                'model', '{}', 'timeout', 600, 'G_OTHER_ABUSE',
+                'Neuer Grund.', 'general', 0.9, 'executed', 1,
+                @now, @now);
+
+            INSERT INTO moderation_feedback(
+                case_id, operator_decision, actual_action,
+                actual_timeout_seconds, actual_reason, rule_code,
+                eligible_for_learning, human_approved, twitch_executed,
+                learning_accepted, review_completed, decided_utc)
+            VALUES(
+                @case_id, 'executed', 'timeout',
+                600, 'Neuer Grund.', 'G_OTHER_ABUSE',
+                1, 1, 1, 1, 1, @now);
+            """;
+        command.Parameters.AddWithValue("@case_id", caseId);
+        command.Parameters.AddWithValue("@message_id", messageId);
+        command.Parameters.AddWithValue("@now", now);
+        await command.ExecuteNonQueryAsync();
+        await transaction.CommitAsync();
     }
 
     private static async Task InsertMessageAsync(

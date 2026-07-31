@@ -50,7 +50,7 @@ public sealed class DatabaseEditorTests
 
         Assert.Equal(payload, stored);
         Assert.Equal(
-            2L,
+            3L,
             Convert.ToInt64(
                 await ScalarAsync(connection, "SELECT COUNT(*) FROM twitch_categories;"),
                 System.Globalization.CultureInfo.InvariantCulture));

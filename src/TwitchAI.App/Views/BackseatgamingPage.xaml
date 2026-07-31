@@ -5,6 +5,7 @@
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
   xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+  xmlns:local="using:TwitchAI.App.Views"
   xmlns:tv="using:WinUI.TableView"
   xmlns:vm="using:TwitchAI.App.ViewModels"
   Background="Transparent"
@@ -23,17 +24,26 @@
         <TextBlock Style="{StaticResource PageTitleStyle}" Text="Backseatgaming" />
         <TextBlock
           Foreground="{ThemeResource MutedTextBrush}"
-          Text="Kategorieabhängige Phrasen für unaufgeforderte Spielhinweise, Lösungen und Spoiler."
+          Text="Kategorieabhängige Phrasen und Learning-Beispiele für Spielhinweise, Lösungen und Spoiler."
           TextWrapping="Wrap" />
       </StackPanel>
 
       <InfoBar
+        x:Name="PageInfoBar"
         IsClosable="False"
         IsOpen="True"
-        Message="Backseatgaming ist bei jeder bekannten Twitch-Kategorie außer Just Chatting aktiv."
+        Message="Backseatgaming ist bei jeder bekannten Twitch-Kategorie außer Just Chatting und IRL aktiv."
         Severity="Informational"
         Title="Kategorieabhängiges Regelset" />
 
+      <SelectorBar
+        x:Name="ViewSelector"
+        SelectionChanged="OnViewSelectorSelectionChanged">
+        <SelectorBarItem x:Name="PhraseSelectorItem" Text="Phrasen" />
+        <SelectorBarItem x:Name="LearningSelectorItem" Text="Learning" />
+      </SelectorBar>
+
+      <StackPanel x:Name="PhraseView" Spacing="18">
       <Border Style="{StaticResource CardStyle}">
         <StackPanel Spacing="12">
           <Grid>
@@ -215,6 +225,11 @@
           </tv:TableView>
         </Grid>
       </Border>
+      </StackPanel>
+
+      <local:LearningDatasetPanel
+        x:Name="LearningPanel"
+        Visibility="Collapsed" />
     </StackPanel>
   </ScrollViewer>
 </Page>

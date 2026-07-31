@@ -7,11 +7,15 @@ public sealed class EffectivePolicyResolverTests
 {
     private readonly EffectivePolicyResolver _sut = new();
 
-    [Fact]
-    public void Resolve_JustChatting_ActivatesGeneralOnly()
+    [Theory]
+    [InlineData("509658", "Just Chatting")]
+    [InlineData("509672", "IRL")]
+    public void Resolve_NonGameplayCategory_ActivatesGeneralOnly(
+        string categoryId,
+        string categoryName)
     {
         var result = _sut.Resolve(
-            Context("509658", "Just Chatting", isVerified: true),
+            Context(categoryId, categoryName, isVerified: true),
             generalRevision: 3,
             backseatgamingRevision: 7);
 
@@ -19,6 +23,22 @@ public sealed class EffectivePolicyResolverTests
         Assert.Equal(PolicySetCode.General, general.Code);
         Assert.Equal(3, general.Revision);
         Assert.False(result.Contains(PolicySetCode.Backseatgaming));
+    }
+
+    [Fact]
+    public void Resolve_UsesCategoryIdInsteadOfDisplayNameForIrlExclusion()
+    {
+        var irlIdWithDifferentName = _sut.Resolve(
+            Context("509672", "Veralteter Anzeigename", isVerified: true),
+            generalRevision: 3,
+            backseatgamingRevision: 7);
+        var differentIdNamedIrl = _sut.Resolve(
+            Context("12345", "IRL", isVerified: true),
+            generalRevision: 3,
+            backseatgamingRevision: 7);
+
+        Assert.False(irlIdWithDifferentName.Contains(PolicySetCode.Backseatgaming));
+        Assert.True(differentIdNamedIrl.Contains(PolicySetCode.Backseatgaming));
     }
 
     [Theory]
