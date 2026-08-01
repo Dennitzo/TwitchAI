@@ -100,7 +100,7 @@ public sealed class ApplicationStateLoader
                     AND COALESCE(f.review_completed, 0) = 0
                    )
                )
-            ORDER BY c.created_utc DESC, c.case_id DESC;
+            ORDER BY c.created_utc ASC, c.case_id ASC;
             """;
 
         var caseIds = new List<long>();

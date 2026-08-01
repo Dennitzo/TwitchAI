@@ -84,6 +84,10 @@ public partial class App : Application
                     options.LmStudio.Model =
                         _localStorage.GetString("LmStudioModel")
                         ?? "openai/gpt-oss-20b";
+                    options.LmStudio.UseCompactModerationContractV6 =
+                        _localStorage.GetBooleanOrDefault(
+                            LocalAppSettingKeys.UseCompactModerationContractV6,
+                            defaultValue: true);
                 });
                 services.AddSingleton<
                     TwitchAI.Core.Contracts.IChatTextNormalizer,

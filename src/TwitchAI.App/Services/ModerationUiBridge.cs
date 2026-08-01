@@ -294,7 +294,10 @@ public sealed class ModerationUiBridge : IDisposable
         }
         else
         {
-            _state.ModerationCases.Insert(0, item);
+            // Keep cards already under review at a stable visual index. New
+            // proposals join the end of the FIFO queue instead of shifting the
+            // complete ItemsRepeater while the operator edits a card.
+            _state.ModerationCases.Add(item);
         }
     }
 
@@ -349,7 +352,7 @@ public sealed class ModerationUiBridge : IDisposable
         }
         else
         {
-            _state.ModerationCases.Insert(0, item);
+            _state.ModerationCases.Add(item);
         }
     }
 

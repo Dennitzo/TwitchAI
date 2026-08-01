@@ -7,6 +7,46 @@ namespace TwitchAI.Tests.Core;
 public sealed class WhitelistFilterAgentTests
 {
     [Theory]
+    [InlineData("https://www.twitch.tv/channel/clip")]
+    [InlineData("https://www.twitch.tv/any_channel/clip/AnimatedOptimisticWasabiVoteNay")]
+    [InlineData("https://twitch.tv/anotherchannel/clip/FiveWordsForClipSlug")]
+    [InlineData("https://clips.twitch.tv/AnimatedOptimisticWasabiVoteNay")]
+    [InlineData("  https://clips.twitch.tv/AnimatedOptimisticWasabiVoteNay  ")]
+    public async Task ShouldSkip_StandaloneOfficialTwitchClipWithoutDatabaseEntry(
+        string original)
+    {
+        var source = new FakeWhitelistPhraseSource();
+        var sut = new WhitelistFilterAgent(source);
+
+        var skipped = await sut.ShouldSkipAsync(
+            Message(original, login: "viewer"),
+            DateTimeOffset.UtcNow);
+
+        Assert.True(skipped);
+        Assert.Empty(source.Hits);
+    }
+
+    [Theory]
+    [InlineData("schaut meinen kanal https://www.twitch.tv/channel/clip/slug")]
+    [InlineData("https://www.twitch.tv/channel/clip/one https://clips.twitch.tv/two")]
+    [InlineData("https://www.twitch.tv/channel/videos")]
+    [InlineData("https://www.twitch.tv.evil.example/channel/clip/slug")]
+    [InlineData("http://www.twitch.tv/channel/clip/slug")]
+    public async Task ShouldSkip_DoesNotTreatOtherContentAsStandaloneTwitchClip(
+        string original)
+    {
+        var source = new FakeWhitelistPhraseSource();
+        var sut = new WhitelistFilterAgent(source);
+
+        var skipped = await sut.ShouldSkipAsync(
+            Message(original, login: "viewer"),
+            DateTimeOffset.UtcNow);
+
+        Assert.False(skipped);
+        Assert.Empty(source.Hits);
+    }
+
+    [Theory]
     [InlineData("KEKW")]
     [InlineData("kekw")]
     [InlineData("KeKw")]

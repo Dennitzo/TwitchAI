@@ -4,6 +4,9 @@ namespace TwitchAI.Tests.Infrastructure;
 
 public sealed class DatabaseMigrationTests
 {
+    private const string Version24DefaultInsultPrompt =
+        "Nur wenn eine Person eindeutig direkt adressiert und unmissverständlich beschimpft/herabgesetzt wird. None: zielloser Fluch, neutrale Anrede/Anweisung, Situations-/Spiel-/Handlungs-/Leistungskritik, Neckerei/Witz/Sarkasmus, Selbstbezug, Zitat, Verneinung, Mehrdeutigkeit. Username/@, lokaler Treffer oder Learning reichen nie. Schwere Einzelbeschimpfung nur bei klarer Direktanrede; im Zweifel none. Trefferphrase: genau der kleinste zusammenhängende Lowercase-Beleg mit Zielperson und eigentlicher Herabsetzung; Username/@, Pronomen, Fülltext oder Einzelwort allein nie. Ohne solchen Beleg none.";
+
     [Fact]
     public async Task Initialize_CreatesSchemaAndBootstrapCategories()
     {
@@ -26,6 +29,7 @@ public sealed class DatabaseMigrationTests
         Assert.Contains("moderation_cases", tables);
         Assert.Contains("processed_eventsub_events", tables);
         Assert.Contains("configuration_audit", tables);
+        Assert.Contains("ai_validation_attempts", tables);
         Assert.Contains("message_availability_events", tables);
         Assert.Contains("message_clear_watermarks", tables);
         Assert.Contains("chat_reply_templates", tables);
@@ -62,7 +66,7 @@ public sealed class DatabaseMigrationTests
         var journalMode = await ScalarAsync<string>(connection, "PRAGMA journal_mode;");
         var foreignKeys = await ScalarAsync<long>(connection, "PRAGMA foreign_keys;");
 
-        Assert.Equal(17, migrationCount);
+        Assert.Equal(24, migrationCount);
         Assert.Equal("wal", journalMode, ignoreCase: true);
         Assert.Equal(1, foreignKeys);
     }
@@ -117,10 +121,1465 @@ public sealed class DatabaseMigrationTests
         Assert.Equal(["509658|1", "509672|1"], exclusionCounts);
         Assert.Empty(foreignKeyViolations);
         Assert.Equal(
-            17L,
+            24L,
             await ScalarAsync<long>(
                 connection,
                 "SELECT MAX(version) FROM schema_migrations;"));
+    }
+
+    [Fact]
+    public async Task Version18_UpdatesDefaultSpamGuidanceExactlyOnce()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(17);
+
+        long generalRevisionBefore;
+        long spamRowVersionBefore;
+        await using (var before = await database.OpenConnectionAsync())
+        {
+            generalRevisionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            spamRowVersionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """);
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            TwitchAI.Core.Models.ModerationRuleCodes.SpamPromptInstruction,
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT rule.prompt_instruction
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            spamRowVersionBefore + 2,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            generalRevisionBefore + 6,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            24L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT MAX(version) FROM schema_migrations;"));
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+    }
+
+    [Fact]
+    public async Task Version18_PreservesCustomizedSpamGuidanceAndRevision()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(17);
+        const string customizedPrompt =
+            "Eigene Spamregel mit bewusst abweichenden Grenzwerten.";
+
+        long generalRevisionBefore;
+        long spamRowVersionBefore;
+        await using (var connection = await database.OpenConnectionAsync())
+        {
+            await using var customize = connection.CreateCommand();
+            customize.CommandText =
+                """
+                UPDATE blacklist_rules
+                SET prompt_instruction = @prompt,
+                    row_version = row_version + 1
+                WHERE rule_code = 'G_SPAM'
+                  AND archived_utc IS NULL
+                  AND scope_id IN (
+                      SELECT scope_id
+                      FROM policy_sets
+                      WHERE broadcaster_id = '*'
+                        AND set_code = 'general'
+                        AND archived_utc IS NULL
+                  );
+                """;
+            customize.Parameters.AddWithValue("@prompt", customizedPrompt);
+            Assert.Equal(1, await customize.ExecuteNonQueryAsync());
+
+            generalRevisionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            spamRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """);
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            customizedPrompt,
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT rule.prompt_instruction
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            spamRowVersionBefore,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            generalRevisionBefore + 4,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            24L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT MAX(version) FROM schema_migrations;"));
+    }
+
+    [Fact]
+    public async Task Version19_AddsValidationDiagnosticsIdempotently()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(18);
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var connection = await database.OpenConnectionAsync();
+        var columns = await ReadStringsAsync(
+            connection,
+            "SELECT name FROM pragma_table_info('ai_validation_attempts') ORDER BY cid;");
+        var indexes = await ReadStringsAsync(
+            connection,
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND tbl_name = 'ai_validation_attempts'
+            ORDER BY name;
+            """);
+
+        Assert.Equal(
+        [
+            "validation_attempt_id",
+            "correlation_id",
+            "parent_correlation_id",
+            "attempt_kind",
+            "workload_kind",
+            "contract_version",
+            "schema_version",
+            "message_count",
+            "policy_hash",
+            "validation_error_codes_json",
+            "affected_message_count",
+            "system_prompt_character_count",
+            "rules_character_count",
+            "messages_character_count",
+            "examples_character_count",
+            "templates_character_count",
+            "schema_character_count",
+            "response_character_count",
+            "response_sha256",
+            "outcome",
+            "recorded_utc",
+        ],
+            columns);
+        Assert.Equal(
+        [
+            "ix_ai_validation_attempts_correlation",
+            "ix_ai_validation_attempts_outcome",
+            "ix_ai_validation_attempts_recorded",
+        ],
+            indexes);
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                connection,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 19;"));
+        Assert.Equal(
+            24L,
+            await ScalarAsync<long>(
+                connection,
+                "SELECT MAX(version) FROM schema_migrations;"));
+        Assert.Equal(
+            "ok",
+            await ScalarAsync<string>(connection, "PRAGMA integrity_check;"),
+            ignoreCase: true);
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                connection,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+    }
+
+    [Fact]
+    public async Task Version20_WeakensDefaultInsultGuidanceExactlyOnce()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(19);
+
+        long generalRevisionBefore;
+        long insultRowVersionBefore;
+        await using (var before = await database.OpenConnectionAsync())
+        {
+            generalRevisionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            insultRowVersionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """);
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            Version24DefaultInsultPrompt,
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT rule.prompt_instruction
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            insultRowVersionBefore + 3,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            generalRevisionBefore + 5,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 20;"));
+        Assert.Equal(
+            "ok",
+            await ScalarAsync<string>(verify, "PRAGMA integrity_check;"),
+            ignoreCase: true);
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+    }
+
+    [Fact]
+    public async Task Version20_PreservesCustomizedInsultGuidanceAndRevision()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(19);
+        const string customizedPrompt =
+            "Eigene, manuell gepflegte Definition für Beleidigungen.";
+
+        long generalRevisionBefore;
+        long insultRowVersionBefore;
+        await using (var connection = await database.OpenConnectionAsync())
+        {
+            await using var customize = connection.CreateCommand();
+            customize.CommandText =
+                """
+                UPDATE blacklist_rules
+                SET prompt_instruction = @prompt,
+                    row_version = row_version + 1
+                WHERE rule_code = 'G_INSULT'
+                  AND archived_utc IS NULL
+                  AND scope_id IN (
+                      SELECT scope_id
+                      FROM policy_sets
+                      WHERE broadcaster_id = '*'
+                        AND set_code = 'general'
+                        AND archived_utc IS NULL
+                  );
+                """;
+            customize.Parameters.AddWithValue("@prompt", customizedPrompt);
+            Assert.Equal(1, await customize.ExecuteNonQueryAsync());
+
+            generalRevisionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            insultRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """);
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            customizedPrompt,
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT rule.prompt_instruction
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            insultRowVersionBefore,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            generalRevisionBefore + 2,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+    }
+
+    [Fact]
+    public async Task Version21_CompactsDefaultInsultGuidanceExactlyOnce()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(20);
+
+        string promptBefore;
+        long generalRevisionBefore;
+        long insultRowVersionBefore;
+        await using (var before = await database.OpenConnectionAsync())
+        {
+            promptBefore = await ScalarAsync<string>(
+                before,
+                """
+                SELECT rule.prompt_instruction
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """);
+            generalRevisionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            insultRowVersionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """);
+        }
+
+        Assert.NotEqual(
+            Version24DefaultInsultPrompt,
+            promptBefore);
+        Assert.True(
+            promptBefore.Length >
+            Version24DefaultInsultPrompt.Length);
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            Version24DefaultInsultPrompt,
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT rule.prompt_instruction
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            insultRowVersionBefore + 2,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            generalRevisionBefore + 4,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 21;"));
+        Assert.Equal(
+            "ok",
+            await ScalarAsync<string>(verify, "PRAGMA integrity_check;"),
+            ignoreCase: true);
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+    }
+
+    [Fact]
+    public async Task Version21_PreservesCustomizedInsultGuidanceAndRevision()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(20);
+        const string customizedPrompt =
+            "Eigene kompakte Beleidigungsdefinition mit bewusst anderer Schwelle.";
+
+        long generalRevisionBefore;
+        long insultRowVersionBefore;
+        await using (var connection = await database.OpenConnectionAsync())
+        {
+            await using var customize = connection.CreateCommand();
+            customize.CommandText =
+                """
+                UPDATE blacklist_rules
+                SET prompt_instruction = @prompt,
+                    row_version = row_version + 1
+                WHERE rule_code = 'G_INSULT'
+                  AND archived_utc IS NULL
+                  AND scope_id IN (
+                      SELECT scope_id
+                      FROM policy_sets
+                      WHERE broadcaster_id = '*'
+                        AND set_code = 'general'
+                        AND archived_utc IS NULL
+                  );
+                """;
+            customize.Parameters.AddWithValue("@prompt", customizedPrompt);
+            Assert.Equal(1, await customize.ExecuteNonQueryAsync());
+
+            generalRevisionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            insultRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """);
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            customizedPrompt,
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT rule.prompt_instruction
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            insultRowVersionBefore,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            generalRevisionBefore + 2,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 21;"));
+    }
+
+    [Fact]
+    public async Task Version22_AddsStreamerInstructionRuleExactlyOnce()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(21);
+
+        long generalRevisionBefore;
+        long policyRowVersionBefore;
+        await using (var before = await database.OpenConnectionAsync())
+        {
+            generalRevisionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            policyRowVersionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT row_version
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            Assert.Equal(
+                0L,
+                await ScalarAsync<long>(
+                    before,
+                    """
+                    SELECT COUNT(*)
+                    FROM blacklist_rules rule
+                    INNER JOIN policy_sets policy
+                        ON policy.scope_id = rule.scope_id
+                    WHERE policy.broadcaster_id = '*'
+                      AND policy.set_code = 'general'
+                      AND rule.rule_code = 'G_STREAMER_INSTRUCTION'
+                      AND rule.archived_utc IS NULL;
+                    """));
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        await using (var ruleCommand = verify.CreateCommand())
+        {
+            ruleCommand.CommandText =
+                """
+                SELECT
+                    rule.rule_code, rule.title, rule.prompt_instruction,
+                    rule.default_action, rule.default_timeout_seconds,
+                    rule.public_reason, rule.priority, rule.enabled,
+                    rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND rule.archived_utc IS NULL;
+                """;
+            await using var reader = await ruleCommand.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal(
+                TwitchAI.Core.Models.ModerationRuleCodes.StreamerInstruction,
+                reader.GetString(0));
+            Assert.Equal("Anweisung", reader.GetString(1));
+            Assert.Equal(
+                TwitchAI.Core.Models.ModerationRuleCodes
+                    .StreamerInstructionPromptInstruction,
+                reader.GetString(2));
+            Assert.Equal("timeout", reader.GetString(3));
+            Assert.Equal(600L, reader.GetInt64(4));
+            Assert.Equal(
+                "Unaufgeforderte Anweisung; der Streamer entscheidet selbst über seinen Content.",
+                reader.GetString(5));
+            Assert.Equal(77L, reader.GetInt64(6));
+            Assert.Equal(1L, reader.GetInt64(7));
+            Assert.Equal(1L, reader.GetInt64(8));
+            Assert.False(await reader.ReadAsync());
+        }
+
+        Assert.Equal(
+            generalRevisionBefore + 3,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            policyRowVersionBefore + 3,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT row_version
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT COUNT(*)
+                FROM phrase_rules phrase
+                INNER JOIN blacklist_rules rule
+                    ON rule.rule_id = phrase.rule_id
+                WHERE rule.rule_code = 'G_STREAMER_INSTRUCTION';
+                """));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 22;"));
+        Assert.Equal(
+            "ok",
+            await ScalarAsync<string>(verify, "PRAGMA integrity_check;"),
+            ignoreCase: true);
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+    }
+
+    [Fact]
+    public async Task Version22_PreservesExistingActiveStreamerInstructionRule()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(21);
+        const string timestamp = "2026-08-01T12:00:00.0000000+00:00";
+
+        long generalRevisionBefore;
+        long policyRowVersionBefore;
+        await using (var connection = await database.OpenConnectionAsync())
+        {
+            await using var insert = connection.CreateCommand();
+            insert.CommandText =
+                """
+                INSERT INTO blacklist_rules(
+                    scope_id, rule_code, title, prompt_instruction,
+                    default_action, default_timeout_seconds, public_reason,
+                    priority, enabled, row_version, created_utc, updated_utc)
+                SELECT
+                    scope_id, 'G_STREAMER_INSTRUCTION', 'Eigene Anweisung',
+                    'Benutzerdefinierte aktive Anweisungsregel.',
+                    'timeout', 120, 'Benutzerdefinierter Grund.',
+                    321, 1, 7, @timestamp, @timestamp
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """;
+            insert.Parameters.AddWithValue("@timestamp", timestamp);
+            Assert.Equal(1, await insert.ExecuteNonQueryAsync());
+
+            generalRevisionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            policyRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT row_version
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            "Eigene Anweisung|Benutzerdefinierte aktive Anweisungsregel.|timeout|120|Benutzerdefinierter Grund.|321|1|7",
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT
+                    rule.title || '|' || rule.prompt_instruction || '|' ||
+                    rule.default_action || '|' ||
+                    rule.default_timeout_seconds || '|' ||
+                    rule.public_reason || '|' || rule.priority || '|' ||
+                    rule.enabled || '|' || rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT COUNT(*)
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            generalRevisionBefore + 2,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            policyRowVersionBefore + 2,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT row_version
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 22;"));
+        Assert.Equal(
+            "ok",
+            await ScalarAsync<string>(verify, "PRAGMA integrity_check;"),
+            ignoreCase: true);
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+    }
+
+    [Fact]
+    public async Task Version23_RaisesDefaultEmoteSpamThresholdExactlyOnce()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(22);
+        const string legacyPrompt =
+            "G_SPAM nur bei mindestens 10 Emotes in einer Nachricht, bei deutlich wiederholtem Text-/Phrasen-Flooding oder bei massiven wiederholten Sonderzeichenfolgen. Ein bis neun Emotes allein sowie normale Wiederholungen, Satzzeichen und Reaktionen sind erlaubt; wenige Emotes niemals als Textspam oder Chatstörung umdeuten. Qualifizierendes Emote-, Text- und Sonderzeichen-Flooding G_SPAM statt G_DISRUPTION zuordnen.";
+
+        long generalRevisionBefore;
+        long policyRowVersionBefore;
+        long spamRowVersionBefore;
+        await using (var before = await database.OpenConnectionAsync())
+        {
+            Assert.Equal(
+                legacyPrompt,
+                await ScalarAsync<string>(
+                    before,
+                    """
+                    SELECT rule.prompt_instruction
+                    FROM blacklist_rules rule
+                    INNER JOIN policy_sets policy
+                        ON policy.scope_id = rule.scope_id
+                    WHERE policy.broadcaster_id = '*'
+                      AND policy.set_code = 'general'
+                      AND rule.rule_code = 'G_SPAM'
+                      AND rule.archived_utc IS NULL;
+                    """));
+            generalRevisionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            policyRowVersionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT row_version
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            spamRowVersionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """);
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        var updatedPrompt = await ScalarAsync<string>(
+            verify,
+            """
+            SELECT rule.prompt_instruction
+            FROM blacklist_rules rule
+            INNER JOIN policy_sets policy
+                ON policy.scope_id = rule.scope_id
+            WHERE policy.broadcaster_id = '*'
+              AND policy.set_code = 'general'
+              AND rule.rule_code = 'G_SPAM'
+              AND rule.archived_utc IS NULL;
+            """);
+        Assert.Equal(
+            TwitchAI.Core.Models.ModerationRuleCodes.SpamPromptInstruction,
+            updatedPrompt);
+        Assert.Contains("mindestens 20 Emotes", updatedPrompt, StringComparison.Ordinal);
+        Assert.Contains("Ein bis neunzehn Emotes", updatedPrompt, StringComparison.Ordinal);
+        Assert.Equal(
+            spamRowVersionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            generalRevisionBefore + 2,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            policyRowVersionBefore + 2,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT row_version
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 23;"));
+        Assert.Equal(
+            "ok",
+            await ScalarAsync<string>(verify, "PRAGMA integrity_check;"),
+            ignoreCase: true);
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+    }
+
+    [Fact]
+    public async Task Version23_PreservesCustomizedSpamGuidanceAndRevision()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(22);
+        const string customizedPrompt =
+            "Eigene Spamregel mit einer bewusst abweichenden Emote-Grenze.";
+
+        long generalRevisionBefore;
+        long policyRowVersionBefore;
+        long spamRowVersionBefore;
+        await using (var connection = await database.OpenConnectionAsync())
+        {
+            await using var customize = connection.CreateCommand();
+            customize.CommandText =
+                """
+                UPDATE blacklist_rules
+                SET prompt_instruction = @prompt,
+                    row_version = row_version + 1
+                WHERE rule_code = 'G_SPAM'
+                  AND enabled = 1
+                  AND archived_utc IS NULL
+                  AND scope_id IN (
+                      SELECT scope_id
+                      FROM policy_sets
+                      WHERE broadcaster_id = '*'
+                        AND set_code = 'general'
+                        AND enabled = 1
+                        AND archived_utc IS NULL
+                  );
+                """;
+            customize.Parameters.AddWithValue("@prompt", customizedPrompt);
+            Assert.Equal(1, await customize.ExecuteNonQueryAsync());
+
+            generalRevisionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            policyRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT row_version
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            spamRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """);
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            customizedPrompt,
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT rule.prompt_instruction
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            spamRowVersionBefore,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            generalRevisionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            policyRowVersionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT row_version
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 23;"));
+        Assert.Equal(
+            "ok",
+            await ScalarAsync<string>(verify, "PRAGMA integrity_check;"),
+            ignoreCase: true);
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+    }
+
+    [Fact]
+    public async Task Version24_RequiresContextualDefaultInsultEvidenceExactlyOnce()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(23);
+        const string legacyPrompt =
+            "Nur wenn eine Person eindeutig direkt adressiert und unmissverständlich beschimpft/herabgesetzt wird. None: zielloser Fluch, neutrale Anrede/Anweisung, Situations-/Spiel-/Handlungs-/Leistungskritik, Neckerei/Witz/Sarkasmus, Selbstbezug, Zitat, Verneinung, Mehrdeutigkeit. Username/@, lokaler Treffer oder Learning reichen nie. Schwere Einzelbeschimpfung nur bei klarer Direktanrede; im Zweifel none.";
+
+        long generalRevisionBefore;
+        long policyRowVersionBefore;
+        long insultRowVersionBefore;
+        await using (var before = await database.OpenConnectionAsync())
+        {
+            Assert.Equal(
+                legacyPrompt,
+                await ScalarAsync<string>(
+                    before,
+                    """
+                    SELECT rule.prompt_instruction
+                    FROM blacklist_rules rule
+                    INNER JOIN policy_sets policy
+                        ON policy.scope_id = rule.scope_id
+                    WHERE policy.broadcaster_id = '*'
+                      AND policy.set_code = 'general'
+                      AND rule.rule_code = 'G_INSULT'
+                      AND rule.archived_utc IS NULL;
+                    """));
+            generalRevisionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            policyRowVersionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT row_version
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            insultRowVersionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """);
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        var updatedPrompt = await ScalarAsync<string>(
+            verify,
+            """
+            SELECT rule.prompt_instruction
+            FROM blacklist_rules rule
+            INNER JOIN policy_sets policy
+                ON policy.scope_id = rule.scope_id
+            WHERE policy.broadcaster_id = '*'
+              AND policy.set_code = 'general'
+              AND rule.rule_code = 'G_INSULT'
+              AND rule.archived_utc IS NULL;
+            """);
+        Assert.Equal(Version24DefaultInsultPrompt, updatedPrompt);
+        Assert.Equal(
+            insultRowVersionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            generalRevisionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            policyRowVersionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT row_version
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 24;"));
+        Assert.Equal(
+            "ok",
+            await ScalarAsync<string>(verify, "PRAGMA integrity_check;"),
+            ignoreCase: true);
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+    }
+
+    [Fact]
+    public async Task Version24_PreservesCustomizedInsultGuidanceAndRevision()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(23);
+        const string customizedPrompt =
+            "Eigene Beleidigungsregel mit einer bewusst abweichenden Trefferlogik.";
+
+        long generalRevisionBefore;
+        long policyRowVersionBefore;
+        long insultRowVersionBefore;
+        await using (var connection = await database.OpenConnectionAsync())
+        {
+            await using var customize = connection.CreateCommand();
+            customize.CommandText =
+                """
+                UPDATE blacklist_rules
+                SET prompt_instruction = @prompt,
+                    row_version = row_version + 1
+                WHERE rule_code = 'G_INSULT'
+                  AND enabled = 1
+                  AND archived_utc IS NULL
+                  AND scope_id IN (
+                      SELECT scope_id
+                      FROM policy_sets
+                      WHERE broadcaster_id = '*'
+                        AND set_code = 'general'
+                        AND enabled = 1
+                        AND archived_utc IS NULL
+                  );
+                """;
+            customize.Parameters.AddWithValue("@prompt", customizedPrompt);
+            Assert.Equal(1, await customize.ExecuteNonQueryAsync());
+
+            generalRevisionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            policyRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT row_version
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            insultRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """);
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            customizedPrompt,
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT rule.prompt_instruction
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            insultRowVersionBefore,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy
+                    ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_INSULT'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            generalRevisionBefore,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            policyRowVersionBefore,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT row_version
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 24;"));
+        Assert.Equal(
+            "ok",
+            await ScalarAsync<string>(verify, "PRAGMA integrity_check;"),
+            ignoreCase: true);
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
     }
 
     [Fact]
@@ -144,7 +1603,7 @@ public sealed class DatabaseMigrationTests
             ORDER BY name;
             """);
 
-        Assert.Equal(17, migrationVersion);
+        Assert.Equal(24, migrationVersion);
         Assert.Equal(
             ["chat_reply_proposals", "chat_reply_templates"],
             tables);
@@ -318,7 +1777,7 @@ public sealed class DatabaseMigrationTests
                 ORDER BY r.rule_code;
                 """));
         Assert.Equal(
-            generalRevisionBefore + 1,
+            generalRevisionBefore + 7,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -329,7 +1788,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            insultRowVersionBefore + 1,
+            insultRowVersionBefore + 4,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -398,7 +1857,7 @@ public sealed class DatabaseMigrationTests
                 WHERE change_reason = 'historical reason fixture';
                 """));
         Assert.Equal(
-            17L,
+            24L,
             await ScalarAsync<long>(
                 verify,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -556,7 +2015,7 @@ public sealed class DatabaseMigrationTests
                   AND name LIKE 'trg_manual_learning_%';
                 """));
         Assert.Equal(
-            generalRevisionBefore + 1,
+            generalRevisionBefore + 7,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -1583,6 +3042,10 @@ public sealed class DatabaseMigrationTests
                 "Gebettel",
                 "Betteln nach Subs, Geschenken oder Giveaways.",
                 76),
+            ["G_STREAMER_INSTRUCTION"] = (
+                "Anweisung",
+                "Unaufgeforderte Anweisung; der Streamer entscheidet selbst über seinen Content.",
+                77),
             ["G_OTHER_ABUSE"] = (
                 "Sonstiger General-Verstoß",
                 "Sonstiger Verstoß gegen die Chatregeln.",

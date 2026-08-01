@@ -73,13 +73,18 @@ unter `%LOCALAPPDATA%\TwitchAI`. Der Datenbankpfad ist
 4. General-Regeln gelten immer. Backseatgaming gilt für bekannte Kategorien
    außer Just Chatting und IRL; bei unbekannter Kategorie wird konservativ nur General
    verwendet.
-5. LM Studio liefert ein streng validiertes
-   `twitchai.moderation.response.v3`. Ein ungültiges Envelope erhält höchstens
-   einen Reparaturversuch und erzeugt danach keinen Fall.
+5. LM Studio liefert ein kompaktes, streng validiertes
+   `twitchai.moderation.response.v7`. Jede temporäre Nachrichten-ID ist genau
+   ein Schlüssel im Ergebnis; `null` bedeutet erlaubt, Moderationen und
+   Chat-Antworten verwenden kompakte Objekte. Bei einem fehlerhaften Einzelergebnis bleiben gültige
+   Entscheidungen erhalten und nur die betroffene Nachricht erhält höchstens
+   einen Reparaturversuch.
 6. Ein Mensch kann Aktion, Timeoutdauer, Verstoßkategorie, Begründung und
    ausgewählte Triggerphrasen ändern und danach **Ausführen** oder
-   **Verwerfen** wählen. General unterscheidet dabei 17 globale Kategorien;
-   `BACKSEATGAMING` bleibt das kategorieabhängige Regelset.
+   **Verwerfen** wählen. General unterscheidet dabei 20 globale Kategorien;
+   `BACKSEATGAMING` bleibt das kategorieabhängige Regelset. Bestätigungen
+   werden als vollständige Kontextbeispiele ausschließlich unter **Learning**
+   gespeichert; die manuellen **Phrasen**-Listen werden dadurch nie erweitert.
 7. Extern bereits erledigte Fälle senden keinen Twitch-Aufruf. Sie können als
    positives Feedback bestätigt oder ohne Lernen abgeschlossen werden.
 
@@ -132,6 +137,14 @@ startbar. Ein MSIX kann weiterhin explizit mit
 `-p:WindowsPackageType=MSIX -p:GenerateAppxPackageOnBuild=true` gebaut werden;
 für eine verteilbare Version ist ein vertrauenswürdiges Signaturzertifikat
 erforderlich.
+
+Der keyed Moderationsvertrag v7 ist standardmäßig aktiv. Für einen internen
+Rollback kann bei geschlossener App in
+`%LOCALAPPDATA%\TwitchAI\settings.json` der Stringwert
+`"UseCompactModerationContractV6": "false"` gesetzt werden; der historische
+Einstellungsname bleibt aus Kompatibilitätsgründen erhalten. Validierungs- und
+Reparaturdiagnosen werden ohne Chattexte oder Modellantworten in
+`ai_validation_attempts` gespeichert.
 
 Weitere technische Details stehen in
 [docs/architecture.md](docs/architecture.md).

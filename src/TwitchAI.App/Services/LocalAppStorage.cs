@@ -16,6 +16,9 @@ public interface ILocalAppStorage
 
 internal static class LocalAppSettingKeys
 {
+    public const string UseCompactModerationContractV6 =
+        "UseCompactModerationContractV6";
+
     public const string RemoveIdenticalAiQueueMessages =
         "RemoveIdenticalAiQueueMessages";
 

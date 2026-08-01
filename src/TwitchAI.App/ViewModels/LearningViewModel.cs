@@ -326,6 +326,9 @@ public sealed partial class LearningReviewViewModel : ObservableObject
 
     public ObservableCollection<TriggerPhraseItem> TriggerPhrases { get; }
 
+    public Visibility TriggerEvidenceVisibility =>
+        TriggerPhrases.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+
     public string SelectedRuleCode => _selectedRuleCode;
 
     public string SelectedRuleDisplayName =>

@@ -491,7 +491,7 @@ public sealed class ConfigurationDataService : IConfigurationDataService, IDispo
         {
             ["rule_id"] = ruleId,
             ["phrase"] = normalizedPhrase,
-            ["manual_override"] = "auto",
+            ["manual_override"] = "active",
             ["enabled"] = true,
         };
         await CommitSingleAsync(

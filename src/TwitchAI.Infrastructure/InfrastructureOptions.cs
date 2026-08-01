@@ -65,6 +65,13 @@ public sealed class LmStudioOptions
 
     public double Temperature { get; set; }
 
+    /// <summary>
+    /// Sends the compact keyed v7 moderation contract. The v6 property name is
+    /// retained for settings-file compatibility. Disable only for a temporary
+    /// rollback to the legacy full-envelope prompt.
+    /// </summary>
+    public bool UseCompactModerationContractV6 { get; set; } = true;
+
     public string VaultResource { get; set; } = "TwitchAI.LmStudio";
 
     public string VaultAccount { get; set; } = "local-api-token";

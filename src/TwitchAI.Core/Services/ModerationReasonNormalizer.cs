@@ -39,6 +39,15 @@ public static partial class ModerationReasonNormalizer
         string? configuredPublicReason)
     {
         var value = CollapseWhitespace().Replace(reason?.Trim() ?? string.Empty, " ");
+        if (string.Equals(
+                ruleCode,
+                ModerationRuleCodes.StreamerInstruction,
+                StringComparison.Ordinal))
+        {
+            return ValidConfiguredReason(configuredPublicReason)
+                ?? ModerationRuleCodes.StreamerInstructionPublicReason;
+        }
+
         if (value.Length == 0)
         {
             return Fallback(ruleCode, policySet, configuredPublicReason);
@@ -126,6 +135,8 @@ public static partial class ModerationReasonNormalizer
                 "Unaufgeforderte Werbung oder Eigenwerbung.",
             ModerationRuleCodes.Begging =>
                 "Betteln nach Subs, Geschenken oder Giveaways.",
+            ModerationRuleCodes.StreamerInstruction =>
+                ModerationRuleCodes.StreamerInstructionPublicReason,
             "G_OTHER_ABUSE" => "Sonstiger Verstoß gegen die Chatregeln.",
             ModerationRuleCodes.Backseatgaming =>
                 "Unaufgeforderter Spielhinweis oder Spoiler.",
@@ -184,9 +195,9 @@ public static partial class ModerationReasonNormalizer
         RegexOptions.IgnoreCase)]
     private static partial Regex UserTarget();
 
-    [GeneratedRegex(@"\b(the|this|that|with|against|under|should|content|user|message|policy|disallowed|removed|remove|delete|timeout|harassment|profanity|directed|violation|abuse|hate|speech|backseat|spoiler|personal|data|threat|sexual|racist|sexist|severe|strong|insult|insults|extreme|ban|banned|bannable|advertising|begging|scam|phishing)\b")]
+    [GeneratedRegex(@"\b(the|this|that|with|against|under|should|content|user|streamer|message|policy|disallowed|removed|remove|delete|timeout|harassment|profanity|directed|instruction|directive|order|violation|abuse|hate|speech|backseat|spoiler|personal|data|threat|sexual|racist|sexist|severe|strong|insult|insults|extreme|ban|banned|bannable|advertising|begging|scam|phishing)\b")]
     private static partial Regex EnglishWords();
 
-    [GeneratedRegex(@"^\s*(harassment|profanity|abuse|hate speech|backseat|backseatgaming|spoiler|personal data|threat|sexual content|racist|sexist|severe insult|strong insult|insult|extreme abuse|advertising|begging|scam|phishing|spam|violation)\s*[.!?]?\s*$")]
+    [GeneratedRegex(@"^\s*(harassment|profanity|abuse|hate speech|backseat|backseatgaming|spoiler|personal data|threat|sexual content|racist|sexist|severe insult|strong insult|insult|extreme abuse|advertising|begging|instruction|directive|order|scam|phishing|spam|violation)\s*[.!?]?\s*$")]
     private static partial Regex SingleEnglishModerationReason();
 }

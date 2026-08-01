@@ -324,6 +324,15 @@ public sealed partial class ModerationQueuePage : Page
             {
                 await ShowUnavailableReviewAsync(item, request);
             }
+            else if (result.Outcome == ModerationExecutionOutcome.StalePolicy
+                     && string.Equals(
+                         result.StatusCode,
+                         "stale_policy_requeued",
+                         StringComparison.Ordinal))
+            {
+                // The coordinator accepted the automatic re-analysis. Its
+                // visible card status is sufficient; this is not an error.
+            }
             else if (result.Outcome != ModerationExecutionOutcome.Succeeded)
             {
                 await ShowResultAsync(result);

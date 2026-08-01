@@ -312,6 +312,13 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
                         .ReanalyzeCaseAsync(item.CaseId, cancellationToken);
                     item.Status =
                         "Regelstand veraltet · mit aktueller Revision neu eingereiht";
+                    result = result with
+                    {
+                        StatusCode = "stale_policy_requeued",
+                        Message =
+                            "Die ausgewählte Verstoßkategorie war nicht mehr aktiv. "
+                            + "Der Vorschlag wurde automatisch neu analysiert.",
+                    };
                 }
                 catch (InvalidOperationException)
                 {

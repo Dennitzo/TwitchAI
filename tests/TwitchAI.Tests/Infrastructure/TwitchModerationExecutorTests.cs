@@ -98,6 +98,9 @@ public sealed class TwitchModerationExecutorTests
             },
             runtimeMode: new TwitchRuntimeModeSettings(isReadOnly: true),
             learningContextRevision: learningRevision);
+        var phraseStateBefore = await ReadPhraseStateAsync(database);
+        var policyStateBefore = await ReadPolicyStateAsync(database);
+        var phraseFeedbackCountBefore = await ReadPhraseFeedbackCountAsync(database);
 
         var result = await executor.ExecuteAsync(
             new ModerationExecutionRequest(
@@ -147,11 +150,159 @@ public sealed class TwitchModerationExecutorTests
         Assert.True(reader.GetBoolean(5));
         Assert.True(reader.GetBoolean(6));
         Assert.Equal(0, reader.GetInt32(7));
-        Assert.Equal(1, reader.GetInt32(8));
+        Assert.Equal(0, reader.GetInt32(8));
+        Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
+        Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
+        Assert.Equal(
+            phraseFeedbackCountBefore,
+            await ReadPhraseFeedbackCountAsync(database));
     }
 
     [Fact]
-    public async Task ExecuteAsync_AllowsValidatedEditedFieldsAndPersistsFinalRequest()
+    public async Task ExecuteAsync_ReadOnlyLearningKeepsPolicyStableForAnotherPendingProposal()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        const string channelId = "read-only-concurrent-channel";
+        var infrastructureNormalizer =
+            new TwitchAI.Infrastructure.Persistence.ChatTextNormalizer();
+        var policyStore = new SqlitePolicyStore(
+            database.ConnectionFactory,
+            infrastructureNormalizer);
+        var persistedPolicy = await policyStore.GetEffectivePolicyAsync(
+            channelId,
+            "509658");
+        var context = new ChannelContextSnapshot(
+            channelId,
+            "509658",
+            "Just Chatting",
+            DateTimeOffset.UtcNow,
+            Revision: 1,
+            IsVerified: true);
+        var corePolicy = new EffectivePolicyResolver().Resolve(
+            context,
+            persistedPolicy.GeneralRevision,
+            backseatgamingRevision: 1);
+        var repository = new CoreModerationCaseRepository(
+            database.ConnectionFactory,
+            infrastructureNormalizer);
+
+        ChatMessageSnapshot CreateMessage(string suffix, string text)
+        {
+            var identity = ChatMessageIdentityV1.Create(
+                $"event-{suffix}",
+                $"message-{suffix}",
+                channelId,
+                $"viewer-{suffix}",
+                $"viewer_{suffix}",
+                $"Viewer {suffix}",
+                text,
+                DateTimeOffset.UtcNow);
+            return new ChatMessageSnapshot(
+                identity,
+                new CoreChatTextNormalizer().Process(identity.OriginalText),
+                context,
+                IngressSequence: suffix == "first" ? 1 : 2);
+        }
+
+        var firstTrigger = "erste verbotene triggerphrase";
+        var secondTrigger = "zweite verbotene triggerphrase";
+        var firstCaseId = await repository.AddAsync(
+            CreateMessage("first", firstTrigger),
+            new ValidatedModerationDecision(
+                "temporary-first",
+                ModerationActionKind.Timeout,
+                TimeoutSeconds: 600,
+                PolicySetCode.General,
+                "Erster Vorschlag.",
+                [firstTrigger],
+                Confidence: 0.9,
+                RuleCode: ModerationRuleCodes.GeneralPhrase),
+            corePolicy.RevisionFingerprint);
+        var secondCaseId = await repository.AddAsync(
+            CreateMessage("second", secondTrigger),
+            new ValidatedModerationDecision(
+                "temporary-second",
+                ModerationActionKind.Delete,
+                TimeoutSeconds: null,
+                PolicySetCode.General,
+                string.Empty,
+                [secondTrigger],
+                Confidence: 0.9,
+                RuleCode: ModerationRuleCodes.GeneralPhrase),
+            corePolicy.RevisionFingerprint);
+
+        var helix = new RecordingHelixClient();
+        var executor = new TwitchModerationExecutor(
+            repository,
+            new SqliteMessageAvailabilityStore(
+                database.ConnectionFactory,
+                infrastructureNormalizer),
+            new FixedChannelContextService(context),
+            new EffectivePolicyResolver(),
+            policyStore,
+            database.ConnectionFactory,
+            infrastructureNormalizer,
+            helix,
+            new InfrastructureOptions
+            {
+                DatabasePath = database.Path,
+                TwitchApi = new TwitchApiOptions(),
+            },
+            runtimeMode: new TwitchRuntimeModeSettings(isReadOnly: true));
+        var phraseStateBefore = await ReadPhraseStateAsync(database);
+        var policyStateBefore = await ReadPolicyStateAsync(database);
+        var phraseFeedbackCountBefore = await ReadPhraseFeedbackCountAsync(database);
+
+        var firstResult = await executor.ExecuteAsync(
+            new ModerationExecutionRequest(
+                firstCaseId,
+                ExpectedRowVersion: 1,
+                ModerationActionKind.Timeout,
+                TimeoutSeconds: 600,
+                "Erster Vorschlag.",
+                PolicySetCode.General,
+                [firstTrigger],
+                RuleCode: ModerationRuleCodes.GeneralPhrase));
+
+        Assert.Equal(ModerationExecutionOutcome.Succeeded, firstResult.Outcome);
+        var policyAfterLearning = await policyStore.GetEffectivePolicyAsync(
+            channelId,
+            "509658");
+        Assert.Equal(
+            persistedPolicy.GeneralRevision,
+            policyAfterLearning.GeneralRevision);
+        Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
+        Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
+        Assert.Equal(
+            phraseFeedbackCountBefore,
+            await ReadPhraseFeedbackCountAsync(database));
+
+        var secondResult = await executor.ExecuteAsync(
+            new ModerationExecutionRequest(
+                secondCaseId,
+                ExpectedRowVersion: 1,
+                ModerationActionKind.Timeout,
+                TimeoutSeconds: 1_200,
+                "Manuell bearbeiteter, weiterhin gültiger Grund.",
+                PolicySetCode.General,
+                [secondTrigger],
+                RuleCode: ModerationRuleCodes.GeneralPhrase));
+
+        Assert.Equal(ModerationExecutionOutcome.Succeeded, secondResult.Outcome);
+        Assert.True(secondResult.LearningAccepted);
+        Assert.False(secondResult.TwitchExecuted);
+        Assert.Null(helix.Delete);
+        Assert.Null(helix.Timeout);
+        Assert.Null(helix.Ban);
+        Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
+        Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
+        Assert.Equal(
+            phraseFeedbackCountBefore,
+            await ReadPhraseFeedbackCountAsync(database));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PersistsEditedFeedbackWithoutMutatingPolicyPhrases()
     {
         await using var database = await TestDatabase.CreateAsync();
         const string channelId = "channel-1";
@@ -222,6 +373,9 @@ public sealed class TwitchModerationExecutorTests
                 },
             },
             learningContextRevision: learningRevision);
+        var phraseStateBefore = await ReadPhraseStateAsync(database);
+        var policyStateBefore = await ReadPolicyStateAsync(database);
+        var phraseFeedbackCountBefore = await ReadPhraseFeedbackCountAsync(database);
 
         var result = await executor.ExecuteAsync(
             new ModerationExecutionRequest(
@@ -268,33 +422,11 @@ public sealed class TwitchModerationExecutorTests
         Assert.Equal(ModerationRuleCodes.Backseatgaming, reader.GetString(8));
         Assert.Equal(ModerationRuleCodes.Backseatgaming, reader.GetString(9));
 
-        await using var learningConnection = await database.OpenConnectionAsync();
-        await using var learningCommand = learningConnection.CreateCommand();
-        learningCommand.CommandText =
-            """
-            SELECT p.positive_confirmations, p.negative_confirmations,
-                   p.manual_override,
-                   (SELECT COUNT(*) FROM phrase_feedback WHERE case_id = @case_id),
-                   (SELECT COUNT(*) FROM phrase_feedback
-                    WHERE case_id = @case_id AND trigger_phrase = 'other')
-            FROM phrase_rules p
-            INNER JOIN blacklist_rules r ON r.rule_id = p.rule_id
-            INNER JOIN policy_sets s ON s.scope_id = r.scope_id
-            WHERE s.broadcaster_id = @global_scope
-              AND s.set_code = 'backseatgaming'
-              AND p.normalized_phrase = 'spoiler';
-            """;
-        learningCommand.Parameters.AddWithValue("@case_id", caseId);
-        learningCommand.Parameters.AddWithValue(
-            "@global_scope",
-            GlobalPolicyStorage.BroadcasterId);
-        await using var learningReader = await learningCommand.ExecuteReaderAsync();
-        Assert.True(await learningReader.ReadAsync());
-        Assert.Equal(1, learningReader.GetInt32(0));
-        Assert.Equal(0, learningReader.GetInt32(1));
-        Assert.Equal("auto", learningReader.GetString(2));
-        Assert.Equal(1, learningReader.GetInt32(3));
-        Assert.Equal(0, learningReader.GetInt32(4));
+        Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
+        Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
+        Assert.Equal(
+            phraseFeedbackCountBefore,
+            await ReadPhraseFeedbackCountAsync(database));
     }
 
     [Fact]
@@ -705,7 +837,7 @@ public sealed class TwitchModerationExecutorTests
     }
 
     [Fact]
-    public async Task ExternalDelete_RemainsReviewableUntilOperatorExecutes()
+    public async Task ExternalDeleteLearningPersistsReviewWithoutMutatingPolicyPhrases()
     {
         await using var database = await TestDatabase.CreateAsync();
         const string channelId = "channel-external-delete";
@@ -800,6 +932,9 @@ public sealed class TwitchModerationExecutorTests
             PolicySetCode.General,
             ["spoiler"],
             RuleCode: ModerationRuleCodes.GeneralPhrase);
+        var phraseStateBefore = await ReadPhraseStateAsync(database);
+        var policyStateBefore = await ReadPolicyStateAsync(database);
+        var phraseFeedbackCountBefore = await ReadPhraseFeedbackCountAsync(database);
 
         var result = await executor.ExecuteAsync(request);
 
@@ -821,44 +956,47 @@ public sealed class TwitchModerationExecutorTests
         command.Parameters.AddWithValue("@case_id", caseId);
         Assert.Equal(0L, await command.ExecuteScalarAsync());
 
+        var learningRevision = new LearningContextRevision();
         var reviewService = new SqliteModerationReviewFeedbackService(
             repository,
             database.ConnectionFactory,
-            infrastructureNormalizer);
+            infrastructureNormalizer,
+            learningContextRevision: learningRevision);
         var reviewResult = await reviewService.CompleteUnavailableAsync(
             request,
             learn: true);
         Assert.True(reviewResult.LearningAccepted);
+        Assert.Equal(2, learningRevision.Current);
 
         await using var learnedConnection = await database.OpenConnectionAsync();
         await using var learnedCommand = learnedConnection.CreateCommand();
         learnedCommand.CommandText =
             """
             SELECT f.review_completed, f.actual_action, f.actual_timeout_seconds,
-                   p.positive_confirmations, p.negative_confirmations
+                   f.learning_accepted,
+                   (SELECT COUNT(*)
+                    FROM phrase_feedback
+                    WHERE case_id = @case_id)
             FROM moderation_feedback f
-            INNER JOIN phrase_rules p ON p.normalized_phrase = 'spoiler'
-            INNER JOIN blacklist_rules r ON r.rule_id = p.rule_id
-            INNER JOIN policy_sets s ON s.scope_id = r.scope_id
-            WHERE f.case_id = @case_id
-              AND s.broadcaster_id = @global_scope
-              AND s.set_code = 'general';
+            WHERE f.case_id = @case_id;
             """;
         learnedCommand.Parameters.AddWithValue("@case_id", caseId);
-        learnedCommand.Parameters.AddWithValue(
-            "@global_scope",
-            GlobalPolicyStorage.BroadcasterId);
         await using var learnedReader = await learnedCommand.ExecuteReaderAsync();
         Assert.True(await learnedReader.ReadAsync());
         Assert.True(learnedReader.GetBoolean(0));
         Assert.Equal("timeout", learnedReader.GetString(1));
         Assert.Equal(90, learnedReader.GetInt32(2));
-        Assert.Equal(1, learnedReader.GetInt32(3));
+        Assert.True(learnedReader.GetBoolean(3));
         Assert.Equal(0, learnedReader.GetInt32(4));
+        Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
+        Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
+        Assert.Equal(
+            phraseFeedbackCountBefore,
+            await ReadPhraseFeedbackCountAsync(database));
     }
 
     [Fact]
-    public async Task DiscardAsync_LearnsOnlySelectedTriggerPhrasesAtomically()
+    public async Task DiscardAsync_PersistsAllowedDatasetWithoutMutatingPolicyPhrases()
     {
         await using var database = await TestDatabase.CreateAsync();
         const string channelId = "channel-discard";
@@ -913,6 +1051,9 @@ public sealed class TwitchModerationExecutorTests
             database.ConnectionFactory,
             infrastructureNormalizer,
             learningContextRevision: learningRevision);
+        var phraseStateBefore = await ReadPhraseStateAsync(database);
+        var policyStateBefore = await ReadPolicyStateAsync(database);
+        var phraseFeedbackCountBefore = await ReadPhraseFeedbackCountAsync(database);
 
         var result = await service.DiscardAsync(
             caseId,
@@ -934,7 +1075,7 @@ public sealed class TwitchModerationExecutorTests
         command.CommandText =
             """
             SELECT f.review_completed, f.discard_reason,
-                   COUNT(p.feedback_id), MIN(p.trigger_phrase), MAX(p.trigger_phrase)
+                   f.learning_accepted, COUNT(p.feedback_id)
             FROM moderation_feedback f
             LEFT JOIN phrase_feedback p ON p.case_id = f.case_id
             WHERE f.case_id = @case_id
@@ -945,9 +1086,75 @@ public sealed class TwitchModerationExecutorTests
         Assert.True(await reader.ReadAsync());
         Assert.True(reader.GetBoolean(0));
         Assert.Equal("Kein Verstoß", reader.GetString(1));
-        Assert.Equal(1, reader.GetInt32(2));
-        Assert.Equal("spoiler", reader.GetString(3));
-        Assert.Equal("spoiler", reader.GetString(4));
+        Assert.True(reader.GetBoolean(2));
+        Assert.Equal(0, reader.GetInt32(3));
+        Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
+        Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
+        Assert.Equal(
+            phraseFeedbackCountBefore,
+            await ReadPhraseFeedbackCountAsync(database));
+    }
+
+    private static async Task<IReadOnlyList<string>> ReadPhraseStateAsync(
+        TestDatabase database)
+    {
+        await using var connection = await database.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT
+                phrase.phrase_id || '|' ||
+                phrase.rule_id || '|' ||
+                phrase.phrase || '|' ||
+                phrase.normalized_phrase || '|' ||
+                phrase.enabled || '|' ||
+                phrase.manual_override || '|' ||
+                phrase.positive_confirmations || '|' ||
+                phrase.negative_confirmations || '|' ||
+                phrase.row_version
+            FROM phrase_rules phrase
+            ORDER BY phrase.phrase_id;
+            """;
+        var state = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            state.Add(reader.GetString(0));
+        }
+
+        return state;
+    }
+
+    private static async Task<IReadOnlyList<string>> ReadPolicyStateAsync(
+        TestDatabase database)
+    {
+        await using var connection = await database.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT scope_id || '|' || revision || '|' || row_version
+            FROM policy_sets
+            ORDER BY scope_id;
+            """;
+        var state = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            state.Add(reader.GetString(0));
+        }
+
+        return state;
+    }
+
+    private static async Task<long> ReadPhraseFeedbackCountAsync(
+        TestDatabase database)
+    {
+        await using var connection = await database.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM phrase_feedback;";
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(),
+            System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private sealed class FixedChannelContextService(ChannelContextSnapshot context)

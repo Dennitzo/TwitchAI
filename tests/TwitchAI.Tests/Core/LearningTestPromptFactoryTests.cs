@@ -37,37 +37,84 @@ public sealed class LearningTestPromptFactoryTests
             "kekw ärger",
             json.RootElement
                 .GetProperty("message")
-                .GetProperty("lowerText")
+                .GetProperty("text")
                 .GetString());
         Assert.DoesNotContain("KEKW", result.UserPrompt, StringComparison.Ordinal);
         Assert.Equal(
             [PolicySetCode.General, PolicySetCode.Backseatgaming],
             result.Envelope.ActivePolicySets.Select(item => item.Code));
         Assert.DoesNotContain("OriginalText", result.UserPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("activePolicySets", result.UserPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("defaultAction", result.UserPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("publicReason", result.UserPrompt, StringComparison.Ordinal);
         Assert.Contains(
-            "use a 600-second timeout as the normal baseline",
+            "use timeout 600 for ordinary abuse",
+            result.SystemPrompt,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "Delete only a single low-context nuisance",
             result.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "delete only for a single low-context, unnecessary nuisance message",
+            "G_ADVERTISING self-promotion or promotion of another channel always uses ban",
             result.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Never choose delete for insults, harassment, hate, threats",
+            "86400 for strong insults or G_BEGGING",
             result.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Every moderate G_ADVERTISING decision must use ban",
+            "say \"Nutzer oder Streamer\", never only \"Nutzer\"",
             result.SystemPrompt,
             StringComparison.Ordinal);
-        Assert.Contains(
-            "Every moderate G_BEGGING decision must use a 86400-second timeout",
+        Assert.DoesNotContain(
+            "One through nineteen emotes alone are none",
             result.SystemPrompt,
             StringComparison.Ordinal);
-        Assert.Contains(
-            "call them \"Nutzer oder Streamer\", never only \"Nutzer\"",
+        Assert.True(result.PromptCharacters.System > 0);
+        Assert.True(result.PromptCharacters.Rules > 0);
+        Assert.True(result.PromptCharacters.Messages > 0);
+        Assert.Equal(0, result.PromptCharacters.Examples);
+        Assert.Equal(0, result.PromptCharacters.Templates);
+        Assert.Equal(0, result.PromptCharacters.Schema);
+    }
+
+    [Fact]
+    public void Create_SerializesActiveRuleCriteriaOnceAndOmitsEmptySections()
+    {
+        var text = new ChatTextNormalizer().Process("hello");
+        var policy = new EffectivePolicySnapshot(
+            [new(PolicySetCode.General, 1)],
+            "policy")
+        {
+            ActiveRules =
+            [
+                new ModerationRuleDefinition(
+                    ModerationRuleCodes.Spam,
+                    PolicySetCode.General,
+                    "Spam",
+                    ModerationRuleCodes.SpamPromptInstruction,
+                    ModerationActionKind.Timeout,
+                    120,
+                    "Spam."),
+            ],
+        };
+
+        var result = LearningTestPromptFactory.Create(
+            Guid.NewGuid(),
+            text,
+            policy,
+            []);
+
+        Assert.Equal(
+            1,
+            CountOccurrences(result.UserPrompt, ModerationRuleCodes.SpamPromptInstruction));
+        Assert.DoesNotContain(
+            ModerationRuleCodes.SpamPromptInstruction,
             result.SystemPrompt,
             StringComparison.Ordinal);
+        Assert.DoesNotContain("localMatchCodes", result.UserPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("learningExamples", result.UserPrompt, StringComparison.Ordinal);
     }
 
     private static ModerationRuleDefinition Rule(
@@ -82,4 +129,17 @@ public sealed class LearningTestPromptFactoryTests
             600,
             "Regelverstoß.",
             100);
+
+    private static int CountOccurrences(string source, string value)
+    {
+        var count = 0;
+        var offset = 0;
+        while ((offset = source.IndexOf(value, offset, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            offset += value.Length;
+        }
+
+        return count;
+    }
 }

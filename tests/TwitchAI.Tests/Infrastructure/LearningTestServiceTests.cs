@@ -252,7 +252,7 @@ public sealed class LearningTestServiceTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_AfterSingleRepairFallsBackToGeneralBaseRule()
+    public async Task AnalyzeAsync_MissingRuleFallsBackToGeneralBaseRuleBeforeRepair()
     {
         var lmStudio = new FakeLmStudioClient(request =>
         {
@@ -269,19 +269,31 @@ public sealed class LearningTestServiceTests
                     [],
                     0.4));
         });
-        var sut = CreateService(lmStudio);
+        var diagnostics = new RecordingValidationAttemptStore();
+        var sut = CreateService(lmStudio, validationAttempts: diagnostics);
 
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("Eine harmlose Testnachricht"));
 
-        Assert.Equal(2, lmStudio.Requests.Count);
-        Assert.Contains(
-            "call them \"Nutzer oder Streamer\", never only \"Nutzer\"",
-            lmStudio.Requests[1].SystemPrompt,
-            StringComparison.Ordinal);
+        Assert.Single(lmStudio.Requests);
         Assert.Equal("G_OTHER_ABUSE", result.ProposedRuleCode);
         Assert.Equal(PolicySetCode.General, result.ProposedPolicySet);
         Assert.True(result.UsedRuleFallback);
+        Assert.Collection(
+            diagnostics.Attempts,
+            initial =>
+            {
+                Assert.Equal(AiValidationAttemptKind.Initial, initial.AttemptKind);
+                Assert.Equal(AiValidationOutcome.Rejected, initial.Outcome);
+                Assert.Equal(["rule_missing"], initial.ValidationErrorCodes);
+            },
+            fallback =>
+            {
+                Assert.Equal(AiValidationAttemptKind.LocalFallback, fallback.AttemptKind);
+                Assert.Equal(AiValidationOutcome.Fallback, fallback.Outcome);
+                Assert.NotNull(fallback.ParentCorrelationId);
+                Assert.Equal(AiValidationResponseFingerprint.None, fallback.Response);
+            });
     }
 
     [Fact]
@@ -309,6 +321,17 @@ public sealed class LearningTestServiceTests
                 new LearningTestRequest("Eine harmlose Testnachricht")));
 
         Assert.Equal(2, lmStudio.Requests.Count);
+        var repair = lmStudio.Requests[1];
+        Assert.EndsWith("-repair", repair.CorrelationId, StringComparison.Ordinal);
+        Assert.NotEqual(lmStudio.Requests[0].CorrelationId, repair.CorrelationId);
+        Assert.Contains(
+            "\"validationErrorCodes\":[\"rule_unknown\"]",
+            repair.UserPrompt,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("invalidResponse", repair.UserPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("validationErrors", repair.UserPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("activePolicySets", repair.UserPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("publicReason", repair.UserPrompt, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -393,7 +416,7 @@ public sealed class LearningTestServiceTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_MissingRuleUsesMatchingLocalBackseatRuleAfterRepair()
+    public async Task AnalyzeAsync_MissingRuleUsesMatchingLocalBackseatRuleBeforeRepair()
     {
         var lmStudio = new FakeLmStudioClient(request =>
             Completion(
@@ -424,13 +447,66 @@ public sealed class LearningTestServiceTests
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("Geh nach links"));
 
-        Assert.Equal(2, lmStudio.Requests.Count);
+        Assert.Single(lmStudio.Requests);
         Assert.Equal(ModerationRuleCodes.Backseatgaming, result.ProposedRuleCode);
         Assert.Equal(PolicySetCode.Backseatgaming, result.ProposedPolicySet);
         Assert.True(result.UsedRuleFallback);
         Assert.Equal(
             [ModerationRuleCodes.Backseatgaming],
             result.LocalMatchCodes);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_RecordsInitialAndRepairDiagnosticsWithoutContent()
+    {
+        var lmStudio = new FakeLmStudioClient(request =>
+        {
+            var id = ReadTestId(request.UserPrompt);
+            return request.CorrelationId.EndsWith("-repair", StringComparison.Ordinal)
+                ? Completion(Allow(id, "G_OTHER_ABUSE"))
+                : Completion(
+                    Response(
+                        id,
+                        "allow",
+                        "none",
+                        null,
+                        "G",
+                        "G_UNKNOWN",
+                        string.Empty,
+                        [],
+                        0.4));
+        });
+        var diagnostics = new RecordingValidationAttemptStore();
+        var sut = CreateService(lmStudio, validationAttempts: diagnostics);
+
+        var result = await sut.AnalyzeAsync(
+            new LearningTestRequest("Ein vertraulicher Beispieltext"));
+
+        Assert.Equal(LearningVerdict.Allow, result.Verdict);
+        Assert.Collection(
+            diagnostics.Attempts,
+            initial =>
+            {
+                Assert.Equal(AiValidationAttemptKind.Initial, initial.AttemptKind);
+                Assert.Equal(AiValidationOutcome.Rejected, initial.Outcome);
+                Assert.Equal(["rule_unknown"], initial.ValidationErrorCodes);
+                Assert.Null(initial.ParentCorrelationId);
+                Assert.NotNull(initial.Response.Sha256);
+                Assert.True(initial.PromptCharacters.Schema > 0);
+            },
+            repair =>
+            {
+                Assert.Equal(AiValidationAttemptKind.Repair, repair.AttemptKind);
+                Assert.Equal(AiValidationOutcome.Repaired, repair.Outcome);
+                Assert.Equal(initialCorrelation(diagnostics.Attempts), repair.ParentCorrelationId);
+                Assert.DoesNotContain(
+                    "Ein vertraulicher Beispieltext",
+                    System.Text.Json.JsonSerializer.Serialize(repair),
+                    StringComparison.OrdinalIgnoreCase);
+            });
+
+        static string initialCorrelation(IReadOnlyList<AiValidationAttempt> attempts) =>
+            attempts[0].CorrelationId;
     }
 
     [Fact]
@@ -455,7 +531,7 @@ public sealed class LearningTestServiceTests
 
         var sent = Assert.Single(lmStudio.Requests);
         Assert.Contains("\"learningExamples\":[", sent.UserPrompt, StringComparison.Ordinal);
-        Assert.Contains("\"lowerText\":\"spam spam\"", sent.UserPrompt, StringComparison.Ordinal);
+        Assert.Contains("\"text\":\"spam spam\"", sent.UserPrompt, StringComparison.Ordinal);
         Assert.DoesNotContain("SPAM SPAM", sent.UserPrompt, StringComparison.Ordinal);
         Assert.Equal(1, retrieval.CallCount);
     }
@@ -575,7 +651,8 @@ public sealed class LearningTestServiceTests
         ILocalAiRunActivityMonitor? monitor = null,
         IPhraseRuleSource? phraseSource = null,
         IRetrievalExampleStore? retrieval = null,
-        ILearningContextRevision? learningRevision = null) =>
+        ILearningContextRevision? learningRevision = null,
+        IAiValidationAttemptStore? validationAttempts = null) =>
         new(
             store ?? new FakePolicyStore(Policy("policy-1")),
             new TwitchAI.Core.Services.ChatTextNormalizer(),
@@ -586,7 +663,8 @@ public sealed class LearningTestServiceTests
             monitor,
             timeProvider: null,
             retrieval,
-            learningRevision);
+            learningRevision,
+            validationAttempts);
 
     private static StoredPolicy Policy(string hash)
     {
@@ -872,5 +950,19 @@ public sealed class LearningTestServiceTests
         public Task<IReadOnlyList<string>> GetLoadedModelsAsync(
             CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<string>>([]);
+    }
+
+    private sealed class RecordingValidationAttemptStore
+        : IAiValidationAttemptStore
+    {
+        public List<AiValidationAttempt> Attempts { get; } = [];
+
+        public ValueTask RecordAsync(
+            AiValidationAttempt attempt,
+            CancellationToken cancellationToken = default)
+        {
+            Attempts.Add(attempt);
+            return ValueTask.CompletedTask;
+        }
     }
 }

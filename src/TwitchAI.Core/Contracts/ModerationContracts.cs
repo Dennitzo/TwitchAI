@@ -64,6 +64,27 @@ public interface IModerationEnvelopeValidator
     EnvelopeValidationResult ValidateWithMissingRuleFallback(
         string rawJson,
         ModerationBatch batch);
+
+    ModerationValidationReport ValidateDetailed(
+        string rawJson,
+        ModerationBatch batch);
+
+    ModerationValidationReport ValidateDetailedWithMissingRuleFallback(
+        string rawJson,
+        ModerationBatch batch);
+
+    ModerationValidationReport ValidateV6(
+        string rawJson,
+        ModerationBatch batch);
+
+    ModerationValidationReport ValidateV4(
+        string rawJson,
+        ModerationBatch batch);
+}
+
+public interface IModerationPromptCompiler
+{
+    CompiledModerationPrompt Compile(ModerationRequestEnvelopeV3 envelope);
 }
 
 public interface IModerationBatcher
@@ -143,6 +164,11 @@ public interface ILocalModerationClient
     ValueTask<string> ModerateAsync(
         ModerationRequestEnvelopeV3 request,
         CancellationToken cancellationToken = default);
+
+    ValueTask<string> ModerateAsync(
+        CompiledModerationPrompt prompt,
+        CancellationToken cancellationToken = default) =>
+        ModerateAsync(prompt.Envelope, cancellationToken);
 }
 
 public interface ILearningTestService
@@ -174,6 +200,13 @@ public interface ILearningContextRevision
     long Current { get; }
 
     long Advance();
+}
+
+public interface IAiValidationAttemptStore
+{
+    ValueTask RecordAsync(
+        AiValidationAttempt attempt,
+        CancellationToken cancellationToken = default);
 }
 
 public interface IModerationCaseRepository
@@ -280,4 +313,9 @@ public sealed record TwitchChatEvent(
     string ChannelId,
     string? TargetMessageId,
     string? TargetUserId,
-    ChannelContextSnapshot? ChannelContext);
+    ChannelContextSnapshot? ChannelContext)
+{
+    public int TwitchEmoteCount { get; init; }
+
+    public bool IsTwitchEmoteOnly { get; init; }
+}

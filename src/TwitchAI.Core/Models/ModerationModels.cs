@@ -118,7 +118,12 @@ public sealed record ModerationRequestEnvelopeV3(
 public sealed record ModerationRequestMessageV3(
     string MessageId,
     string LowerText,
-    IReadOnlyList<string> LocalMatchCodes);
+    IReadOnlyList<string> LocalMatchCodes)
+{
+    public int? TwitchEmoteCount { get; init; }
+
+    public bool? IsTwitchEmoteOnly { get; init; }
+}
 
 public sealed record ModerationDecisionCandidateV3(
     string MessageId,

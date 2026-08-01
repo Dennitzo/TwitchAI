@@ -84,6 +84,11 @@ public sealed partial class ModerationCaseItem : ObservableObject
     public Visibility ModerationEditorVisibility =>
         IsChatReply ? Visibility.Collapsed : Visibility.Visible;
 
+    public Visibility TriggerEvidenceVisibility =>
+        IsChatReply || TriggerPhrases.Count == 0
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+
     public Visibility ChatReplyEditorVisibility =>
         IsChatReply ? Visibility.Visible : Visibility.Collapsed;
 
@@ -634,6 +639,7 @@ public sealed record ViolationCategoryOption(
             "G_DISRUPTION" => "Chatstörung",
             "G_ADVERTISING" => "Werbung",
             "G_BEGGING" => "Gebettel",
+            "G_STREAMER_INSTRUCTION" => "Anweisung",
             "G_OTHER_ABUSE" => "Sonstiger General-Verstoß",
             "BACKSEATGAMING" => "Backseatgaming",
             { Length: > 0 } value => value,

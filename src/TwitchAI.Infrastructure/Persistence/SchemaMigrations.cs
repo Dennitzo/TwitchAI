@@ -2397,5 +2397,367 @@ internal static class SchemaMigrations
               AND set_code = 'backseatgaming'
               AND archived_utc IS NULL;
             """),
+        new(
+            18,
+            "Define explicit emote, text, and special-character spam thresholds",
+            """
+            CREATE TEMP TABLE twitchai_v18_affected_policy_scopes (
+                scope_id INTEGER PRIMARY KEY
+            ) STRICT;
+
+            INSERT INTO twitchai_v18_affected_policy_scopes(scope_id)
+            SELECT DISTINCT rule.scope_id
+            FROM blacklist_rules rule
+            INNER JOIN policy_sets policy
+                ON policy.scope_id = rule.scope_id
+            WHERE policy.broadcaster_id = '*'
+              AND policy.set_code = 'general'
+              AND policy.enabled = 1
+              AND policy.archived_utc IS NULL
+              AND rule.rule_code = 'G_SPAM'
+              AND rule.enabled = 1
+              AND rule.archived_utc IS NULL
+              AND rule.prompt_instruction =
+                  'Erkenne wiederholten, den Chat störenden Spam.';
+
+            UPDATE blacklist_rules
+            SET prompt_instruction =
+                    'G_SPAM nur bei mindestens 10 Emotes in einer Nachricht, bei deutlich wiederholtem Text-/Phrasen-Flooding oder bei massiven wiederholten Sonderzeichenfolgen. Ein bis neun Emotes allein sowie normale Wiederholungen, Satzzeichen und Reaktionen sind erlaubt; wenige Emotes niemals als Textspam oder Chatstörung umdeuten. Qualifizierendes Emote-, Text- und Sonderzeichen-Flooding G_SPAM statt G_DISRUPTION zuordnen.',
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                    SELECT scope_id
+                    FROM twitchai_v18_affected_policy_scopes
+                )
+              AND rule_code = 'G_SPAM'
+              AND enabled = 1
+              AND archived_utc IS NULL
+              AND prompt_instruction =
+                  'Erkenne wiederholten, den Chat störenden Spam.';
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                SELECT scope_id
+                FROM twitchai_v18_affected_policy_scopes
+            );
+
+            DROP TABLE twitchai_v18_affected_policy_scopes;
+            """),
+        new(
+            19,
+            "Add privacy-preserving AI validation diagnostics",
+            """
+            CREATE TABLE ai_validation_attempts (
+                validation_attempt_id       INTEGER PRIMARY KEY,
+                correlation_id              TEXT NOT NULL
+                                                CHECK(length(correlation_id) BETWEEN 1 AND 128),
+                parent_correlation_id       TEXT
+                                                CHECK(parent_correlation_id IS NULL OR
+                                                      length(parent_correlation_id) BETWEEN 1 AND 128),
+                attempt_kind                TEXT NOT NULL CHECK(attempt_kind IN (
+                                                'initial','repair','local_fallback')),
+                workload_kind               TEXT NOT NULL CHECK(workload_kind IN (
+                                                'live_moderation','learning_test')),
+                contract_version            TEXT NOT NULL
+                                                CHECK(length(contract_version) BETWEEN 1 AND 128),
+                schema_version              TEXT NOT NULL
+                                                CHECK(length(schema_version) BETWEEN 1 AND 128),
+                message_count               INTEGER NOT NULL CHECK(message_count > 0),
+                policy_hash                 TEXT NOT NULL
+                                                CHECK(length(policy_hash) BETWEEN 1 AND 256),
+                validation_error_codes_json TEXT NOT NULL DEFAULT '[]'
+                                                CHECK(json_valid(validation_error_codes_json) AND
+                                                      json_type(validation_error_codes_json) = 'array'),
+                affected_message_count      INTEGER NOT NULL
+                                                CHECK(affected_message_count BETWEEN 0 AND message_count),
+                system_prompt_character_count INTEGER NOT NULL
+                                                CHECK(system_prompt_character_count >= 0),
+                rules_character_count       INTEGER NOT NULL
+                                                CHECK(rules_character_count >= 0),
+                messages_character_count    INTEGER NOT NULL
+                                                CHECK(messages_character_count >= 0),
+                examples_character_count    INTEGER NOT NULL
+                                                CHECK(examples_character_count >= 0),
+                templates_character_count   INTEGER NOT NULL
+                                                CHECK(templates_character_count >= 0),
+                schema_character_count      INTEGER NOT NULL
+                                                CHECK(schema_character_count >= 0),
+                response_character_count    INTEGER NOT NULL
+                                                CHECK(response_character_count >= 0),
+                response_sha256             TEXT CHECK(
+                                                (response_character_count = 0 AND
+                                                 response_sha256 IS NULL) OR
+                                                (response_sha256 IS NOT NULL AND
+                                                 length(response_sha256) = 64)),
+                outcome                     TEXT NOT NULL CHECK(outcome IN (
+                                                'valid','repaired','fallback','rejected')),
+                recorded_utc                TEXT NOT NULL
+            ) STRICT;
+
+            CREATE INDEX ix_ai_validation_attempts_correlation
+                ON ai_validation_attempts(correlation_id, validation_attempt_id);
+
+            CREATE INDEX ix_ai_validation_attempts_recorded
+                ON ai_validation_attempts(recorded_utc DESC);
+
+            CREATE INDEX ix_ai_validation_attempts_outcome
+                ON ai_validation_attempts(
+                    workload_kind, attempt_kind, outcome, recorded_utc DESC);
+            """),
+        new(
+            20,
+            "Require an explicit target and unambiguous personal degradation for insults",
+            """
+            CREATE TEMP TABLE twitchai_v20_affected_policy_scopes (
+                scope_id INTEGER PRIMARY KEY
+            ) STRICT;
+
+            INSERT INTO twitchai_v20_affected_policy_scopes(scope_id)
+            SELECT DISTINCT rule.scope_id
+            FROM blacklist_rules rule
+            INNER JOIN policy_sets policy
+                ON policy.scope_id = rule.scope_id
+            WHERE policy.broadcaster_id = '*'
+              AND policy.set_code = 'general'
+              AND policy.enabled = 1
+              AND policy.archived_utc IS NULL
+              AND rule.rule_code = 'G_INSULT'
+              AND rule.enabled = 1
+              AND rule.archived_utc IS NULL
+              AND rule.prompt_instruction =
+                  'Erkenne direkte persönliche Beleidigungen; harmlose Neckerei nur bei klarem Kontext nicht markieren.';
+
+            UPDATE blacklist_rules
+            SET prompt_instruction =
+                    'G_INSULT nur bei eindeutiger persönlicher Herabsetzung: Die Nachricht muss einen identifizierbaren Nutzer, Streamer oder eine andere Person ausdrücklich angreifen und eine unmissverständliche Beschimpfung, abwertende Personenbezeichnung oder Herabsetzung enthalten. Allgemeine Kraftausdrücke und Frust ohne Zielperson, neutrale Anreden, Imperative oder Koordination ohne persönliche Abwertung, Situationsbeschreibungen, Kritik an Spiel, Inhalt, Handlung oder Entscheidung statt an der Person, freundschaftliche Neckerei, Sarkasmus und Scherze ohne klar feindselige Herabsetzung, Selbstbezug sowie Zitate, Verneinung und sachliche Wiedergabe sind none. Bei unklarem Ziel oder mehrdeutiger Aussage none; Username oder Erwähnung allein genügen nicht. Eine alleinstehende schwere Personenbeschimpfung zählt nur, wenn sie sprachlich eindeutig als direkte Anrede verwendet wird. Diese Schwelle gilt auch bei lokalen Phrasentreffern und Learning-Beispielen.',
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                    SELECT scope_id
+                    FROM twitchai_v20_affected_policy_scopes
+                )
+              AND rule_code = 'G_INSULT'
+              AND enabled = 1
+              AND archived_utc IS NULL
+              AND prompt_instruction =
+                  'Erkenne direkte persönliche Beleidigungen; harmlose Neckerei nur bei klarem Kontext nicht markieren.';
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                SELECT scope_id
+                FROM twitchai_v20_affected_policy_scopes
+            );
+
+            DROP TABLE twitchai_v20_affected_policy_scopes;
+            """),
+        new(
+            21,
+            "Compact the default insult guidance without changing custom rules",
+            """
+            CREATE TEMP TABLE twitchai_v21_affected_policy_scopes (
+                scope_id INTEGER PRIMARY KEY
+            ) STRICT;
+
+            INSERT INTO twitchai_v21_affected_policy_scopes(scope_id)
+            SELECT DISTINCT rule.scope_id
+            FROM blacklist_rules rule
+            INNER JOIN policy_sets policy
+                ON policy.scope_id = rule.scope_id
+            WHERE policy.broadcaster_id = '*'
+              AND policy.set_code = 'general'
+              AND policy.enabled = 1
+              AND policy.archived_utc IS NULL
+              AND rule.rule_code = 'G_INSULT'
+              AND rule.enabled = 1
+              AND rule.archived_utc IS NULL
+              AND rule.prompt_instruction =
+                  'G_INSULT nur bei eindeutiger persönlicher Herabsetzung: Die Nachricht muss einen identifizierbaren Nutzer, Streamer oder eine andere Person ausdrücklich angreifen und eine unmissverständliche Beschimpfung, abwertende Personenbezeichnung oder Herabsetzung enthalten. Allgemeine Kraftausdrücke und Frust ohne Zielperson, neutrale Anreden, Imperative oder Koordination ohne persönliche Abwertung, Situationsbeschreibungen, Kritik an Spiel, Inhalt, Handlung oder Entscheidung statt an der Person, freundschaftliche Neckerei, Sarkasmus und Scherze ohne klar feindselige Herabsetzung, Selbstbezug sowie Zitate, Verneinung und sachliche Wiedergabe sind none. Bei unklarem Ziel oder mehrdeutiger Aussage none; Username oder Erwähnung allein genügen nicht. Eine alleinstehende schwere Personenbeschimpfung zählt nur, wenn sie sprachlich eindeutig als direkte Anrede verwendet wird. Diese Schwelle gilt auch bei lokalen Phrasentreffern und Learning-Beispielen.';
+
+            UPDATE blacklist_rules
+            SET prompt_instruction =
+                    'Nur wenn eine Person eindeutig direkt adressiert und unmissverständlich beschimpft/herabgesetzt wird. None: zielloser Fluch, neutrale Anrede/Anweisung, Situations-/Spiel-/Handlungs-/Leistungskritik, Neckerei/Witz/Sarkasmus, Selbstbezug, Zitat, Verneinung, Mehrdeutigkeit. Username/@, lokaler Treffer oder Learning reichen nie. Schwere Einzelbeschimpfung nur bei klarer Direktanrede; im Zweifel none.',
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                    SELECT scope_id
+                    FROM twitchai_v21_affected_policy_scopes
+                )
+              AND rule_code = 'G_INSULT'
+              AND enabled = 1
+              AND archived_utc IS NULL
+              AND prompt_instruction =
+                  'G_INSULT nur bei eindeutiger persönlicher Herabsetzung: Die Nachricht muss einen identifizierbaren Nutzer, Streamer oder eine andere Person ausdrücklich angreifen und eine unmissverständliche Beschimpfung, abwertende Personenbezeichnung oder Herabsetzung enthalten. Allgemeine Kraftausdrücke und Frust ohne Zielperson, neutrale Anreden, Imperative oder Koordination ohne persönliche Abwertung, Situationsbeschreibungen, Kritik an Spiel, Inhalt, Handlung oder Entscheidung statt an der Person, freundschaftliche Neckerei, Sarkasmus und Scherze ohne klar feindselige Herabsetzung, Selbstbezug sowie Zitate, Verneinung und sachliche Wiedergabe sind none. Bei unklarem Ziel oder mehrdeutiger Aussage none; Username oder Erwähnung allein genügen nicht. Eine alleinstehende schwere Personenbeschimpfung zählt nur, wenn sie sprachlich eindeutig als direkte Anrede verwendet wird. Diese Schwelle gilt auch bei lokalen Phrasentreffern und Learning-Beispielen.';
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                SELECT scope_id
+                FROM twitchai_v21_affected_policy_scopes
+            );
+
+            DROP TABLE twitchai_v21_affected_policy_scopes;
+            """),
+        new(
+            22,
+            "Add a distinct rule for unwanted streamer content instructions",
+            """
+            CREATE TEMP TABLE twitchai_v22_affected_policy_scopes (
+                scope_id INTEGER PRIMARY KEY
+            ) STRICT;
+
+            INSERT INTO twitchai_v22_affected_policy_scopes(scope_id)
+            SELECT policy.scope_id
+            FROM policy_sets policy
+            WHERE policy.broadcaster_id = '*'
+              AND policy.set_code = 'general'
+              AND policy.enabled = 1
+              AND policy.archived_utc IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM blacklist_rules existing
+                  WHERE existing.scope_id = policy.scope_id
+                    AND existing.rule_code = 'G_STREAMER_INSTRUCTION'
+                    AND existing.archived_utc IS NULL
+              );
+
+            INSERT INTO blacklist_rules(
+                scope_id, rule_code, title, prompt_instruction,
+                default_action, default_timeout_seconds, public_reason,
+                priority, enabled, row_version, created_utc, updated_utc)
+            SELECT
+                affected.scope_id,
+                'G_STREAMER_INSTRUCTION',
+                'Anweisung',
+                'Nur klare, unaufgeforderte Forderungen an den Streamer, Content, Spiel/Kategorie, Kooperationen, Gäste oder Aktivitäten zu starten, beenden oder ändern, z. B. "just play with <anderem Streamer> @<Zielstreamer>". None: echte Fragen, Wünsche/Meinungen ohne Aufforderung, hypothetische Aussagen, Zitate, Verneinung, sachliche Diskussion oder Mehrdeutigkeit. Konkrete Anweisungen zur aktuellen Spielhandlung sind BACKSEATGAMING; Eigen-/Fremdkanal-, Produkt- oder Dienstwerbung ist G_ADVERTISING. Namen oder @ allein reichen nicht.',
+                'timeout',
+                600,
+                'Unaufgeforderte Anweisung; der Streamer entscheidet selbst über seinen Content.',
+                77,
+                1,
+                1,
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            FROM twitchai_v22_affected_policy_scopes affected
+            WHERE 1 = 1
+            ON CONFLICT(scope_id, rule_code) WHERE archived_utc IS NULL
+            DO NOTHING;
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                SELECT scope_id
+                FROM twitchai_v22_affected_policy_scopes
+            );
+
+            DROP TABLE twitchai_v22_affected_policy_scopes;
+            """),
+        new(
+            23,
+            "Raise the default emote spam threshold to twenty",
+            """
+            CREATE TEMP TABLE twitchai_v23_affected_policy_scopes (
+                scope_id INTEGER PRIMARY KEY
+            ) STRICT;
+
+            INSERT INTO twitchai_v23_affected_policy_scopes(scope_id)
+            SELECT DISTINCT rule.scope_id
+            FROM blacklist_rules rule
+            INNER JOIN policy_sets policy
+                ON policy.scope_id = rule.scope_id
+            WHERE policy.broadcaster_id = '*'
+              AND policy.set_code = 'general'
+              AND policy.enabled = 1
+              AND policy.archived_utc IS NULL
+              AND rule.rule_code = 'G_SPAM'
+              AND rule.enabled = 1
+              AND rule.archived_utc IS NULL
+              AND rule.prompt_instruction =
+                  'G_SPAM nur bei mindestens 10 Emotes in einer Nachricht, bei deutlich wiederholtem Text-/Phrasen-Flooding oder bei massiven wiederholten Sonderzeichenfolgen. Ein bis neun Emotes allein sowie normale Wiederholungen, Satzzeichen und Reaktionen sind erlaubt; wenige Emotes niemals als Textspam oder Chatstörung umdeuten. Qualifizierendes Emote-, Text- und Sonderzeichen-Flooding G_SPAM statt G_DISRUPTION zuordnen.';
+
+            UPDATE blacklist_rules
+            SET prompt_instruction =
+                    'G_SPAM nur bei mindestens 20 Emotes in einer Nachricht, bei deutlich wiederholtem Text-/Phrasen-Flooding oder bei massiven wiederholten Sonderzeichenfolgen. Ein bis neunzehn Emotes allein sowie normale Wiederholungen, Satzzeichen und Reaktionen sind erlaubt; wenige Emotes niemals als Textspam oder Chatstörung umdeuten. Qualifizierendes Emote-, Text- und Sonderzeichen-Flooding G_SPAM statt G_DISRUPTION zuordnen.',
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                    SELECT scope_id
+                    FROM twitchai_v23_affected_policy_scopes
+                )
+              AND rule_code = 'G_SPAM'
+              AND enabled = 1
+              AND archived_utc IS NULL
+              AND prompt_instruction =
+                  'G_SPAM nur bei mindestens 10 Emotes in einer Nachricht, bei deutlich wiederholtem Text-/Phrasen-Flooding oder bei massiven wiederholten Sonderzeichenfolgen. Ein bis neun Emotes allein sowie normale Wiederholungen, Satzzeichen und Reaktionen sind erlaubt; wenige Emotes niemals als Textspam oder Chatstörung umdeuten. Qualifizierendes Emote-, Text- und Sonderzeichen-Flooding G_SPAM statt G_DISRUPTION zuordnen.';
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                SELECT scope_id
+                FROM twitchai_v23_affected_policy_scopes
+            );
+
+            DROP TABLE twitchai_v23_affected_policy_scopes;
+            """),
+        new(
+            24,
+            "Require contextual evidence phrases for the default insult rule",
+            """
+            CREATE TEMP TABLE twitchai_v24_affected_policy_scopes (
+                scope_id INTEGER PRIMARY KEY
+            ) STRICT;
+
+            INSERT INTO twitchai_v24_affected_policy_scopes(scope_id)
+            SELECT DISTINCT rule.scope_id
+            FROM blacklist_rules rule
+            INNER JOIN policy_sets policy
+                ON policy.scope_id = rule.scope_id
+            WHERE policy.broadcaster_id = '*'
+              AND policy.set_code = 'general'
+              AND policy.enabled = 1
+              AND policy.archived_utc IS NULL
+              AND rule.rule_code = 'G_INSULT'
+              AND rule.enabled = 1
+              AND rule.archived_utc IS NULL
+              AND rule.prompt_instruction =
+                  'Nur wenn eine Person eindeutig direkt adressiert und unmissverständlich beschimpft/herabgesetzt wird. None: zielloser Fluch, neutrale Anrede/Anweisung, Situations-/Spiel-/Handlungs-/Leistungskritik, Neckerei/Witz/Sarkasmus, Selbstbezug, Zitat, Verneinung, Mehrdeutigkeit. Username/@, lokaler Treffer oder Learning reichen nie. Schwere Einzelbeschimpfung nur bei klarer Direktanrede; im Zweifel none.';
+
+            UPDATE blacklist_rules
+            SET prompt_instruction =
+                    'Nur wenn eine Person eindeutig direkt adressiert und unmissverständlich beschimpft/herabgesetzt wird. None: zielloser Fluch, neutrale Anrede/Anweisung, Situations-/Spiel-/Handlungs-/Leistungskritik, Neckerei/Witz/Sarkasmus, Selbstbezug, Zitat, Verneinung, Mehrdeutigkeit. Username/@, lokaler Treffer oder Learning reichen nie. Schwere Einzelbeschimpfung nur bei klarer Direktanrede; im Zweifel none. Trefferphrase: genau der kleinste zusammenhängende Lowercase-Beleg mit Zielperson und eigentlicher Herabsetzung; Username/@, Pronomen, Fülltext oder Einzelwort allein nie. Ohne solchen Beleg none.',
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                    SELECT scope_id
+                    FROM twitchai_v24_affected_policy_scopes
+                )
+              AND rule_code = 'G_INSULT'
+              AND enabled = 1
+              AND archived_utc IS NULL
+              AND prompt_instruction =
+                  'Nur wenn eine Person eindeutig direkt adressiert und unmissverständlich beschimpft/herabgesetzt wird. None: zielloser Fluch, neutrale Anrede/Anweisung, Situations-/Spiel-/Handlungs-/Leistungskritik, Neckerei/Witz/Sarkasmus, Selbstbezug, Zitat, Verneinung, Mehrdeutigkeit. Username/@, lokaler Treffer oder Learning reichen nie. Schwere Einzelbeschimpfung nur bei klarer Direktanrede; im Zweifel none.';
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                SELECT scope_id
+                FROM twitchai_v24_affected_policy_scopes
+            );
+
+            DROP TABLE twitchai_v24_affected_policy_scopes;
+            """),
     ];
 }

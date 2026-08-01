@@ -258,8 +258,9 @@
           <Expander
             Grid.Row="3"
             HorizontalAlignment="Stretch"
-            Header="Trefferphrasen"
-            HorizontalContentAlignment="Stretch">
+            Header="AI-Trefferbeleg"
+            HorizontalContentAlignment="Stretch"
+            Visibility="{x:Bind ViewModel.Review.TriggerEvidenceVisibility, Mode=OneWay}">
             <StackPanel>
               <TextBlock
                 Margin="0,4,0,3"
@@ -271,8 +272,11 @@
                   <DataTemplate x:DataType="vm:TriggerPhraseItem">
                     <CheckBox
                       MinHeight="28"
-                      Content="{x:Bind Phrase}"
-                      IsChecked="{x:Bind IsSelected, Mode=TwoWay}" />
+                      IsChecked="{x:Bind IsSelected, Mode=TwoWay}">
+                      <TextBlock
+                        Text="{x:Bind Phrase}"
+                        TextWrapping="Wrap" />
+                    </CheckBox>
                   </DataTemplate>
                 </ItemsControl.ItemTemplate>
               </ItemsControl>

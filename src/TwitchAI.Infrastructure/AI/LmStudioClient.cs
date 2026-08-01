@@ -11,6 +11,7 @@ namespace TwitchAI.Infrastructure.AI;
 public enum LmStudioResponseSchemaKind
 {
     Moderation,
+    ModerationV6,
     LearningTest,
 }
 
@@ -24,7 +25,8 @@ public sealed record LmStudioModerationRequest(
     IReadOnlyList<string>? ReplyTemplateIds = null,
     LmStudioResponseSchemaKind ResponseSchema =
         LmStudioResponseSchemaKind.Moderation,
-    LocalAiRunKind RunKind = LocalAiRunKind.Moderation);
+    LocalAiRunKind RunKind = LocalAiRunKind.Moderation,
+    JsonElement? ResponseFormat = null);
 
 public sealed record LmStudioUsageMetrics(
     int? PromptTokens,
@@ -190,6 +192,12 @@ public sealed class LmStudioClient : ILmStudioClient
             occurredAtUtc: requestedAt);
         try
         {
+            object responseFormat = request.ResponseFormat is { } compiledResponseFormat
+                ? compiledResponseFormat
+                : CreateResponseFormat(
+                    request.ActiveRuleCodes,
+                    request.ReplyTemplateIds,
+                    request.ResponseSchema);
             using var httpRequest = new HttpRequestMessage(
                 HttpMethod.Post,
                 "v1/chat/completions")
@@ -207,10 +215,7 @@ public sealed class LmStudioClient : ILmStudioClient
                             new { role = "system", content = request.SystemPrompt },
                             new { role = "user", content = request.UserPrompt },
                         },
-                        response_format = CreateResponseFormat(
-                            request.ActiveRuleCodes,
-                            request.ReplyTemplateIds,
-                            request.ResponseSchema),
+                        response_format = responseFormat,
                     }),
             };
             await ApplyOptionalAuthorizationAsync(httpRequest, cancellationToken)
@@ -435,6 +440,9 @@ public sealed class LmStudioClient : ILmStudioClient
         {
             LmStudioResponseSchemaKind.Moderation =>
                 CreateModerationResponseFormat(ruleCodes, templateIds),
+            LmStudioResponseSchemaKind.ModerationV6 =>
+                throw new InvalidOperationException(
+                    "The compact moderation contract requires a compiled response format."),
             LmStudioResponseSchemaKind.LearningTest =>
                 CreateLearningTestResponseFormat(ruleCodes),
             _ => throw new ArgumentOutOfRangeException(
@@ -534,7 +542,12 @@ public sealed class LmStudioClient : ILmStudioClient
                                     triggerPhrases = new
                                     {
                                         type = "array",
-                                        items = new { type = "string" },
+                                        maxItems = ModerationTriggerEvidenceNormalizer.MaximumEvidencePhrases,
+                                        items = new
+                                        {
+                                            type = "string",
+                                            maxLength = ModerationTriggerEvidenceNormalizer.MaximumEvidenceCharacters,
+                                        },
                                     },
                                     confidence = new
                                     {
@@ -560,6 +573,23 @@ public sealed class LmStudioClient : ILmStudioClient
                 },
             },
         };
+    }
+
+    internal static int GetLearningTestResponseFormatCharacterCount(
+        IEnumerable<string> activeRuleCodes)
+    {
+        ArgumentNullException.ThrowIfNull(activeRuleCodes);
+        var ruleCodes = activeRuleCodes
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Select(code => code.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(code => code, StringComparer.Ordinal)
+            .Cast<object?>()
+            .Append(null)
+            .ToArray();
+        return JsonSerializer.Serialize(
+                CreateLearningTestResponseFormat(ruleCodes))
+            .Length;
     }
 
     private static object CreateLearningTestResponseFormat(object?[] nullableRuleCodes)
@@ -644,8 +674,12 @@ public sealed class LmStudioClient : ILmStudioClient
                                 triggerPhrases = new
                                 {
                                     type = "array",
-                                    maxItems = 3,
-                                    items = new { type = "string" },
+                                    maxItems = ModerationTriggerEvidenceNormalizer.MaximumEvidencePhrases,
+                                    items = new
+                                    {
+                                        type = "string",
+                                        maxLength = ModerationTriggerEvidenceNormalizer.MaximumEvidenceCharacters,
+                                    },
                                 },
                                 confidence = new
                                 {

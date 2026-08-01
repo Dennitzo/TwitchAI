@@ -6,6 +6,15 @@ namespace TwitchAI.App.Tests.ViewModels;
 public sealed class ModerationCaseItemViolationCategoryTests
 {
     [Fact]
+    public void StreamerInstructionFallback_UsesGermanCategoryLabel()
+    {
+        Assert.Equal(
+            "Anweisung",
+            ViolationCategoryOption.GetFallbackDisplayName(
+                ModerationRuleCodes.StreamerInstruction));
+    }
+
+    [Fact]
     public void RuleCodeBeforeSnapshot_ProvidesProvisionalDisplayAndRemainsReviewable()
     {
         var item = CreateCase();

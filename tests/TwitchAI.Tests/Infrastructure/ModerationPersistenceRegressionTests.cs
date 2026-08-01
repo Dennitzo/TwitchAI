@@ -85,21 +85,26 @@ public sealed class ModerationPersistenceRegressionTests
     }
 
     [Fact]
-    public async Task StalePolicyReanalysisReusesFeedbackSlotAndCanExecute()
+    public async Task IncompatiblePolicyReanalysisReusesFeedbackSlotAndCanExecute()
     {
         await using var database = await TestDatabase.CreateAsync();
         var fixture = await CreateFixtureAsync(
             database,
             "stale-reanalysis-channel",
             "reanalyze this");
-        var decision = Decision(
+        var incompatibleDecision = new ValidatedModerationDecision(
+            "m1",
             ModerationActionKind.Delete,
-            timeoutSeconds: null,
-            triggerPhrases: []);
+            TimeoutSeconds: null,
+            PolicySetCode.Backseatgaming,
+            "backseatgaming is inactive in Just Chatting",
+            TriggerPhrases: [],
+            Confidence: 0.9,
+            RuleCode: ModerationRuleCodes.Backseatgaming);
         var caseId = await fixture.Repository.AddAsync(
             fixture.Message,
-            decision,
-            "obsolete-policy-fingerprint");
+            incompatibleDecision,
+            fixture.Policy.RevisionFingerprint);
         var helix = new ConfigurableHelixClient();
         var executor = CreateExecutor(database, fixture, helix);
 
@@ -110,18 +115,25 @@ public sealed class ModerationPersistenceRegressionTests
                 ModerationActionKind.Delete,
                 TimeoutSeconds: null,
                 string.Empty,
-                PolicySetCode.General,
+                PolicySetCode.Backseatgaming,
                 [],
-                RuleCode: ModerationRuleCodes.GeneralPhrase));
+                RuleCode: ModerationRuleCodes.Backseatgaming));
 
         Assert.Equal(ModerationExecutionOutcome.StalePolicy, staleResult.Outcome);
         var staleCase = await fixture.Repository.GetAsync(caseId);
         Assert.NotNull(staleCase);
         Assert.Equal(CoreModerationCaseStatus.StalePolicy, staleCase.Status);
 
+        var refreshedDecision = Decision(
+            ModerationActionKind.Delete,
+            timeoutSeconds: null,
+            triggerPhrases: []) with
+        {
+            Reason = "fresh review",
+        };
         var refreshedId = await fixture.Repository.AddAsync(
             fixture.Message,
-            decision with { Reason = "fresh review" },
+            refreshedDecision,
             fixture.Policy.RevisionFingerprint,
             new ModerationCaseCreationMetadata(
                 Guid.Parse("ed0f2286-d734-4ea6-85a6-a64f56942a13"),
@@ -189,6 +201,9 @@ public sealed class ModerationPersistenceRegressionTests
             database,
             fixture,
             new ConfigurableHelixClient());
+        var phraseStateBefore = await ReadPhraseStateAsync(database);
+        var policyStateBefore = await ReadPolicyStateAsync(database);
+        var phraseFeedbackCountBefore = await ReadPhraseFeedbackCountAsync(database);
 
         var result = await executor.ExecuteAsync(
             new ModerationExecutionRequest(
@@ -224,6 +239,11 @@ public sealed class ModerationPersistenceRegressionTests
             "SELECT COUNT(*) FROM phrase_feedback WHERE case_id = @case_id;";
         command.Parameters.AddWithValue("@case_id", caseId);
         Assert.Equal(0L, await command.ExecuteScalarAsync());
+        Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
+        Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
+        Assert.Equal(
+            phraseFeedbackCountBefore,
+            await ReadPhraseFeedbackCountAsync(database));
     }
 
     [Fact]
@@ -318,6 +338,9 @@ public sealed class ModerationPersistenceRegressionTests
                 ModerationRuleCodes.GeneralPhrase);
             Assert.Equal(1, await command.ExecuteNonQueryAsync());
         }
+        var phraseStateBefore = await ReadPhraseStateAsync(database);
+        var policyStateBefore = await ReadPolicyStateAsync(database);
+        var phraseFeedbackCountBefore = await ReadPhraseFeedbackCountAsync(database);
 
         var caseId = await fixture.Repository.AddAsync(
             fixture.Message,
@@ -349,7 +372,7 @@ public sealed class ModerationPersistenceRegressionTests
             SELECT COUNT(*),
                    MAX(CASE WHEN p.archived_utc IS NOT NULL THEN 1 ELSE 0 END),
                    SUM(p.positive_confirmations),
-                   (SELECT eligible
+                   (SELECT COUNT(*)
                     FROM phrase_feedback
                     WHERE case_id = @case_id AND trigger_phrase = @phrase),
                    (SELECT rule_code
@@ -376,6 +399,11 @@ public sealed class ModerationPersistenceRegressionTests
         Assert.Equal(0, reader.GetInt32(3));
         Assert.Equal(ModerationRuleCodes.GeneralPhrase, reader.GetString(4));
         Assert.Equal(ModerationRuleCodes.GeneralPhrase, reader.GetString(5));
+        Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
+        Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
+        Assert.Equal(
+            phraseFeedbackCountBefore,
+            await ReadPhraseFeedbackCountAsync(database));
     }
 
     [Fact]
@@ -631,7 +659,7 @@ public sealed class ModerationPersistenceRegressionTests
     }
 
     [Fact]
-    public async Task MarkAllowedDoesNotCreateForbiddenPhraseAndLaterPositiveLearningStartsClean()
+    public async Task AllowedAndExternalConfirmedLearningRemainDatasetOnly()
     {
         await using var database = await TestDatabase.CreateAsync();
         const string channelId = "discard-policy-channel";
@@ -656,10 +684,15 @@ public sealed class ModerationPersistenceRegressionTests
         var repository = new CoreModerationCaseRepository(
             database.ConnectionFactory,
             infrastructureNormalizer);
+        var learningRevision = new LearningContextRevision();
         var service = new SqliteModerationReviewFeedbackService(
             repository,
             database.ConnectionFactory,
-            infrastructureNormalizer);
+            infrastructureNormalizer,
+            learningContextRevision: learningRevision);
+        var phraseStateBefore = await ReadPhraseStateAsync(database);
+        var policyStateBefore = await ReadPolicyStateAsync(database);
+        var phraseFeedbackCountBefore = await ReadPhraseFeedbackCountAsync(database);
 
         var discardedCaseId = await repository.AddAsync(
             CreateMessage(
@@ -687,6 +720,8 @@ public sealed class ModerationPersistenceRegressionTests
             feedbackTriggerPhrases: [triggerPhrase]);
 
         Assert.Equal(ModerationExecutionOutcome.Succeeded, discarded.Outcome);
+        Assert.True(discarded.LearningAccepted);
+        Assert.Equal(2, learningRevision.Current);
         Assert.Null(
             await ReadPhraseAsync(
                 database,
@@ -703,19 +738,30 @@ public sealed class ModerationPersistenceRegressionTests
         {
             command.CommandText =
                 """
-                SELECT policy_set, is_positive, rule_code, eligible
-                FROM phrase_feedback
-                WHERE case_id = @case_id;
+                SELECT c.policy_set, f.actual_action, f.rule_code,
+                       f.learning_accepted,
+                       (SELECT COUNT(*)
+                        FROM phrase_feedback
+                        WHERE case_id = @case_id)
+                FROM moderation_feedback f
+                INNER JOIN moderation_cases c ON c.case_id = f.case_id
+                WHERE f.case_id = @case_id;
                 """;
             command.Parameters.AddWithValue("@case_id", discardedCaseId);
             await using var reader = await command.ExecuteReaderAsync();
             Assert.True(await reader.ReadAsync());
             Assert.Equal("backseatgaming", reader.GetString(0));
-            Assert.False(reader.GetBoolean(1));
+            Assert.Equal("none", reader.GetString(1));
             Assert.Equal(GlobalPolicyStorage.BackseatgamingRuleCode, reader.GetString(2));
-            Assert.False(reader.GetBoolean(3));
+            Assert.True(reader.GetBoolean(3));
+            Assert.Equal(0, reader.GetInt32(4));
             Assert.False(await reader.ReadAsync());
         }
+        Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
+        Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
+        Assert.Equal(
+            phraseFeedbackCountBefore,
+            await ReadPhraseFeedbackCountAsync(database));
 
         var retrievalPolicy = policy with
         {
@@ -779,26 +825,48 @@ public sealed class ModerationPersistenceRegressionTests
 
         Assert.Equal(ModerationExecutionOutcome.AlreadyUnavailable, confirmed.Outcome);
         Assert.True(confirmed.LearningAccepted);
-        var afterPositive = await ReadPhraseAsync(
-            database,
-            "backseatgaming",
-            triggerPhrase);
-        Assert.NotNull(afterPositive);
-        Assert.Equal(1, afterPositive.PositiveConfirmations);
-        Assert.Equal(0, afterPositive.NegativeConfirmations);
-        var coreRule = ToCorePhraseRule(afterPositive);
-        Assert.Equal(1, coreRule.PositiveRatio);
-        Assert.True(coreRule.IsActive);
-        var reloadedPolicy = await new SqlitePolicyStore(
-                database.ConnectionFactory,
-                infrastructureNormalizer)
-            .GetEffectivePolicyAsync(channelId, "32982");
+        Assert.Equal(3, learningRevision.Current);
+        Assert.Null(
+            await ReadPhraseAsync(
+                database,
+                "backseatgaming",
+                triggerPhrase));
+        await using (var connection = await database.OpenConnectionAsync())
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                SELECT review_completed, learning_accepted,
+                       actual_action, rule_code,
+                       (SELECT COUNT(*)
+                        FROM phrase_feedback
+                        WHERE case_id = @case_id)
+                FROM moderation_feedback
+                WHERE case_id = @case_id;
+                """;
+            command.Parameters.AddWithValue("@case_id", confirmedCaseId);
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.True(reader.GetBoolean(0));
+            Assert.True(reader.GetBoolean(1));
+            Assert.Equal("delete", reader.GetString(2));
+            Assert.Equal(ModerationRuleCodes.Backseatgaming, reader.GetString(3));
+            Assert.Equal(0, reader.GetInt32(4));
+        }
+        var learnedExamples = await new SqliteRetrievalExampleStore(
+                database.ConnectionFactory)
+            .GetRelevantAsync(channelId, context.CategoryId, retrievalPolicy);
         Assert.Contains(
-            reloadedPolicy.Phrases,
-            phrase => string.Equals(
-                phrase.NormalizedPhrase,
-                triggerPhrase,
-                StringComparison.Ordinal));
+            learnedExamples,
+            example =>
+                example.IsPositive &&
+                example.PolicySet == PolicySetCode.Backseatgaming &&
+                example.LowerText == "use the hidden route");
+        Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
+        Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
+        Assert.Equal(
+            phraseFeedbackCountBefore,
+            await ReadPhraseFeedbackCountAsync(database));
     }
 
     private static async Task<Fixture> CreateFixtureAsync(
@@ -940,6 +1008,68 @@ public sealed class ModerationPersistenceRegressionTests
             IngressSequence: 1);
     }
 
+    private static async Task<IReadOnlyList<string>> ReadPhraseStateAsync(
+        TestDatabase database)
+    {
+        await using var connection = await database.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT
+                phrase.phrase_id || '|' ||
+                phrase.rule_id || '|' ||
+                phrase.phrase || '|' ||
+                phrase.normalized_phrase || '|' ||
+                phrase.enabled || '|' ||
+                phrase.manual_override || '|' ||
+                phrase.positive_confirmations || '|' ||
+                phrase.negative_confirmations || '|' ||
+                phrase.row_version
+            FROM phrase_rules phrase
+            ORDER BY phrase.phrase_id;
+            """;
+        var state = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            state.Add(reader.GetString(0));
+        }
+
+        return state;
+    }
+
+    private static async Task<IReadOnlyList<string>> ReadPolicyStateAsync(
+        TestDatabase database)
+    {
+        await using var connection = await database.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT scope_id || '|' || revision || '|' || row_version
+            FROM policy_sets
+            ORDER BY scope_id;
+            """;
+        var state = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            state.Add(reader.GetString(0));
+        }
+
+        return state;
+    }
+
+    private static async Task<long> ReadPhraseFeedbackCountAsync(
+        TestDatabase database)
+    {
+        await using var connection = await database.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM phrase_feedback;";
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(),
+            System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     private static async Task<PersistedPhrase?> ReadPhraseAsync(
         TestDatabase database,
         string policySet,
@@ -976,26 +1106,6 @@ public sealed class ModerationPersistenceRegressionTests
                 reader.GetInt32(5),
                 reader.IsDBNull(6) ? null : reader.GetString(6))
             : null;
-    }
-
-    private static PhraseRule ToCorePhraseRule(PersistedPhrase phrase)
-    {
-        return new PhraseRule(
-            phrase.PhraseId,
-            phrase.RuleCode,
-            PolicySetCode.Backseatgaming,
-            phrase.RuleNormalizedPhrase,
-            phrase.ManualOverride switch
-            {
-                "auto" => PhraseManualOverride.Auto,
-                "active" => PhraseManualOverride.Active,
-                "inactive" => PhraseManualOverride.Inactive,
-                _ => throw new InvalidDataException(
-                    $"Unknown manual override '{phrase.ManualOverride}'."),
-            },
-            phrase.PositiveConfirmations,
-            phrase.NegativeConfirmations,
-            IsArchived: phrase.ArchivedUtc is not null);
     }
 
     private sealed record Fixture(

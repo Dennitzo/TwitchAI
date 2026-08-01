@@ -142,6 +142,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
     private readonly ILocalModerationClient _localModerationClient;
     private readonly IModerationRepairClient _repairClient;
     private readonly IModerationEnvelopeValidator _envelopeValidator;
+    private readonly IModerationPromptCompiler _promptCompiler;
     private readonly IRetrievalExampleStore _retrievalExampleStore;
     private readonly ILearningContextRevision _learningContextRevision;
     private readonly IModerationCaseRepository _caseRepository;
@@ -150,6 +151,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
     private readonly ILocalAiRunActivityMonitor? _aiRunActivityMonitor;
     private readonly ITwitchConnectionReadiness? _connectionReadiness;
     private readonly IChatReplyStore? _chatReplyStore;
+    private readonly IAiValidationAttemptStore? _validationAttemptStore;
     private readonly InfrastructureOptions _options;
     private readonly TimeProvider _timeProvider;
     private readonly ConcurrentDictionary<string, IReadOnlyList<PhraseRule>> _ruleCache =
@@ -184,7 +186,9 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         TimeProvider? timeProvider = null,
         ITwitchConnectionReadiness? connectionReadiness = null,
         IChatReplyStore? chatReplyStore = null,
-        ILearningContextRevision? learningContextRevision = null)
+        ILearningContextRevision? learningContextRevision = null,
+        IAiValidationAttemptStore? validationAttemptStore = null,
+        IModerationPromptCompiler? promptCompiler = null)
     {
         _eventSubClient = eventSubClient;
         _channelContextService = channelContextService;
@@ -198,6 +202,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         _localModerationClient = localModerationClient;
         _repairClient = repairClient;
         _envelopeValidator = envelopeValidator;
+        _promptCompiler = promptCompiler ?? new ModerationPromptCompiler();
         _retrievalExampleStore = retrievalExampleStore;
         _learningContextRevision = learningContextRevision
             ?? LearningContextRevision.ProcessWide;
@@ -207,6 +212,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         _aiRunActivityMonitor = aiRunActivityMonitor;
         _connectionReadiness = connectionReadiness;
         _chatReplyStore = chatReplyStore;
+        _validationAttemptStore = validationAttemptStore;
         _options = options;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -567,7 +573,11 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         switch (chatEvent.Kind)
         {
             case TwitchChatEventKind.Message when chatEvent.Message is not null:
-                await ProcessMessageAsync(chatEvent.Message, cancellationToken)
+                await ProcessMessageAsync(
+                        chatEvent.Message,
+                        chatEvent.TwitchEmoteCount,
+                        chatEvent.IsTwitchEmoteOnly,
+                        cancellationToken)
                     .ConfigureAwait(false);
                 break;
             case TwitchChatEventKind.ChannelUpdated when chatEvent.ChannelContext is not null:
@@ -670,6 +680,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
 
     private async Task ProcessMessageAsync(
         ChatMessageIdentityV1 identity,
+        int twitchEmoteCount,
+        bool isTwitchEmoteOnly,
         CancellationToken cancellationToken)
     {
         var context = GetCurrentContext()
@@ -681,7 +693,11 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             identity,
             processed,
             context,
-            Interlocked.Increment(ref _ingressSequence));
+            Interlocked.Increment(ref _ingressSequence))
+        {
+            TwitchEmoteCount = twitchEmoteCount,
+            IsTwitchEmoteOnly = isTwitchEmoteOnly,
+        };
         _availabilityRegistry.Observe(snapshot);
 
         if (IsPrivilegedSender(identity))
@@ -706,7 +722,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 new(
                     ModerationPipelineEventKind.WhitelistSkipped,
                     "whitelist_match",
-                    "The message or Twitch login matched the manual whitelist.",
+                    "The message, Twitch login, or standalone Twitch clip matched the whitelist rules.",
                     snapshot));
             return;
         }
@@ -855,38 +871,94 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     item.Value.NormalizedExample))
                 .ToArray(),
         };
-        var prompt = ModerationRequestFactory.Create(analysisBatch, retrievalExamples);
+        var prompt = ModerationRequestFactory.Create(
+            analysisBatch,
+            retrievalExamples,
+            _promptCompiler);
         var inferenceStarted = Stopwatch.GetTimestamp();
         var rawResponse = await _localModerationClient
-            .ModerateAsync(prompt.Envelope, cancellationToken)
+            .ModerateAsync(prompt.CompiledPrompt, cancellationToken)
             .ConfigureAwait(false);
-        var validation = _envelopeValidator.Validate(rawResponse, analysisBatch);
+        var validation = ValidateRuntimeResponse(rawResponse, analysisBatch);
+        await RecordValidationAttemptAsync(
+                correlationId: batch.BatchId.ToString("D"),
+                parentCorrelationId: null,
+                AiValidationAttemptKind.Initial,
+                prompt.CompiledPrompt,
+                rawResponse,
+                validation,
+                validation.IsValid
+                    ? AiValidationOutcome.Valid
+                    : AiValidationOutcome.Rejected,
+                validation.RepairMessageIds.Count,
+                cancellationToken)
+            .ConfigureAwait(false);
+        await RecordLocalFallbackAttemptAsync(
+                batch.BatchId.ToString("D"),
+                AiValidationAttemptKind.Initial,
+                prompt.CompiledPrompt,
+                validation.LocalFallbackMessageIds,
+                cancellationToken)
+            .ConfigureAwait(false);
         if (!validation.IsValid)
         {
-            // One bounded repair request includes the validator errors. No third request is issued.
-            rawResponse = await _repairClient
-                .RepairAsync(
-                    prompt.Envelope,
-                    rawResponse,
-                    validation.Errors,
+            // Preserve decisions which passed identity and semantic validation.
+            // The one bounded repair request contains only affected messages;
+            // malformed root envelopes deliberately fall back to the full batch.
+            var repairBatch = CreateRepairBatch(
+                analysisBatch,
+                validation.RepairMessageIds);
+            var repairResult = await _repairClient
+                .RepairWithDiagnosticsAsync(
+                    new ModerationRepairRequest(
+                        prompt.CompiledPrompt,
+                        validation.RepairMessageIds,
+                        validation.Issues,
+                        validation.RequiresFullRepair),
                     cancellationToken)
                 .ConfigureAwait(false);
-            validation = _envelopeValidator.Validate(rawResponse, analysisBatch);
-        }
-
-        if (!validation.IsValid
-            && validation.Errors.Any(
-                error => string.Equals(
-                    error.Code,
-                    "rule_invalid",
-                    StringComparison.Ordinal)))
-        {
-            // The model already received its single bounded repair request.
-            // Keep an otherwise valid actionable proposal reviewable by binding
-            // an omitted category to a matching local hit or the policy's base
-            // rule. Unknown/inactive explicit codes remain invalid.
-            validation = _envelopeValidator
-                .ValidateWithMissingRuleFallback(rawResponse, analysisBatch);
+            var repairedResponse = repairResult.RawResponse;
+            var repairedValidation = ValidateRuntimeResponse(
+                repairedResponse,
+                repairBatch);
+            var diagnosticRepairPrompt = repairResult.Prompt
+                ?? _promptCompiler.Compile(
+                    prompt.Envelope with
+                    {
+                        Messages = prompt.Envelope.Messages
+                            .Where(message => validation.RepairMessageIds.Contains(
+                                message.MessageId,
+                                StringComparer.Ordinal))
+                            .ToArray(),
+                    });
+            await RecordValidationAttemptAsync(
+                    correlationId: $"{batch.BatchId:D}-repair",
+                    parentCorrelationId: batch.BatchId.ToString("D"),
+                    AiValidationAttemptKind.Repair,
+                    diagnosticRepairPrompt,
+                    repairedResponse,
+                    repairedValidation,
+                    repairedValidation.IsValid
+                        ? AiValidationOutcome.Repaired
+                        : AiValidationOutcome.Rejected,
+                    validation.RepairMessageIds.Count,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            await RecordLocalFallbackAttemptAsync(
+                    batch.BatchId.ToString("D"),
+                    AiValidationAttemptKind.Repair,
+                    diagnosticRepairPrompt,
+                    repairedValidation.LocalFallbackMessageIds,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            validation = repairedValidation.IsValid
+                ? validation.RequiresFullRepair
+                    ? repairedValidation
+                    : MergeRepairResult(
+                        analysisBatch,
+                        validation,
+                        repairedValidation)
+                : repairedValidation;
         }
 
         // A changed learning set always requires a fresh request, even when the
@@ -907,7 +979,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     "invalid_ai_envelope",
                     string.Join(
                         "; ",
-                        validation.Errors.Select(error => $"{error.Code}: {error.Message}"))));
+                        validation.Issues.Select(error => $"{error.Code}: {error.Message}"))));
             return;
         }
 
@@ -1189,6 +1261,218 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     aiLatencyMilliseconds: aiLatencyMilliseconds,
                     activeRules: batch.Context.EffectivePolicy.ActiveRules));
         }
+    }
+
+    private ModerationValidationReport ValidateRuntimeResponse(
+        string rawResponse,
+        ModerationBatch batch) =>
+        _options.LmStudio.UseCompactModerationContractV6
+            ? _envelopeValidator.ValidateV6(rawResponse, batch)
+            : _envelopeValidator.ValidateV4(rawResponse, batch);
+
+    private async ValueTask RecordValidationAttemptAsync(
+        string correlationId,
+        string? parentCorrelationId,
+        AiValidationAttemptKind attemptKind,
+        CompiledModerationPrompt prompt,
+        string rawResponse,
+        ModerationValidationReport validation,
+        AiValidationOutcome outcome,
+        int affectedMessageCount,
+        CancellationToken cancellationToken)
+    {
+        if (_validationAttemptStore is null)
+        {
+            return;
+        }
+
+        var contractVersion = _options.LmStudio.UseCompactModerationContractV6
+            ? prompt.ContractVersion
+            : ModerationRequestFactory.LegacyRequestEnvelopeVersion;
+        var schemaVersion = _options.LmStudio.UseCompactModerationContractV6
+            ? ModerationPromptCompiler.ResponseEnvelopeVersion
+            : ModerationEnvelopeValidator.ResponseEnvelopeVersion;
+        var attempt = new AiValidationAttempt(
+            correlationId,
+            parentCorrelationId,
+            attemptKind,
+            AiValidationWorkloadKind.LiveModeration,
+            contractVersion,
+            schemaVersion,
+            prompt.MessageIds.Count,
+            prompt.PolicyHash,
+            validation.Issues
+                .Select(issue => issue.Code)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray(),
+            affectedMessageCount,
+            _options.LmStudio.UseCompactModerationContractV6
+                ? prompt.PromptCharacters
+                : new ModerationPromptCharacterCounts(0, 0, 0, 0, 0, 0),
+            AiValidationResponseFingerprint.FromRawResponse(rawResponse),
+            outcome,
+            _timeProvider.GetUtcNow());
+        await TryRecordValidationAttemptAsync(attempt, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask RecordLocalFallbackAttemptAsync(
+        string batchCorrelationId,
+        AiValidationAttemptKind sourceAttempt,
+        CompiledModerationPrompt prompt,
+        IReadOnlyList<string> fallbackMessageIds,
+        CancellationToken cancellationToken)
+    {
+        if (_validationAttemptStore is null || fallbackMessageIds.Count == 0)
+        {
+            return;
+        }
+
+        var sourceSuffix = sourceAttempt == AiValidationAttemptKind.Repair
+            ? "repair"
+            : "initial";
+        var parentCorrelationId = sourceAttempt == AiValidationAttemptKind.Repair
+            ? $"{batchCorrelationId}-repair"
+            : batchCorrelationId;
+        var attempt = new AiValidationAttempt(
+            $"{batchCorrelationId}-{sourceSuffix}-fallback",
+            parentCorrelationId,
+            AiValidationAttemptKind.LocalFallback,
+            AiValidationWorkloadKind.LiveModeration,
+            _options.LmStudio.UseCompactModerationContractV6
+                ? prompt.ContractVersion
+                : ModerationRequestFactory.LegacyRequestEnvelopeVersion,
+            _options.LmStudio.UseCompactModerationContractV6
+                ? ModerationPromptCompiler.ResponseEnvelopeVersion
+                : ModerationEnvelopeValidator.ResponseEnvelopeVersion,
+            prompt.MessageIds.Count,
+            prompt.PolicyHash,
+            ["rule_missing_local_fallback"],
+            fallbackMessageIds.Count,
+            _options.LmStudio.UseCompactModerationContractV6
+                ? prompt.PromptCharacters
+                : new ModerationPromptCharacterCounts(0, 0, 0, 0, 0, 0),
+            AiValidationResponseFingerprint.None,
+            AiValidationOutcome.Fallback,
+            _timeProvider.GetUtcNow());
+        await TryRecordValidationAttemptAsync(attempt, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async ValueTask TryRecordValidationAttemptAsync(
+        AiValidationAttempt attempt,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _validationAttemptStore!
+                .RecordAsync(attempt, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            // Diagnostics are deliberately best-effort and must never stop
+            // live moderation or cause an extra inference attempt.
+            Debug.WriteLine(
+                $"AI validation diagnostics could not be stored: {exception}");
+        }
+    }
+
+    private static ModerationBatch CreateRepairBatch(
+        ModerationBatch original,
+        IReadOnlyList<string> repairMessageIds)
+    {
+        var targetIds = repairMessageIds.ToHashSet(StringComparer.Ordinal);
+        if (targetIds.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "An invalid moderation response did not identify a repair scope.");
+        }
+
+        var messages = original.Messages
+            .Where(message => targetIds.Contains(message.TemporaryMessageId))
+            .ToArray();
+        if (messages.Length != targetIds.Count)
+        {
+            throw new InvalidOperationException(
+                "The moderation repair scope contains an unknown message ID.");
+        }
+
+        return original with { Messages = messages };
+    }
+
+    private static ModerationValidationReport MergeRepairResult(
+        ModerationBatch originalBatch,
+        ModerationValidationReport initial,
+        ModerationValidationReport repaired)
+    {
+        var mergedById = new Dictionary<string, ValidatedModerationDecision>(
+            StringComparer.Ordinal);
+        foreach (var decision in initial.ValidDecisions)
+        {
+            mergedById.Add(decision.TemporaryMessageId, decision);
+        }
+
+        foreach (var decision in repaired.Envelope!.Decisions)
+        {
+            if (!mergedById.TryAdd(decision.TemporaryMessageId, decision))
+            {
+                return new(
+                    Envelope: null,
+                    ValidDecisions: initial.ValidDecisions,
+                    Issues:
+                    [
+                        new ModerationValidationIssue(
+                            "repair_message_duplicate",
+                            $"Repair returned temporary message ID '{decision.TemporaryMessageId}' more than once.",
+                            decision.TemporaryMessageId),
+                    ],
+                    RepairMessageIds: [],
+                    RequiresFullRepair: false);
+            }
+        }
+
+        var ordered = new List<ValidatedModerationDecision>(
+            originalBatch.Messages.Count);
+        foreach (var message in originalBatch.Messages)
+        {
+            if (!mergedById.TryGetValue(
+                    message.TemporaryMessageId,
+                    out var decision))
+            {
+                return new(
+                    Envelope: null,
+                    ValidDecisions: ordered,
+                    Issues:
+                    [
+                        new ModerationValidationIssue(
+                            "repair_set_incomplete",
+                            $"Repair did not return temporary message ID '{message.TemporaryMessageId}'.",
+                            message.TemporaryMessageId),
+                    ],
+                    RepairMessageIds: [],
+                    RequiresFullRepair: false);
+            }
+
+            ordered.Add(decision);
+        }
+
+        return new ModerationValidationReport(
+            new ValidatedModerationEnvelope(originalBatch.BatchId, ordered),
+            ordered,
+            [],
+            [],
+            RequiresFullRepair: false)
+        {
+            LocalFallbackMessageIds = initial.LocalFallbackMessageIds
+                .Concat(repaired.LocalFallbackMessageIds)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray(),
+        };
     }
 
     private async Task<IReadOnlyDictionary<string, ChatReplyTemplateRecord>>

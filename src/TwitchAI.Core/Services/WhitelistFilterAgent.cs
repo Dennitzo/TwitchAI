@@ -13,6 +13,12 @@ public sealed class WhitelistFilterAgent(IWhitelistPhraseSource phraseSource)
     {
         ArgumentNullException.ThrowIfNull(message);
 
+        if (TwitchClipUrlClassifier.IsStandaloneAllowedTwitchClipUrl(
+                message.Text.LowerText))
+        {
+            return true;
+        }
+
         var entries = await phraseSource
             .GetActiveEntriesAsync(
                 message.Identity.ChannelId,

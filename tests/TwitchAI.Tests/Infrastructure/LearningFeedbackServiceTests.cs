@@ -10,7 +10,7 @@ public sealed class LearningFeedbackServiceTests
     [Theory]
     [InlineData(ModerationRuleCodes.OtherAbuse, PolicySetCode.General)]
     [InlineData(ModerationRuleCodes.Backseatgaming, PolicySetCode.Backseatgaming)]
-    public async Task ConfirmedViolationStoresOnlyManualExampleWithoutChangingPolicyPhrases(
+    public async Task ConfirmedViolationStoresOnlyMeaningfulTriggerInManualDataset(
         string ruleCode,
         PolicySetCode policySet)
     {
@@ -19,7 +19,8 @@ public sealed class LearningFeedbackServiceTests
             database,
             "eindeutiges lernsignal",
             ruleCode,
-            policySet);
+            policySet,
+            ["eindeutiges", "eindeutiges lernsignal"]);
         var phraseStateBefore = await ReadPhraseStateAsync(database);
         var policyStateBefore = await ReadPolicyStateAsync(database);
         var feedbackCountBefore = await ReadCountAsync(database, "phrase_feedback");
@@ -94,6 +95,7 @@ public sealed class LearningFeedbackServiceTests
             SELECT
                 example.final_decision,
                 example.actual_action,
+                example.actual_trigger_phrases_json,
                 (SELECT COUNT(*)
                  FROM phrase_rules phrase
                  INNER JOIN blacklist_rules rule
@@ -114,7 +116,8 @@ public sealed class LearningFeedbackServiceTests
         Assert.True(await reader.ReadAsync());
         Assert.Equal("marked_allowed", reader.GetString(0));
         Assert.Equal("none", reader.GetString(1));
-        Assert.Equal(0, reader.GetInt32(2));
+        Assert.Equal("[]", reader.GetString(2));
+        Assert.Equal(0, reader.GetInt32(3));
         Assert.Equal(feedbackCountBefore, await ReadCountAsync(database, "phrase_feedback"));
         Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
         Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
@@ -217,7 +220,8 @@ public sealed class LearningFeedbackServiceTests
         TestDatabase database,
         string trigger,
         string ruleCode = ModerationRuleCodes.OtherAbuse,
-        PolicySetCode policySet = PolicySetCode.General)
+        PolicySetCode policySet = PolicySetCode.General,
+        IReadOnlyList<string>? selectedTriggers = null)
     {
         var normalizer = new ChatTextNormalizer();
         var policyStore = new SqlitePolicyStore(
@@ -227,6 +231,7 @@ public sealed class LearningFeedbackServiceTests
         var rule = policy.Rules.Single(item => item.RuleCode == ruleCode);
         var coreRule = ToCoreRule(rule);
         var original = $"Nachricht mit {trigger}";
+        var triggers = selectedTriggers ?? [trigger];
         var result = new LearningTestResult(
             Guid.NewGuid(),
             original,
@@ -237,7 +242,7 @@ public sealed class LearningFeedbackServiceTests
             policySet,
             coreRule.RuleCode,
             coreRule.PublicReason,
-            [trigger],
+            triggers,
             Confidence: 0.91,
             LocalMatchCodes: [],
             AiLatencyMilliseconds: 25,
@@ -256,7 +261,7 @@ public sealed class LearningFeedbackServiceTests
             policySet,
             coreRule.RuleCode,
             coreRule.PublicReason,
-            [trigger]);
+            triggers);
         var learningRevision = new LearningContextRevision();
         var service = new SqliteLearningFeedbackService(
             database.ConnectionFactory,

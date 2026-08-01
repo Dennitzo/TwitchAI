@@ -696,6 +696,144 @@ public sealed class ModerationEnvelopeValidatorTests
     }
 
     [Theory]
+    [InlineData(3, false)]
+    [InlineData(10, false)]
+    [InlineData(19, false)]
+    [InlineData(20, true)]
+    [InlineData(21, true)]
+    public void Validate_EnforcesTwentyEmoteBoundaryForEmoteOnlySpam(
+        int emoteCount,
+        bool expectedValid)
+    {
+        var messageText = string.Join(
+            ' ',
+            Enumerable.Repeat("kappa", emoteCount));
+        var batch = SpamBatch(
+            messageText,
+            emoteCount,
+            isTwitchEmoteOnly: true);
+        var response = Response(
+            batch,
+            Decision(
+                "m1",
+                "timeout",
+                120,
+                "G",
+                "Wiederholter Spam.",
+                ["kappa"],
+                0.96,
+                ModerationRuleCodes.Spam));
+
+        var result = new ModerationEnvelopeValidator().Validate(response, batch);
+
+        Assert.Equal(expectedValid, result.IsValid);
+        if (!expectedValid)
+        {
+            Assert.Contains(
+                result.Errors,
+                error => error.Code == "spam_emote_threshold_not_met");
+        }
+    }
+
+    [Theory]
+    [InlineData(19, false)]
+    [InlineData(20, true)]
+    [InlineData(21, true)]
+    public void ValidateV7_EnforcesTwentyEmoteBoundaryForEmoteOnlySpam(
+        int emoteCount,
+        bool expectedValid)
+    {
+        var messageText = string.Join(
+            ' ',
+            Enumerable.Repeat("kappa", emoteCount));
+        var batch = SpamBatch(
+            messageText,
+            emoteCount,
+            isTwitchEmoteOnly: true);
+        var response = V7Response(
+            batch,
+            new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["m1"] = V7Moderation(
+                    "timeout",
+                    120,
+                    ModerationRuleCodes.Spam,
+                    "Wiederholter Spam.",
+                    ["kappa"],
+                    0.96),
+            });
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(response, batch);
+
+        Assert.Equal(expectedValid, result.IsValid);
+        if (!expectedValid)
+        {
+            Assert.Contains(
+                result.Issues,
+                issue => issue.Code == "spam_emote_threshold_not_met"
+                    && issue.MessageId == "m1");
+        }
+    }
+
+    [Fact]
+    public void Validate_OneThroughNineteenNativeEmotesCannotBeRelabeledAsDisruption()
+    {
+        var messageText = string.Join(
+            ' ',
+            Enumerable.Repeat("kappa", 19));
+        var baseBatch = GeneralRuleBatch(
+            ModerationRuleCodes.Disruption,
+            "Chatstörung",
+            "Gezielte Störung des Chats.",
+            messageText);
+        var batch = baseBatch with
+        {
+            Messages = baseBatch.Messages
+                .Select(message => message with
+                {
+                    Message = message.Message with
+                    {
+                        TwitchEmoteCount = 19,
+                        IsTwitchEmoteOnly = true,
+                    },
+                })
+                .ToArray(),
+        };
+        var legacy = Response(
+            batch,
+            Decision(
+                "m1",
+                "timeout",
+                600,
+                "G",
+                "Gezielte Störung des Chats.",
+                ["kappa"],
+                0.9,
+                ModerationRuleCodes.Disruption));
+        var sparse = V6Response(
+            batch,
+            [],
+            [
+                V6Moderation(
+                    "m1",
+                    "timeout",
+                    600,
+                    ModerationRuleCodes.Disruption,
+                    "Gezielte Störung des Chats.",
+                    ["kappa"],
+                    0.9),
+            ]);
+
+        Assert.Contains(
+            new ModerationEnvelopeValidator().Validate(legacy, batch).Errors,
+            error => error.Code == "emote_only_below_spam_threshold");
+        Assert.Contains(
+            new ModerationEnvelopeValidator().ValidateV6(sparse, batch).Issues,
+            issue => issue.Code == "emote_only_below_spam_threshold"
+                && issue.MessageId == "m1");
+    }
+
+    [Theory]
     [InlineData("delete", null)]
     [InlineData("timeout", 120)]
     [InlineData("timeout", 300)]
@@ -859,6 +997,496 @@ public sealed class ModerationEnvelopeValidatorTests
         Assert.Equal("json_invalid", Assert.Single(result.Errors).Code);
     }
 
+    [Fact]
+    public void ValidateDetailed_V6SparseResponseDerivesPolicyAndDecoratesNoActionReply()
+    {
+        var batch = Batch(
+            2,
+            includeBackseat: false,
+            firstMessage: "du bist ein idiot") with
+        {
+            ReplyTemplates = [new("r1", "wie lange geht das event noch")],
+        };
+        var response = V6Response(
+            batch,
+            noActionMessageIds: [],
+            moderations:
+            [
+                V6Moderation(
+                    "m1",
+                    "timeout",
+                    600,
+                    "G_INSULT",
+                    "Beleidigung eines Nutzers oder Streamers.",
+                    ["du bist ein idiot"],
+                    0.94),
+            ],
+            replies:
+            [
+                new Dictionary<string, object?>
+                {
+                    ["messageId"] = "m2",
+                    ["replyTemplateId"] = "r1",
+                    ["confidence"] = 0.88,
+                },
+            ]);
+
+        var result = new ModerationEnvelopeValidator()
+            .ValidateDetailed(response, batch);
+
+        Assert.True(result.IsValid);
+        Assert.False(result.RequiresFullRepair);
+        Assert.Empty(result.RepairMessageIds);
+        Assert.Equal(2, result.Envelope!.Decisions.Count);
+        var moderation = result.Envelope.Decisions[0];
+        Assert.Equal(PolicySetCode.General, moderation.PolicySet);
+        Assert.Equal("G_INSULT", moderation.RuleCode);
+        var noAction = result.Envelope.Decisions[1];
+        Assert.Equal(ModerationActionKind.None, noAction.Action);
+        Assert.Equal(1D, noAction.Confidence);
+        Assert.Equal("r1", noAction.ReplyTemplateId);
+        Assert.Equal(0.88, noAction.ReplyConfidence);
+    }
+
+    [Fact]
+    public void ValidateDetailed_V6MissingMessageKeepsValidDecisionForTargetedRepair()
+    {
+        var batch = Batch(2, includeBackseat: false);
+        var response = V6Response(
+            batch,
+            noActionMessageIds: ["m1"],
+            moderations: []);
+
+        var result = new ModerationEnvelopeValidator()
+            .ValidateDetailed(response, batch);
+
+        Assert.False(result.IsValid);
+        Assert.False(result.RequiresFullRepair);
+        Assert.Equal(["m2"], result.RepairMessageIds);
+        var valid = Assert.Single(result.ValidDecisions);
+        Assert.Equal("m1", valid.TemporaryMessageId);
+        var issue = Assert.Single(result.Issues);
+        Assert.Equal("decision_missing", issue.Code);
+        Assert.Equal("m2", issue.MessageId);
+    }
+
+    [Fact]
+    public void ValidateDetailed_V6InvalidSingleModerationKeepsOtherMessages()
+    {
+        var batch = Batch(2, includeBackseat: false);
+        var response = V6Response(
+            batch,
+            noActionMessageIds: ["m1"],
+            moderations:
+            [
+                V6Moderation(
+                    "m2",
+                    "timeout",
+                    600,
+                    "UNKNOWN",
+                    "Verstoß.",
+                    ["ordinary"],
+                    0.9),
+            ]);
+
+        var result = new ModerationEnvelopeValidator()
+            .ValidateDetailed(response, batch);
+
+        Assert.False(result.IsValid);
+        Assert.False(result.RequiresFullRepair);
+        Assert.Equal(["m2"], result.RepairMessageIds);
+        Assert.Equal("m1", Assert.Single(result.ValidDecisions).TemporaryMessageId);
+        Assert.Contains(
+            result.Issues,
+            issue => issue.Code == "rule_inactive" && issue.MessageId == "m2");
+    }
+
+    [Fact]
+    public void ValidateDetailed_V6MissingRuleUsesUnambiguousLocalMatchBeforeRepair()
+    {
+        var batch = SexualizationSeedBatch();
+        var moderation = V6Moderation(
+            "m1",
+            "timeout",
+            600,
+            ruleCode: null,
+            "Sexualisierende Aussage über eine Person.",
+            ["sie sieht sexy aus"],
+            0.9);
+        moderation.Remove("ruleCode");
+        var response = V6Response(
+            batch,
+            noActionMessageIds: [],
+            moderations: [moderation]);
+
+        var result = new ModerationEnvelopeValidator()
+            .ValidateDetailed(response, batch);
+
+        Assert.True(result.IsValid);
+        Assert.Equal(
+            "G_SEXUALIZATION",
+            Assert.Single(result.Envelope!.Decisions).RuleCode);
+        Assert.Equal(["m1"], result.LocalFallbackMessageIds);
+    }
+
+    [Fact]
+    public void ValidateDetailed_V6OverlappingGroupsRepairOnlyOverlappingMessage()
+    {
+        var batch = Batch(2, includeBackseat: false);
+        var response = V6Response(
+            batch,
+            noActionMessageIds: ["m1", "m2"],
+            moderations:
+            [
+                V6Moderation(
+                    "m2",
+                    "timeout",
+                    600,
+                    ModerationRuleCodes.GeneralPhrase,
+                    "Sonstiger Verstoß gegen die Chatregeln.",
+                    ["ordinary"],
+                    0.8),
+            ]);
+
+        var result = new ModerationEnvelopeValidator()
+            .ValidateDetailed(response, batch);
+
+        Assert.False(result.IsValid);
+        Assert.False(result.RequiresFullRepair);
+        Assert.Equal(["m2"], result.RepairMessageIds);
+        Assert.Equal("m1", Assert.Single(result.ValidDecisions).TemporaryMessageId);
+        Assert.Contains(
+            result.Issues,
+            issue => issue.Code == "message_id_duplicate" && issue.MessageId == "m2");
+    }
+
+    [Fact]
+    public void ValidateV6_DeleteRequiresTimeoutPropertyToBeAbsent()
+    {
+        var batch = Batch(1, includeBackseat: false);
+        var moderation = V6Moderation(
+            "m1",
+            "delete",
+            null,
+            ModerationRuleCodes.GeneralPhrase,
+            "Unnötige Nachricht.",
+            ["bad"],
+            0.8);
+        var valid = V6Response(batch, [], [moderation]);
+
+        Assert.True(new ModerationEnvelopeValidator().ValidateV6(valid, batch).IsValid);
+
+        moderation["timeoutSeconds"] = null;
+        var invalid = new ModerationEnvelopeValidator().ValidateV6(
+            V6Response(batch, [], [moderation]),
+            batch);
+        Assert.False(invalid.IsValid);
+        Assert.Contains(
+            invalid.Issues,
+            issue => issue.Code == "timeout_for_non_timeout"
+                && issue.MessageId == "m1");
+    }
+
+    [Fact]
+    public void ValidateV6_ReplyMustBeDisjointFromNoActionGroup()
+    {
+        var batch = Batch(1, includeBackseat: false) with
+        {
+            ReplyTemplates = [new("r1", "event dauer")],
+        };
+        var response = V6Response(
+            batch,
+            ["m1"],
+            [],
+            [
+                new Dictionary<string, object?>
+                {
+                    ["messageId"] = "m1",
+                    ["replyTemplateId"] = "r1",
+                    ["confidence"] = 0.9,
+                },
+            ]);
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(response, batch);
+
+        Assert.False(result.IsValid);
+        Assert.Equal(["m1"], result.RepairMessageIds);
+        Assert.Contains(
+            result.Issues,
+            issue => issue.Code == "reply_message_id_duplicate");
+    }
+
+    [Fact]
+    public void Validate_LegacyReasonContainingV6VersionDoesNotChangeDispatcher()
+    {
+        var batch = Batch(1, includeBackseat: false);
+        var response = Response(
+            batch,
+            Decision(
+                "m1",
+                "timeout",
+                600,
+                "G",
+                ModerationEnvelopeValidator.SparseResponseEnvelopeVersion,
+                ["bad"],
+                0.9));
+
+        var result = new ModerationEnvelopeValidator().Validate(response, batch);
+
+        Assert.True(result.IsValid);
+    }
+
+    [Fact]
+    public void ValidateV7_KeyedTwentyMessageResponseIsCompleteWithoutRepair()
+    {
+        var batch = Batch(20, includeBackseat: false);
+        var decisions = batch.Messages.ToDictionary(
+            message => message.TemporaryMessageId,
+            _ => (object?)null,
+            StringComparer.Ordinal);
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(batch, decisions),
+            batch);
+
+        Assert.True(result.IsValid);
+        Assert.False(result.RequiresFullRepair);
+        Assert.Empty(result.RepairMessageIds);
+        Assert.Equal(20, result.Envelope!.Decisions.Count);
+        Assert.All(
+            result.Envelope.Decisions,
+            decision => Assert.Equal(ModerationActionKind.None, decision.Action));
+    }
+
+    [Fact]
+    public void ValidateV7_InvalidSingleDecisionKeepsOtherMessagesForTargetedRepair()
+    {
+        var batch = Batch(2, includeBackseat: false);
+        var decisions = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["m1"] = null,
+            ["m2"] = V7Moderation(
+                "timeout",
+                600,
+                "UNKNOWN",
+                "Verstoß.",
+                ["ordinary"],
+                0.9),
+        };
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(batch, decisions),
+            batch);
+
+        Assert.False(result.IsValid);
+        Assert.False(result.RequiresFullRepair);
+        Assert.Equal(["m2"], result.RepairMessageIds);
+        Assert.Equal("m1", Assert.Single(result.ValidDecisions).TemporaryMessageId);
+        Assert.Contains(
+            result.Issues,
+            issue => issue.Code == "rule_inactive" && issue.MessageId == "m2");
+    }
+
+    [Fact]
+    public void ValidateV7_MissingKeyRequiresOnlyThatMessageToBeRepaired()
+    {
+        var batch = Batch(2, includeBackseat: false);
+        var decisions = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["m1"] = null,
+        };
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(batch, decisions),
+            batch);
+
+        Assert.False(result.IsValid);
+        Assert.False(result.RequiresFullRepair);
+        Assert.Equal(["m2"], result.RepairMessageIds);
+        Assert.Equal("decision_missing", Assert.Single(result.Issues).Code);
+    }
+
+    [Fact]
+    public void ValidateV7_PersonalDataTriggersAreClearedLocallyWithoutRepair()
+    {
+        var batch = Batch(
+            1,
+            includeBackseat: false,
+            firstMessage: "meine adresse ist musterstraße 1");
+        var decisions = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["m1"] = V7Moderation(
+                "timeout",
+                600,
+                ModerationRuleCodes.PersonalData,
+                "Veröffentlichung persönlicher Daten.",
+                ["musterstraße 1"],
+                0.95),
+        };
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(batch, decisions),
+            batch);
+
+        Assert.True(result.IsValid);
+        var decision = Assert.Single(result.Envelope!.Decisions);
+        Assert.Empty(decision.TriggerPhrases);
+        Assert.Equal(["m1"], result.LocalFallbackMessageIds);
+        Assert.Empty(result.RepairMessageIds);
+    }
+
+    [Fact]
+    public void ValidateV7_InvalidOptionalGeneralTriggersAreSanitizedLocally()
+    {
+        var batch = Batch(
+            1,
+            includeBackseat: false,
+            firstMessage: "du bist idiot");
+        var decisions = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["m1"] = V7Moderation(
+                "timeout",
+                600,
+                ModerationRuleCodes.Insult,
+                "Direkte Beleidigung eines Nutzers oder Streamers.",
+                ["IDIOT", "nicht im text", "du bist idiot", "idiot"],
+                0.9),
+        };
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(batch, decisions),
+            batch);
+
+        Assert.True(result.IsValid);
+        Assert.Equal(
+            ["du bist idiot"],
+            Assert.Single(result.Envelope!.Decisions).TriggerPhrases);
+        Assert.Equal(["m1"], result.LocalFallbackMessageIds);
+        Assert.Empty(result.RepairMessageIds);
+    }
+
+    [Fact]
+    public void ValidateV7_ContextFreeSingleWordTriggerIsDroppedWithoutRepair()
+    {
+        var batch = Batch(
+            1,
+            includeBackseat: false,
+            firstMessage: "du bist idiot");
+        var decisions = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["m1"] = V7Moderation(
+                "timeout",
+                600,
+                ModerationRuleCodes.Insult,
+                "Direkte Beleidigung eines Nutzers oder Streamers.",
+                ["idiot"],
+                0.9),
+        };
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(batch, decisions),
+            batch);
+
+        Assert.True(result.IsValid);
+        Assert.Empty(Assert.Single(result.Envelope!.Decisions).TriggerPhrases);
+        Assert.Equal(["m1"], result.LocalFallbackMessageIds);
+        Assert.Empty(result.RepairMessageIds);
+    }
+
+    [Fact]
+    public void ValidateV7_InsultFiltersIrrelevantEvidenceBeforeKeepingCompleteClause()
+    {
+        var batch = Batch(
+            1,
+            includeBackseat: false,
+            firstMessage: "@shlorox dann halt sie fest kappa du bist ein idiot");
+        var decisions = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["m1"] = V7Moderation(
+                "timeout",
+                600,
+                ModerationRuleCodes.Insult,
+                "Direkte Beleidigung eines Nutzers oder Streamers.",
+                ["dann halt", "sie fest", "@shlorox", "du bist ein idiot"],
+                0.9),
+        };
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(batch, decisions),
+            batch);
+
+        Assert.True(result.IsValid);
+        var decision = Assert.Single(result.Envelope!.Decisions);
+        Assert.Equal(ModerationActionKind.Timeout, decision.Action);
+        Assert.Equal(ModerationRuleCodes.Insult, decision.RuleCode);
+        Assert.Equal(["du bist ein idiot"], decision.TriggerPhrases);
+        Assert.Equal(["m1"], result.LocalFallbackMessageIds);
+        Assert.Empty(result.RepairMessageIds);
+    }
+
+    [Fact]
+    public void ValidateV7_InsultWithoutValidEvidenceFallsBackToNoActionLocally()
+    {
+        var batch = Batch(
+            1,
+            includeBackseat: false,
+            firstMessage: "@dennisith dann halt sie fest kappa");
+        var decisions = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["m1"] = V7Moderation(
+                "timeout",
+                600,
+                ModerationRuleCodes.Insult,
+                "Direkte Beleidigung eines Nutzers oder Streamers.",
+                ["dann halt", "sie fest"],
+                0.9),
+        };
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(batch, decisions),
+            batch);
+
+        Assert.True(result.IsValid);
+        var decision = Assert.Single(result.Envelope!.Decisions);
+        Assert.Equal(ModerationActionKind.None, decision.Action);
+        Assert.Null(decision.TimeoutSeconds);
+        Assert.Null(decision.PolicySet);
+        Assert.Null(decision.RuleCode);
+        Assert.Empty(decision.Reason);
+        Assert.Empty(decision.TriggerPhrases);
+        Assert.Equal(["m1"], result.LocalFallbackMessageIds);
+        Assert.Empty(result.RepairMessageIds);
+    }
+
+    [Fact]
+    public void ValidateV7_BackseatTriggerEvidenceRemainsStrict()
+    {
+        var batch = Batch(
+            1,
+            includeBackseat: true,
+            firstMessage: "geh nach links");
+        var decisions = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["m1"] = V7Moderation(
+                "timeout",
+                600,
+                ModerationRuleCodes.Backseatgaming,
+                "Unaufgeforderter Spielhinweis.",
+                ["links"],
+                0.9),
+        };
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(batch, decisions),
+            batch);
+
+        Assert.False(result.IsValid);
+        Assert.Equal(["m1"], result.RepairMessageIds);
+        Assert.Contains(
+            result.Issues,
+            issue => issue.Code == "backseat_evidence_insufficient");
+    }
+
     private static void AssertInvalid(
         string response,
         ModerationBatch batch,
@@ -869,6 +1497,89 @@ public sealed class ModerationEnvelopeValidatorTests
         Assert.False(result.IsValid);
         Assert.Null(result.Envelope);
         Assert.Contains(result.Errors, error => error.Code == expectedCode);
+    }
+
+    private static string V6Response(
+        ModerationBatch batch,
+        IReadOnlyList<string> noActionMessageIds,
+        IReadOnlyList<Dictionary<string, object?>> moderations,
+        IReadOnlyList<Dictionary<string, object?>>? replies = null)
+    {
+        var root = new Dictionary<string, object?>
+        {
+            ["envelopeVersion"] = ModerationEnvelopeValidator.SparseResponseEnvelopeVersion,
+            ["batchId"] = batch.BatchId,
+            ["noActionMessageIds"] = noActionMessageIds,
+            ["moderations"] = moderations,
+        };
+        if (replies is not null)
+        {
+            root["replies"] = replies;
+        }
+
+        return JsonSerializer.Serialize(root);
+    }
+
+    private static string V7Response(
+        ModerationBatch batch,
+        IReadOnlyDictionary<string, object?> decisions) =>
+        JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["envelopeVersion"] =
+                    ModerationEnvelopeValidator.KeyedResponseEnvelopeVersion,
+                ["batchId"] = batch.BatchId,
+                ["decisions"] = decisions,
+            });
+
+    private static Dictionary<string, object?> V7Moderation(
+        string action,
+        int? timeoutSeconds,
+        string ruleCode,
+        string reason,
+        string[] triggerPhrases,
+        double confidence)
+    {
+        var result = new Dictionary<string, object?>
+        {
+            ["action"] = action,
+            ["ruleCode"] = ruleCode,
+            ["reason"] = reason,
+            ["triggerPhrases"] = triggerPhrases,
+            ["confidence"] = confidence,
+        };
+        if (timeoutSeconds is not null)
+        {
+            result["timeoutSeconds"] = timeoutSeconds;
+        }
+
+        return result;
+    }
+
+    private static Dictionary<string, object?> V6Moderation(
+        string messageId,
+        string action,
+        int? timeoutSeconds,
+        string? ruleCode,
+        string reason,
+        string[] triggerPhrases,
+        double confidence)
+    {
+        var result = new Dictionary<string, object?>
+        {
+            ["messageId"] = messageId,
+            ["action"] = action,
+            ["ruleCode"] = ruleCode,
+            ["reason"] = reason,
+            ["triggerPhrases"] = triggerPhrases,
+            ["confidence"] = confidence,
+        };
+        if (timeoutSeconds is not null)
+        {
+            result["timeoutSeconds"] = timeoutSeconds;
+        }
+
+        return result;
     }
 
     private static string Response(
@@ -1056,13 +1767,16 @@ public sealed class ModerationEnvelopeValidatorTests
         };
     }
 
-    private static ModerationBatch SpamBatch()
+    private static ModerationBatch SpamBatch(
+        string firstMessage = "spam spam spam",
+        int twitchEmoteCount = 0,
+        bool isTwitchEmoteOnly = false)
     {
         const string spamRuleCode = "G_SPAM";
         var batch = Batch(
             1,
             includeBackseat: false,
-            firstMessage: "spam spam spam");
+            firstMessage: firstMessage);
         var channel = batch.Context.Channel;
         var rule = new ModerationRuleDefinition(
             spamRuleCode,
@@ -1085,6 +1799,16 @@ public sealed class ModerationEnvelopeValidatorTests
         return batch with
         {
             Context = new ModerationBatchContext(channel, policy),
+            Messages = batch.Messages
+                .Select(message => message with
+                {
+                    Message = message.Message with
+                    {
+                        TwitchEmoteCount = twitchEmoteCount,
+                        IsTwitchEmoteOnly = isTwitchEmoteOnly,
+                    },
+                })
+                .ToArray(),
         };
     }
 

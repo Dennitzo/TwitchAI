@@ -5,6 +5,40 @@ namespace TwitchAI.Tests.Infrastructure;
 
 public sealed class TwitchChatBadgeRolesTests
 {
+    [Fact]
+    public void ParseChatMessage_CountsStructuredTwitchEmotes()
+    {
+        using var document = JsonDocument.Parse(
+            """
+            {
+              "message_id": "message-1",
+              "chatter_user_id": "user-1",
+              "chatter_user_login": "viewer",
+              "chatter_user_name": "Viewer",
+              "message": {
+                "text": "Kappa Kappa Kappa",
+                "fragments": [
+                  { "type": "emote", "text": "Kappa" },
+                  { "type": "text", "text": " " },
+                  { "type": "emote", "text": "Kappa" },
+                  { "type": "text", "text": " " },
+                  { "type": "emote", "text": "Kappa" }
+                ]
+              },
+              "badges": []
+            }
+            """);
+
+        var parsed = TwitchEventSubWebSocketClient.ParseChatMessage(
+            "event-1",
+            "channel-1",
+            DateTimeOffset.UtcNow,
+            document.RootElement);
+
+        Assert.Equal(3, parsed.TwitchEmoteCount);
+        Assert.True(parsed.IsTwitchEmoteOnly);
+    }
+
     [Theory]
     [InlineData("tracked-channel", "tracked-channel", "configured-broadcaster", "configured-moderator", null)]
     [InlineData("configured-broadcaster", "tracked-channel", "configured-broadcaster", "configured-moderator", null)]

@@ -7,6 +7,10 @@ namespace TwitchAI.Core.Services;
 public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
 {
     public const string ResponseEnvelopeVersion = "twitchai.moderation.response.v4";
+    public const string SparseResponseEnvelopeVersion =
+        "twitchai.moderation.response.v6";
+    public const string KeyedResponseEnvelopeVersion =
+        ModerationPromptCompiler.ResponseEnvelopeVersion;
     private const int MaximumRawResponseCharacters = 262_144;
     private const int MaximumTriggerPhrases = 3;
 
@@ -26,13 +30,1293 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             "replyTemplateId",
             "replyConfidence");
 
-    public EnvelopeValidationResult Validate(string rawJson, ModerationBatch batch) =>
-        ValidateCore(rawJson, batch, allowMissingRuleFallback: false);
+    private static readonly HashSet<string> SparseRootProperties =
+        Set(
+            "envelopeVersion",
+            "batchId",
+            "noActionMessageIds",
+            "moderations",
+            "replies");
+
+    private static readonly HashSet<string> RequiredSparseRootProperties =
+        Set(
+            "envelopeVersion",
+            "batchId",
+            "noActionMessageIds",
+            "moderations");
+
+    private static readonly HashSet<string> SparseModerationProperties =
+        Set(
+            "messageId",
+            "action",
+            "timeoutSeconds",
+            "ruleCode",
+            "reason",
+            "triggerPhrases",
+            "confidence");
+
+    private static readonly HashSet<string> RequiredSparseModerationProperties =
+        Set(
+            "messageId",
+            "action",
+            "reason",
+            "triggerPhrases",
+            "confidence");
+
+    private static readonly HashSet<string> SparseReplyProperties =
+        Set("messageId", "replyTemplateId", "confidence");
+
+    private static readonly HashSet<string> KeyedRootProperties =
+        Set("envelopeVersion", "batchId", "decisions");
+
+    private static readonly HashSet<string> KeyedModerationProperties =
+        Set(
+            "action",
+            "timeoutSeconds",
+            "ruleCode",
+            "reason",
+            "triggerPhrases",
+            "confidence");
+
+    private static readonly HashSet<string> RequiredKeyedModerationProperties =
+        Set("action", "ruleCode", "reason", "triggerPhrases", "confidence");
+
+    private static readonly HashSet<string> KeyedReplyProperties =
+        Set("replyTemplateId", "confidence");
+
+    public EnvelopeValidationResult Validate(string rawJson, ModerationBatch batch)
+    {
+        if (IsCompactResponse(rawJson))
+        {
+            return ToEnvelopeValidationResult(
+                ValidateCompactCore(rawJson, batch, allowMissingRuleFallback: false));
+        }
+
+        return ValidateCore(rawJson, batch, allowMissingRuleFallback: false);
+    }
 
     public EnvelopeValidationResult ValidateWithMissingRuleFallback(
         string rawJson,
+        ModerationBatch batch)
+    {
+        if (IsCompactResponse(rawJson))
+        {
+            return ToEnvelopeValidationResult(
+                ValidateCompactCore(rawJson, batch, allowMissingRuleFallback: true));
+        }
+
+        return ValidateCore(rawJson, batch, allowMissingRuleFallback: true);
+    }
+
+    public ModerationValidationReport ValidateDetailed(
+        string rawJson,
         ModerationBatch batch) =>
-        ValidateCore(rawJson, batch, allowMissingRuleFallback: true);
+        IsCompactResponse(rawJson)
+            ? ValidateCompactCore(rawJson, batch, allowMissingRuleFallback: true)
+            : ValidateV4(rawJson, batch);
+
+    public ModerationValidationReport ValidateDetailedWithMissingRuleFallback(
+        string rawJson,
+        ModerationBatch batch) =>
+        IsCompactResponse(rawJson)
+            ? ValidateCompactCore(rawJson, batch, allowMissingRuleFallback: true)
+            : ValidateV4(rawJson, batch);
+
+    public ModerationValidationReport ValidateV6(
+        string rawJson,
+        ModerationBatch batch) =>
+        ValidateCompactCore(rawJson, batch, allowMissingRuleFallback: true);
+
+    public ModerationValidationReport ValidateV4(
+        string rawJson,
+        ModerationBatch batch)
+    {
+        var report = FromLegacyResult(
+            ValidateCore(rawJson, batch, allowMissingRuleFallback: true),
+            batch);
+        return report.IsValid
+            ? report with
+            {
+                LocalFallbackMessageIds = FindLegacyMissingRuleIds(rawJson),
+            }
+            : report;
+    }
+
+    private static List<string> FindLegacyMissingRuleIds(string rawJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(rawJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty(
+                    "decisions",
+                    out var decisions)
+                || decisions.ValueKind != JsonValueKind.Array)
+            {
+                return [];
+            }
+
+            var result = new List<string>();
+            foreach (var decision in decisions.EnumerateArray())
+            {
+                if (decision.ValueKind != JsonValueKind.Object
+                    || !decision.TryGetProperty("action", out var action)
+                    || action.ValueKind != JsonValueKind.String
+                    || string.Equals(action.GetString(), "none", StringComparison.Ordinal)
+                    || !decision.TryGetProperty("messageId", out var messageId)
+                    || messageId.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var ruleMissing = !decision.TryGetProperty("ruleCode", out var ruleCode)
+                    || ruleCode.ValueKind == JsonValueKind.Null
+                    || ruleCode.ValueKind == JsonValueKind.String
+                        && string.IsNullOrWhiteSpace(ruleCode.GetString());
+                if (ruleMissing && messageId.GetString() is { } value)
+                {
+                    result.Add(value);
+                }
+            }
+
+            return result;
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    private static ModerationValidationReport ValidateCompactCore(
+        string rawJson,
+        ModerationBatch batch,
+        bool allowMissingRuleFallback) =>
+        IsSparseV6(rawJson)
+            ? ValidateV6Core(rawJson, batch, allowMissingRuleFallback)
+            : ValidateV7Core(rawJson, batch, allowMissingRuleFallback);
+
+    private static ModerationValidationReport ValidateV7Core(
+        string rawJson,
+        ModerationBatch batch,
+        bool allowMissingRuleFallback)
+    {
+        ArgumentNullException.ThrowIfNull(rawJson);
+        ArgumentNullException.ThrowIfNull(batch);
+        if (rawJson.Length > MaximumRawResponseCharacters)
+        {
+            return FullRepairReport(
+                batch,
+                "response_too_large",
+                "The model response exceeds the safety limit.");
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(
+                rawJson,
+                new JsonDocumentOptions
+                {
+                    AllowTrailingCommas = false,
+                    CommentHandling = JsonCommentHandling.Disallow,
+                    MaxDepth = 16,
+                });
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return FullRepairReport(
+                    batch,
+                    "root_not_object",
+                    "The moderation envelope must be a JSON object.");
+            }
+
+            var structureError = ValidateObjectShape(
+                root,
+                KeyedRootProperties,
+                KeyedRootProperties,
+                "root");
+            if (structureError is not null)
+            {
+                return FullRepairReport(
+                    batch,
+                    structureError.Code,
+                    structureError.Message);
+            }
+
+            if (!TryGetRequiredString(root, "envelopeVersion", out var version)
+                || !string.Equals(
+                    version,
+                    KeyedResponseEnvelopeVersion,
+                    StringComparison.Ordinal))
+            {
+                return FullRepairReport(
+                    batch,
+                    "version_invalid",
+                    "The response envelope version is invalid.");
+            }
+
+            if (!TryGetRequiredString(root, "batchId", out var batchIdText)
+                || !Guid.TryParse(batchIdText, out var batchId)
+                || batchId != batch.BatchId)
+            {
+                return FullRepairReport(
+                    batch,
+                    "batch_id_invalid",
+                    "The response batch ID does not match.");
+            }
+
+            var decisionsElement = root.GetProperty("decisions");
+            if (decisionsElement.ValueKind != JsonValueKind.Object)
+            {
+                return FullRepairReport(
+                    batch,
+                    "decisions_invalid",
+                    "decisions must be an object keyed by temporary message ID.");
+            }
+
+            Dictionary<string, ModerationBatchMessage> sourceById;
+            try
+            {
+                sourceById = batch.Messages.ToDictionary(
+                    item => item.TemporaryMessageId,
+                    StringComparer.Ordinal);
+            }
+            catch (ArgumentException)
+            {
+                return FullRepairReport(
+                    batch,
+                    "message_snapshot_invalid",
+                    "Temporary message IDs in the batch must be unique.");
+            }
+
+            var replyTemplatesById = new Dictionary<string, ChatReplyTemplatePrompt>(
+                StringComparer.Ordinal);
+            foreach (var template in batch.ReplyTemplates)
+            {
+                if (string.IsNullOrWhiteSpace(template.TemplateId)
+                    || !replyTemplatesById.TryAdd(template.TemplateId, template))
+                {
+                    return FullRepairReport(
+                        batch,
+                        "reply_template_snapshot_invalid",
+                        "Reply-template IDs in the batch must be non-empty and unique.");
+                }
+            }
+
+            var seenIds = new HashSet<string>(StringComparer.Ordinal);
+            var invalidIds = new HashSet<string>(StringComparer.Ordinal);
+            var validatedById = new Dictionary<string, ValidatedModerationDecision>(
+                StringComparer.Ordinal);
+            var issues = new List<ModerationValidationIssue>();
+            var localFallbackIds = new HashSet<string>(StringComparer.Ordinal);
+            var requiresFullRepair = false;
+
+            foreach (var property in decisionsElement.EnumerateObject())
+            {
+                var messageId = property.Name;
+                if (!sourceById.ContainsKey(messageId))
+                {
+                    issues.Add(
+                        new(
+                            "message_id_unknown",
+                            $"Temporary message ID '{messageId}' is not part of the batch."));
+                    requiresFullRepair = true;
+                    continue;
+                }
+
+                if (!seenIds.Add(messageId))
+                {
+                    MarkMessageInvalid(
+                        messageId,
+                        "message_id_duplicate",
+                        $"Temporary message ID '{messageId}' occurs more than once.",
+                        invalidIds,
+                        validatedById,
+                        issues);
+                    continue;
+                }
+
+                if (property.Value.ValueKind == JsonValueKind.Null)
+                {
+                    validatedById[messageId] = NoActionDecision(messageId);
+                    continue;
+                }
+
+                if (property.Value.ValueKind != JsonValueKind.Object)
+                {
+                    MarkMessageInvalid(
+                        messageId,
+                        "decision_not_object",
+                        $"Decision '{messageId}' must be null or an object.",
+                        invalidIds,
+                        validatedById,
+                        issues);
+                    continue;
+                }
+
+                SparseDecisionValidationResult result;
+                if (property.Value.TryGetProperty("replyTemplateId", out _))
+                {
+                    result = ValidateV6Reply(
+                        property.Value,
+                        sourceById,
+                        replyTemplatesById,
+                        claimed: null,
+                        keyedMessageId: messageId);
+                }
+                else
+                {
+                    result = ValidateV6Decision(
+                        property.Value,
+                        sourceById,
+                        batch.Context.EffectivePolicy,
+                        allowMissingRuleFallback,
+                        keyedMessageId: messageId,
+                        sanitizeOptionalTriggers: true);
+                }
+
+                if (result.Error is not null)
+                {
+                    MarkMessageInvalid(
+                        messageId,
+                        result.Error.Code,
+                        result.Error.Message,
+                        invalidIds,
+                        validatedById,
+                        issues);
+                    continue;
+                }
+
+                validatedById[messageId] = result.Decision!;
+                if (result.UsedLocalFallback)
+                {
+                    localFallbackIds.Add(messageId);
+                }
+            }
+
+            foreach (var messageId in sourceById.Keys)
+            {
+                if (!seenIds.Contains(messageId))
+                {
+                    MarkMessageInvalid(
+                        messageId,
+                        "decision_missing",
+                        $"Temporary message ID '{messageId}' is missing from decisions.",
+                        invalidIds,
+                        validatedById,
+                        issues);
+                }
+            }
+
+            var validDecisions = batch.Messages
+                .Select(item => item.TemporaryMessageId)
+                .Where(validatedById.ContainsKey)
+                .Select(messageId => validatedById[messageId])
+                .ToArray();
+            if (issues.Count == 0)
+            {
+                return new ModerationValidationReport(
+                    new ValidatedModerationEnvelope(batch.BatchId, validDecisions),
+                    validDecisions,
+                    [],
+                    [],
+                    RequiresFullRepair: false)
+                {
+                    LocalFallbackMessageIds = batch.Messages
+                        .Select(item => item.TemporaryMessageId)
+                        .Where(localFallbackIds.Contains)
+                        .ToArray(),
+                };
+            }
+
+            var repairMessageIds = requiresFullRepair
+                ? batch.Messages.Select(item => item.TemporaryMessageId).ToArray()
+                : batch.Messages
+                    .Select(item => item.TemporaryMessageId)
+                    .Where(invalidIds.Contains)
+                    .ToArray();
+            return new ModerationValidationReport(
+                Envelope: null,
+                validDecisions,
+                issues,
+                repairMessageIds,
+                requiresFullRepair)
+            {
+                LocalFallbackMessageIds = validDecisions
+                    .Select(item => item.TemporaryMessageId)
+                    .Where(localFallbackIds.Contains)
+                    .ToArray(),
+            };
+        }
+        catch (JsonException exception)
+        {
+            return FullRepairReport(
+                batch,
+                "json_invalid",
+                $"The model response is invalid JSON: {exception.Message}");
+        }
+        catch (ArgumentException exception)
+        {
+            return FullRepairReport(batch, "envelope_invalid", exception.Message);
+        }
+    }
+
+    private static ModerationValidationReport ValidateV6Core(
+        string rawJson,
+        ModerationBatch batch,
+        bool allowMissingRuleFallback)
+    {
+        ArgumentNullException.ThrowIfNull(rawJson);
+        ArgumentNullException.ThrowIfNull(batch);
+        if (rawJson.Length > MaximumRawResponseCharacters)
+        {
+            return FullRepairReport(
+                batch,
+                "response_too_large",
+                "The model response exceeds the safety limit.");
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(
+                rawJson,
+                new JsonDocumentOptions
+                {
+                    AllowTrailingCommas = false,
+                    CommentHandling = JsonCommentHandling.Disallow,
+                    MaxDepth = 16,
+                });
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return FullRepairReport(
+                    batch,
+                    "root_not_object",
+                    "The moderation envelope must be a JSON object.");
+            }
+
+            var structureError = ValidateObjectShape(
+                root,
+                batch.ReplyTemplates.Count > 0
+                    ? SparseRootProperties
+                    : RequiredSparseRootProperties,
+                batch.ReplyTemplates.Count > 0
+                    ? SparseRootProperties
+                    : RequiredSparseRootProperties,
+                "root");
+            if (structureError is not null)
+            {
+                return FullRepairReport(
+                    batch,
+                    structureError.Code,
+                    structureError.Message);
+            }
+
+            if (!TryGetRequiredString(root, "envelopeVersion", out var version)
+                || !string.Equals(
+                    version,
+                    SparseResponseEnvelopeVersion,
+                    StringComparison.Ordinal))
+            {
+                return FullRepairReport(
+                    batch,
+                    "version_invalid",
+                    "The response envelope version is invalid.");
+            }
+
+            if (!TryGetRequiredString(root, "batchId", out var batchIdText)
+                || !Guid.TryParse(batchIdText, out var batchId)
+                || batchId != batch.BatchId)
+            {
+                return FullRepairReport(
+                    batch,
+                    "batch_id_invalid",
+                    "The response batch ID does not match.");
+            }
+
+            if (root.GetProperty("noActionMessageIds").ValueKind
+                    != JsonValueKind.Array
+                || root.GetProperty("moderations").ValueKind
+                    != JsonValueKind.Array
+                || root.TryGetProperty("replies", out var repliesElement)
+                    && repliesElement.ValueKind != JsonValueKind.Array)
+            {
+                return FullRepairReport(
+                    batch,
+                    "response_collections_invalid",
+                    "noActionMessageIds, moderations, and optional replies must be arrays.");
+            }
+
+            Dictionary<string, ModerationBatchMessage> sourceById;
+            try
+            {
+                sourceById = batch.Messages.ToDictionary(
+                    item => item.TemporaryMessageId,
+                    StringComparer.Ordinal);
+            }
+            catch (ArgumentException)
+            {
+                return FullRepairReport(
+                    batch,
+                    "message_snapshot_invalid",
+                    "Temporary message IDs in the batch must be unique.");
+            }
+
+            var replyTemplatesById = new Dictionary<string, ChatReplyTemplatePrompt>(
+                StringComparer.Ordinal);
+            foreach (var template in batch.ReplyTemplates)
+            {
+                if (string.IsNullOrWhiteSpace(template.TemplateId)
+                    || !replyTemplatesById.TryAdd(template.TemplateId, template))
+                {
+                    return FullRepairReport(
+                        batch,
+                        "reply_template_snapshot_invalid",
+                        "Reply-template IDs in the batch must be non-empty and unique.");
+                }
+            }
+
+            var claimed = new HashSet<string>(StringComparer.Ordinal);
+            var invalidIds = new HashSet<string>(StringComparer.Ordinal);
+            var validatedById = new Dictionary<string, ValidatedModerationDecision>(
+                StringComparer.Ordinal);
+            var issues = new List<ModerationValidationIssue>();
+            var localFallbackIds = new HashSet<string>(StringComparer.Ordinal);
+            var requiresFullRepair = false;
+
+            foreach (var element in root
+                .GetProperty("noActionMessageIds")
+                .EnumerateArray())
+            {
+                if (element.ValueKind != JsonValueKind.String
+                    || string.IsNullOrWhiteSpace(element.GetString()))
+                {
+                    issues.Add(
+                        new(
+                            "message_id_invalid",
+                            "Every no-action entry must contain a temporary message ID."));
+                    requiresFullRepair = true;
+                    continue;
+                }
+
+                var messageId = element.GetString()!;
+                if (!sourceById.ContainsKey(messageId))
+                {
+                    issues.Add(
+                        new(
+                            "message_id_unknown",
+                            $"Temporary message ID '{messageId}' is not part of the batch."));
+                    requiresFullRepair = true;
+                    continue;
+                }
+
+                if (!claimed.Add(messageId))
+                {
+                    MarkMessageInvalid(
+                        messageId,
+                        "message_id_duplicate",
+                        $"Temporary message ID '{messageId}' occurs more than once.",
+                        invalidIds,
+                        validatedById,
+                        issues);
+                    continue;
+                }
+
+                validatedById[messageId] = NoActionDecision(messageId);
+            }
+
+            foreach (var element in root.GetProperty("moderations").EnumerateArray())
+            {
+                var decisionResult = ValidateV6Decision(
+                    element,
+                    sourceById,
+                    batch.Context.EffectivePolicy,
+                    allowMissingRuleFallback);
+                if (decisionResult.MessageId is null)
+                {
+                    issues.Add(
+                        new(
+                            decisionResult.Error!.Code,
+                            decisionResult.Error.Message));
+                    requiresFullRepair = true;
+                    continue;
+                }
+
+                var messageId = decisionResult.MessageId;
+                if (!sourceById.ContainsKey(messageId))
+                {
+                    issues.Add(
+                        new(
+                            "message_id_unknown",
+                            $"Temporary message ID '{messageId}' is not part of the batch."));
+                    requiresFullRepair = true;
+                    continue;
+                }
+
+                if (!claimed.Add(messageId))
+                {
+                    MarkMessageInvalid(
+                        messageId,
+                        "message_id_duplicate",
+                        $"Temporary message ID '{messageId}' occurs in more than one result group.",
+                        invalidIds,
+                        validatedById,
+                        issues);
+                    continue;
+                }
+
+                if (decisionResult.Error is not null)
+                {
+                    MarkMessageInvalid(
+                        messageId,
+                        decisionResult.Error.Code,
+                        decisionResult.Error.Message,
+                        invalidIds,
+                        validatedById,
+                        issues);
+                    continue;
+                }
+
+                validatedById[messageId] = decisionResult.Decision!;
+                if (decisionResult.UsedLocalFallback)
+                {
+                    localFallbackIds.Add(messageId);
+                }
+            }
+
+            if (root.TryGetProperty("replies", out repliesElement))
+            {
+                foreach (var element in repliesElement.EnumerateArray())
+                {
+                    var replyResult = ValidateV6Reply(
+                        element,
+                        sourceById,
+                        replyTemplatesById,
+                        claimed);
+                    if (replyResult.MessageId is null)
+                    {
+                        issues.Add(
+                            new(
+                                replyResult.Error!.Code,
+                                replyResult.Error.Message));
+                        requiresFullRepair = true;
+                        continue;
+                    }
+
+                    if (replyResult.Error is not null)
+                    {
+                        MarkMessageInvalid(
+                            replyResult.MessageId,
+                            replyResult.Error.Code,
+                            replyResult.Error.Message,
+                            invalidIds,
+                            validatedById,
+                            issues);
+                        continue;
+                    }
+
+                    validatedById[replyResult.MessageId] = replyResult.Decision!;
+                }
+            }
+
+            foreach (var messageId in sourceById.Keys)
+            {
+                if (!claimed.Contains(messageId))
+                {
+                    MarkMessageInvalid(
+                        messageId,
+                        "decision_missing",
+                        $"Temporary message ID '{messageId}' is missing from the response.",
+                        invalidIds,
+                        validatedById,
+                        issues);
+                }
+            }
+
+            var validDecisions = batch.Messages
+                .Select(item => item.TemporaryMessageId)
+                .Where(validatedById.ContainsKey)
+                .Select(messageId => validatedById[messageId])
+                .ToArray();
+            if (issues.Count == 0)
+            {
+                return new ModerationValidationReport(
+                    new ValidatedModerationEnvelope(batch.BatchId, validDecisions),
+                    validDecisions,
+                    [],
+                    [],
+                    RequiresFullRepair: false)
+                {
+                    LocalFallbackMessageIds = batch.Messages
+                        .Select(item => item.TemporaryMessageId)
+                        .Where(localFallbackIds.Contains)
+                        .ToArray(),
+                };
+            }
+
+            var repairMessageIds = requiresFullRepair
+                ? batch.Messages
+                    .Select(item => item.TemporaryMessageId)
+                    .ToArray()
+                : batch.Messages
+                    .Select(item => item.TemporaryMessageId)
+                    .Where(invalidIds.Contains)
+                    .ToArray();
+            return new ModerationValidationReport(
+                Envelope: null,
+                validDecisions,
+                issues,
+                repairMessageIds,
+                requiresFullRepair)
+            {
+                LocalFallbackMessageIds = validDecisions
+                    .Select(item => item.TemporaryMessageId)
+                    .Where(localFallbackIds.Contains)
+                    .ToArray(),
+            };
+        }
+        catch (JsonException exception)
+        {
+            return FullRepairReport(
+                batch,
+                "json_invalid",
+                $"The model response is invalid JSON: {exception.Message}");
+        }
+        catch (ArgumentException exception)
+        {
+            return FullRepairReport(batch, "envelope_invalid", exception.Message);
+        }
+    }
+
+    private static SparseDecisionValidationResult ValidateV6Decision(
+        JsonElement element,
+        Dictionary<string, ModerationBatchMessage> sourceById,
+        EffectivePolicySnapshot activePolicy,
+        bool allowMissingRuleFallback,
+        string? keyedMessageId = null,
+        bool sanitizeOptionalTriggers = false)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return SparseDecisionValidationResult.Invalid(
+                null,
+                "decision_not_object",
+                "Every moderation must be a JSON object.");
+        }
+
+        var isKeyedDecision = keyedMessageId is not null;
+        string? messageId = keyedMessageId;
+        if (!isKeyedDecision
+            && element.TryGetProperty("messageId", out var messageIdElement)
+            && messageIdElement.ValueKind == JsonValueKind.String)
+        {
+            messageId = messageIdElement.GetString();
+        }
+
+        var structureError = ValidateObjectShape(
+            element,
+            isKeyedDecision
+                ? KeyedModerationProperties
+                : SparseModerationProperties,
+            isKeyedDecision
+                ? RequiredKeyedModerationProperties
+                : RequiredSparseModerationProperties,
+            "moderation");
+        if (structureError is not null)
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                structureError.Code,
+                messageId is null
+                    ? structureError.Message
+                    : $"Decision '{messageId}': {structureError.Message}");
+        }
+
+        if (string.IsNullOrWhiteSpace(messageId))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                null,
+                "message_id_invalid",
+                "A moderation contains a missing temporary message ID.");
+        }
+
+        if (!sourceById.TryGetValue(messageId, out var source))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "message_id_unknown",
+                $"Temporary message ID '{messageId}' is not part of the batch.");
+        }
+
+        if (!TryGetRequiredString(element, "action", out var actionText)
+            || !TryParseAction(actionText, out var action)
+            || action == ModerationActionKind.None)
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "action_invalid",
+                $"Decision '{messageId}' must use delete, timeout, or ban.");
+        }
+
+        var hasTimeout = element.TryGetProperty(
+            "timeoutSeconds",
+            out var timeoutElement);
+        if (action == ModerationActionKind.Timeout && !hasTimeout)
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "timeout_missing",
+                $"Decision '{messageId}' requires timeoutSeconds.");
+        }
+
+        if (action != ModerationActionKind.Timeout && hasTimeout)
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "timeout_for_non_timeout",
+                $"Decision '{messageId}' must omit timeoutSeconds for delete or ban.");
+        }
+
+        int? timeoutSeconds = hasTimeout
+            && timeoutElement.ValueKind == JsonValueKind.Number
+            && timeoutElement.TryGetInt32(out var value)
+                ? value
+                : hasTimeout
+                    ? int.MinValue
+                    : null;
+
+        ModerationRuleDefinition? rule = null;
+        var usedLocalFallback = false;
+        var hasRuleCode = element.TryGetProperty("ruleCode", out var ruleElement);
+        if (hasRuleCode
+            && ruleElement.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(ruleElement.GetString()))
+        {
+            rule = activePolicy.FindRule(ruleElement.GetString()!);
+            if (rule is null)
+            {
+                return SparseDecisionValidationResult.Invalid(
+                    messageId,
+                    "rule_inactive",
+                    $"Decision '{messageId}' selects an unknown or inactive ruleCode.");
+            }
+        }
+        else if (allowMissingRuleFallback)
+        {
+            rule = ResolveSafeMissingRuleFallback(activePolicy, source);
+            usedLocalFallback = rule is not null;
+        }
+
+        if (rule is null)
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "rule_invalid",
+                $"Decision '{messageId}' requires an active ruleCode.");
+        }
+
+        if (!activePolicy.Contains(rule.PolicySet))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "policy_inactive",
+                $"Decision '{messageId}' selects a rule from an inactive policy set.");
+        }
+
+        (action, timeoutSeconds) =
+            ModerationActionRules.NormalizeAiSuggestionForRule(
+                action,
+                timeoutSeconds,
+                rule.RuleCode);
+        if (!ModerationActionRules.IsValidAiSuggestion(action, timeoutSeconds))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "timeout_invalid",
+                $"Decision '{messageId}' has an invalid action or timeout value.");
+        }
+
+        if (!ModerationActionRules.IsValidAiRuleAction(action, rule.RuleCode))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "action_rule_invalid",
+                $"Decision '{messageId}': The selected rule cannot justify a permanent ban on its own.");
+        }
+
+        if (string.Equals(
+                rule.RuleCode,
+                ModerationRuleCodes.Backseatgaming,
+                StringComparison.Ordinal)
+            && !HasMinimumBackseatContext(source.Message.Text.LowerText))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "backseat_context_insufficient",
+                $"Decision '{messageId}': Backseatgaming requires a concrete multi-word statement and cannot be inferred from a question or fragment.");
+        }
+
+        if (string.Equals(
+                rule.RuleCode,
+                ModerationRuleCodes.Spam,
+                StringComparison.Ordinal)
+            && source.Message.IsTwitchEmoteOnly
+            && source.Message.TwitchEmoteCount < ModerationRuleCodes.MinimumEmoteSpamCount)
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "spam_emote_threshold_not_met",
+                $"Decision '{messageId}': Emote-only spam requires at least {ModerationRuleCodes.MinimumEmoteSpamCount} Twitch emotes; the message contains {source.Message.TwitchEmoteCount}.");
+        }
+
+        if (source.Message.IsTwitchEmoteOnly
+            && source.Message.TwitchEmoteCount is > 0
+                and < ModerationRuleCodes.MinimumEmoteSpamCount)
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "emote_only_below_spam_threshold",
+                $"Decision '{messageId}': Fewer than {ModerationRuleCodes.MinimumEmoteSpamCount} native Twitch emotes require noAction.");
+        }
+
+        var reasonElement = element.GetProperty("reason");
+        var candidateReason = reasonElement.ValueKind == JsonValueKind.String
+            && reasonElement.GetString() is { } text
+            && !text.Any(char.IsControl)
+                ? text
+                : null;
+        var reason = ModerationReasonNormalizer.Normalize(
+            candidateReason,
+            rule,
+            rule.PolicySet);
+
+        var triggerResult = ParseTriggerPhrases(
+            element.GetProperty("triggerPhrases"),
+            source.Message.Text.LowerText,
+            action);
+        if (triggerResult.Error is not null)
+        {
+            if (!sanitizeOptionalTriggers
+                || string.Equals(
+                    rule.RuleCode,
+                    ModerationRuleCodes.Backseatgaming,
+                    StringComparison.Ordinal)
+                || TrySanitizeOptionalTriggerPhrases(
+                    element.GetProperty("triggerPhrases"),
+                    source.Message.Text.LowerText,
+                    rule.RuleCode) is not { } sanitizedTriggers)
+            {
+                return SparseDecisionValidationResult.Invalid(
+                    messageId,
+                    triggerResult.Error.Code,
+                    $"Decision '{messageId}': {triggerResult.Error.Message}");
+            }
+
+            triggerResult = new(sanitizedTriggers, Error: null);
+            usedLocalFallback = true;
+        }
+
+        if (!ModerationRuleCodes.AllowsTriggerLearning(rule.RuleCode)
+            && triggerResult.TriggerPhrases!.Count != 0)
+        {
+            if (!sanitizeOptionalTriggers)
+            {
+                return SparseDecisionValidationResult.Invalid(
+                    messageId,
+                    "triggers_learning_forbidden",
+                    $"Decision '{messageId}': Personal data must not be proposed for trigger learning.");
+            }
+
+            triggerResult = new([], Error: null);
+            usedLocalFallback = true;
+        }
+
+        if (!string.Equals(
+                rule.RuleCode,
+                ModerationRuleCodes.Backseatgaming,
+                StringComparison.Ordinal))
+        {
+            var originalTriggers = triggerResult.TriggerPhrases!;
+            var evidence = ModerationTriggerEvidenceNormalizer.Normalize(
+                source.Message.Text.LowerText,
+                rule.RuleCode,
+                originalTriggers);
+            if (!evidence.SequenceEqual(originalTriggers, StringComparer.Ordinal))
+            {
+                triggerResult = new(evidence, Error: null);
+                usedLocalFallback = true;
+            }
+        }
+
+        var isBackseat = string.Equals(
+            rule.RuleCode,
+            ModerationRuleCodes.Backseatgaming,
+            StringComparison.Ordinal);
+        if (isBackseat
+            && (triggerResult.TriggerPhrases!.Count == 0
+                || triggerResult.TriggerPhrases.Any(
+                    phrase => CountLexicalTokens(phrase) < 2)))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "backseat_evidence_insufficient",
+                $"Decision '{messageId}': Backseatgaming requires at least one concrete multi-word trigger phrase.");
+        }
+
+        var insultEvidenceMissing = string.Equals(
+                rule.RuleCode,
+                ModerationRuleCodes.Insult,
+                StringComparison.Ordinal)
+            && triggerResult.TriggerPhrases!.Count == 0;
+
+        var confidenceElement = element.GetProperty("confidence");
+        if (confidenceElement.ValueKind != JsonValueKind.Number
+            || !confidenceElement.TryGetDouble(out var confidence)
+            || !double.IsFinite(confidence)
+            || confidence is < 0 or > 1)
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "confidence_invalid",
+                $"Decision '{messageId}' has an invalid confidence.");
+        }
+
+        if (insultEvidenceMissing)
+        {
+            // An insult without a contiguous target + degradation span is too
+            // ambiguous to surface. Treat it as no action locally instead of
+            // spending another full model run on optional evidence metadata.
+            return SparseDecisionValidationResult.Valid(
+                NoActionDecision(messageId),
+                usedLocalFallback: true);
+        }
+
+        return SparseDecisionValidationResult.Valid(
+            new ValidatedModerationDecision(
+                messageId,
+                action,
+                timeoutSeconds,
+                rule.PolicySet,
+                reason,
+                triggerResult.TriggerPhrases!,
+                confidence,
+                rule.RuleCode),
+            usedLocalFallback);
+    }
+
+    private static SparseDecisionValidationResult ValidateV6Reply(
+        JsonElement element,
+        Dictionary<string, ModerationBatchMessage> sourceById,
+        Dictionary<string, ChatReplyTemplatePrompt> replyTemplatesById,
+        HashSet<string>? claimed,
+        string? keyedMessageId = null)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return SparseDecisionValidationResult.Invalid(
+                null,
+                "reply_not_object",
+                "Every reply must be a JSON object.");
+        }
+
+        var isKeyedDecision = keyedMessageId is not null;
+        string? messageId = keyedMessageId;
+        if (!isKeyedDecision
+            && element.TryGetProperty("messageId", out var messageIdElement)
+            && messageIdElement.ValueKind == JsonValueKind.String)
+        {
+            messageId = messageIdElement.GetString();
+        }
+
+        var structureError = ValidateObjectShape(
+            element,
+            isKeyedDecision ? KeyedReplyProperties : SparseReplyProperties,
+            isKeyedDecision ? KeyedReplyProperties : SparseReplyProperties,
+            "reply");
+        if (structureError is not null)
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                structureError.Code,
+                messageId is null
+                    ? structureError.Message
+                    : $"Reply '{messageId}': {structureError.Message}");
+        }
+
+        if (string.IsNullOrWhiteSpace(messageId)
+            || !sourceById.ContainsKey(messageId))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                null,
+                "reply_message_id_unknown",
+                "A reply contains a missing or unknown temporary message ID.");
+        }
+
+        if (claimed is not null && !claimed.Add(messageId))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "reply_message_id_duplicate",
+                $"Reply message ID '{messageId}' occurs in more than one result group.");
+        }
+
+        if (!TryGetRequiredString(element, "replyTemplateId", out var templateId)
+            || !replyTemplatesById.ContainsKey(templateId))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "reply_template_unknown",
+                $"Reply '{messageId}' selects a missing or unknown reply template.");
+        }
+
+        var confidenceElement = element.GetProperty("confidence");
+        if (confidenceElement.ValueKind != JsonValueKind.Number
+            || !confidenceElement.TryGetDouble(out var confidence)
+            || !double.IsFinite(confidence)
+            || confidence is < 0 or > 1)
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "reply_confidence_invalid",
+                $"Reply '{messageId}' requires confidence from 0 to 1.");
+        }
+
+        return SparseDecisionValidationResult.Valid(
+            NoActionDecision(messageId) with
+            {
+                ReplyTemplateId = templateId,
+                ReplyConfidence = confidence,
+            });
+    }
+
+    private static ModerationRuleDefinition? ResolveSafeMissingRuleFallback(
+        EffectivePolicySnapshot activePolicy,
+        ModerationBatchMessage source)
+    {
+        var matchingRules = source.LocalMatches
+            .Select(match => activePolicy.FindRule(match.RuleCode))
+            .Where(rule => rule is not null)
+            .DistinctBy(rule => rule!.RuleCode, StringComparer.Ordinal)
+            .ToArray();
+        if (matchingRules.Length == 1)
+        {
+            return matchingRules[0];
+        }
+
+        return activePolicy.ActiveRules.Count == 1
+            ? activePolicy.ActiveRules[0]
+            : null;
+    }
+
+    private static ValidatedModerationDecision NoActionDecision(string messageId) =>
+        new(
+            messageId,
+            ModerationActionKind.None,
+            TimeoutSeconds: null,
+            PolicySet: null,
+            Reason: string.Empty,
+            TriggerPhrases: [],
+            Confidence: 1D);
+
+    private static void MarkMessageInvalid(
+        string messageId,
+        string code,
+        string message,
+        HashSet<string> invalidIds,
+        Dictionary<string, ValidatedModerationDecision> validatedById,
+        List<ModerationValidationIssue> issues)
+    {
+        invalidIds.Add(messageId);
+        validatedById.Remove(messageId);
+        issues.Add(new(code, message, messageId));
+    }
+
+    private static ModerationValidationReport FullRepairReport(
+        ModerationBatch batch,
+        string code,
+        string message) =>
+        new(
+            Envelope: null,
+            ValidDecisions: [],
+            Issues: [new(code, message)],
+            RepairMessageIds: batch.Messages
+                .Select(item => item.TemporaryMessageId)
+                .ToArray(),
+            RequiresFullRepair: true);
+
+    private static ModerationValidationReport FromLegacyResult(
+        EnvelopeValidationResult result,
+        ModerationBatch batch)
+    {
+        if (result.IsValid)
+        {
+            return new(
+                result.Envelope,
+                result.Envelope!.Decisions,
+                [],
+                [],
+                RequiresFullRepair: false);
+        }
+
+        return new(
+            Envelope: null,
+            ValidDecisions: [],
+            Issues: result.Errors
+                .Select(error => new ModerationValidationIssue(
+                    error.Code,
+                    error.Message))
+                .ToArray(),
+            RepairMessageIds: batch.Messages
+                .Select(item => item.TemporaryMessageId)
+                .ToArray(),
+            RequiresFullRepair: true);
+    }
+
+    private static EnvelopeValidationResult ToEnvelopeValidationResult(
+        ModerationValidationReport report) =>
+        report.IsValid
+            ? new EnvelopeValidationResult(report.Envelope, [])
+            : EnvelopeValidationResult.Invalid(
+                report.Issues
+                    .Select(issue => new EnvelopeValidationError(
+                        issue.Code,
+                        issue.Message))
+                    .ToArray());
+
+    private static bool IsCompactResponse(string rawJson) =>
+        HasEnvelopeVersion(rawJson, SparseResponseEnvelopeVersion)
+        || HasEnvelopeVersion(rawJson, KeyedResponseEnvelopeVersion);
+
+    private static bool IsSparseV6(string rawJson) =>
+        HasEnvelopeVersion(rawJson, SparseResponseEnvelopeVersion);
+
+    private static bool HasEnvelopeVersion(string rawJson, string expectedVersion)
+    {
+        ArgumentNullException.ThrowIfNull(rawJson);
+        try
+        {
+            using var document = JsonDocument.Parse(
+                rawJson,
+                new JsonDocumentOptions
+                {
+                    AllowTrailingCommas = false,
+                    CommentHandling = JsonCommentHandling.Disallow,
+                    MaxDepth = 16,
+                });
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty(
+                    "envelopeVersion",
+                    out var versionElement)
+                && versionElement.ValueKind == JsonValueKind.String
+                && string.Equals(
+                    versionElement.GetString(),
+                    expectedVersion,
+                    StringComparison.Ordinal);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
 
     private static EnvelopeValidationResult ValidateCore(
         string rawJson,
@@ -257,6 +1541,27 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 "backseat_context_insufficient",
                 $"Decision '{messageId}': Backseatgaming requires a concrete multi-word statement and cannot be inferred from a question or fragment.");
         }
+        if (action != ModerationActionKind.None
+            && string.Equals(
+                ruleResult.Rule?.RuleCode,
+                ModerationRuleCodes.Spam,
+                StringComparison.Ordinal)
+            && source.Message.IsTwitchEmoteOnly
+            && source.Message.TwitchEmoteCount < ModerationRuleCodes.MinimumEmoteSpamCount)
+        {
+            return DecisionValidationResult.Invalid(
+                "spam_emote_threshold_not_met",
+                $"Decision '{messageId}': Emote-only spam requires at least {ModerationRuleCodes.MinimumEmoteSpamCount} Twitch emotes; the message contains {source.Message.TwitchEmoteCount}.");
+        }
+        if (action != ModerationActionKind.None
+            && source.Message.IsTwitchEmoteOnly
+            && source.Message.TwitchEmoteCount is > 0
+                and < ModerationRuleCodes.MinimumEmoteSpamCount)
+        {
+            return DecisionValidationResult.Invalid(
+                "emote_only_below_spam_threshold",
+                $"Decision '{messageId}': Fewer than {ModerationRuleCodes.MinimumEmoteSpamCount} native Twitch emotes require noAction.");
+        }
 
         var reasonElement = element.GetProperty("reason");
         string reason;
@@ -304,6 +1609,17 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             return DecisionValidationResult.Invalid(
                 "triggers_learning_forbidden",
                 $"Decision '{messageId}': Personal data must not be proposed for trigger learning.");
+        }
+        if (!string.Equals(
+                ruleResult.Rule?.RuleCode,
+                ModerationRuleCodes.Backseatgaming,
+                StringComparison.Ordinal))
+        {
+            triggerResult = new(
+                triggerResult.TriggerPhrases!
+                    .Where(LearningTriggerPhraseFilter.IsContextual)
+                    .ToArray(),
+                Error: null);
         }
         if (string.Equals(
                 ruleResult.Rule?.RuleCode,
@@ -521,6 +1837,45 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
         return new(rule, null);
     }
 
+    private static List<string>? TrySanitizeOptionalTriggerPhrases(
+        JsonElement element,
+        string lowerSourceText,
+        string? ruleCode)
+    {
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var triggers = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var triggerElement in element.EnumerateArray())
+        {
+            if (triggers.Count == 32)
+            {
+                break;
+            }
+
+            if (triggerElement.ValueKind != JsonValueKind.String
+                || string.IsNullOrEmpty(triggerElement.GetString()))
+            {
+                continue;
+            }
+
+            var normalized = triggerElement.GetString()!.ToLowerInvariant();
+            if (normalized.Length <= lowerSourceText.Length
+                && lowerSourceText.Contains(normalized, StringComparison.Ordinal)
+                && seen.Add(normalized))
+            {
+                triggers.Add(normalized);
+            }
+        }
+
+        return ModerationTriggerEvidenceNormalizer
+            .Normalize(lowerSourceText, ruleCode, triggers)
+            .ToList();
+    }
+
     private static TriggerParseResult ParseTriggerPhrases(
         JsonElement element,
         string lowerSourceText,
@@ -583,6 +1938,17 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
         JsonElement element,
         HashSet<string> expectedProperties,
         string location)
+        => ValidateObjectShape(
+            element,
+            expectedProperties,
+            expectedProperties,
+            location);
+
+    private static EnvelopeValidationError? ValidateObjectShape(
+        JsonElement element,
+        HashSet<string> allowedProperties,
+        HashSet<string> requiredProperties,
+        string location)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var property in element.EnumerateObject())
@@ -594,7 +1960,7 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                     $"Property '{property.Name}' is duplicated in {location}.");
             }
 
-            if (!expectedProperties.Contains(property.Name))
+            if (!allowedProperties.Contains(property.Name))
             {
                 return new(
                     "property_unknown",
@@ -602,7 +1968,7 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             }
         }
 
-        var missing = expectedProperties.FirstOrDefault(property => !seen.Contains(property));
+        var missing = requiredProperties.FirstOrDefault(property => !seen.Contains(property));
         return missing is null
             ? null
             : new("property_missing", $"Property '{missing}' is missing in {location}.");
@@ -701,6 +2067,28 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
 
         public static DecisionValidationResult Invalid(string code, string message) =>
             new(null, new(code, message));
+    }
+
+    private sealed record SparseDecisionValidationResult(
+        string? MessageId,
+        ValidatedModerationDecision? Decision,
+        EnvelopeValidationError? Error,
+        bool UsedLocalFallback)
+    {
+        public static SparseDecisionValidationResult Valid(
+            ValidatedModerationDecision decision,
+            bool usedLocalFallback = false) =>
+            new(
+                decision.TemporaryMessageId,
+                decision,
+                null,
+                usedLocalFallback);
+
+        public static SparseDecisionValidationResult Invalid(
+            string? messageId,
+            string code,
+            string message) =>
+            new(messageId, null, new(code, message), UsedLocalFallback: false);
     }
 
     private sealed record PolicyParseResult(

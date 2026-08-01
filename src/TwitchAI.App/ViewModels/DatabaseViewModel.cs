@@ -37,6 +37,7 @@ public sealed partial class DatabaseViewModel : ObservableObject
         {
             ["action_attempts"] = "Twitch-Versuche",
             ["ai_run_metrics"] = "AI-Läufe",
+            ["ai_validation_attempts"] = "AI-Validierungsdiagnose",
             ["blacklist_rules"] = "Blacklist-Regeln",
             ["channel_context"] = "Kanalkontext",
             ["chat_message_snapshots"] = "Nachrichten-Snapshots",

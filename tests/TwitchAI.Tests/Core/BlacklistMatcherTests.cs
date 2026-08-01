@@ -45,6 +45,48 @@ public sealed class BlacklistMatcherTests
     }
 
     [Theory]
+    [InlineData("ihr schweine", true)]
+    [InlineData("schweinebraten", false)]
+    public void Match_RequiresLexicalBoundariesForPhraseMatches(
+        string message,
+        bool expectedMatch)
+    {
+        var text = new ChatTextNormalizer().Process(message);
+        var policy = new EffectivePolicySnapshot(
+            [new PolicySetRevision(PolicySetCode.General, 1)],
+            "policy");
+
+        var matches = new BlacklistMatcher().Match(
+            text,
+            policy,
+            [Rule(1, ModerationRuleCodes.Insult, PolicySetCode.General, "schweine", 1)]);
+
+        Assert.Equal(expectedMatch, matches.Count == 1);
+    }
+
+    [Fact]
+    public void Match_TreatsUnderscoreAsPartOfAWord()
+    {
+        var text = new ChatTextNormalizer().Process("@x_shadow");
+        var policy = new EffectivePolicySnapshot(
+            [new PolicySetRevision(PolicySetCode.General, 1)],
+            "policy");
+        var matcher = new BlacklistMatcher();
+
+        var partial = matcher.Match(
+            text,
+            policy,
+            [Rule(1, ModerationRuleCodes.Insult, PolicySetCode.General, "shadow", 1)]);
+        var complete = matcher.Match(
+            text,
+            policy,
+            [Rule(2, ModerationRuleCodes.Insult, PolicySetCode.General, "x_shadow", 1)]);
+
+        Assert.Empty(partial);
+        Assert.Equal(2, Assert.Single(complete).PhraseId);
+    }
+
+    [Theory]
     [InlineData(PhraseManualOverride.Auto, 1, 0, true)]
     [InlineData(PhraseManualOverride.Auto, 3, 2, true)]
     [InlineData(PhraseManualOverride.Auto, 2, 2, false)]

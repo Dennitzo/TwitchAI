@@ -81,7 +81,11 @@ public sealed class CoreTwitchEventSubClient : ITwitchEventSubClient
                             message.BroadcasterId,
                             null,
                             null,
-                            null);
+                            null)
+                        {
+                            TwitchEmoteCount = message.TwitchEmoteCount,
+                            IsTwitchEmoteOnly = message.IsTwitchEmoteOnly,
+                        };
                         break;
                     }
 

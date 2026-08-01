@@ -211,10 +211,12 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                 moderationCase.Message.ChannelContext,
                 cancellationToken)
             .ConfigureAwait(false);
-        if (!StringComparer.Ordinal.Equals(
-                currentPolicy.RevisionFingerprint,
-                moderationCase.PolicyRevisionFingerprint) ||
-            !currentPolicy.Contains(request.PolicySet) ||
+        // Human-reviewed fields are authoritative. Learning can advance the
+        // policy revision while other cards are still open, but that alone
+        // must not invalidate an already reviewed proposal. Block only when
+        // the selected rule is no longer compatible with the immutable
+        // category snapshot.
+        if (!currentPolicy.Contains(request.PolicySet) ||
             currentPolicy.FindRule(request.RuleCode) is not { } selectedRule ||
             selectedRule.PolicySet != request.PolicySet)
         {
@@ -223,8 +225,8 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                 request,
                 CoreModerationCaseStatus.StalePolicy,
                 ModerationExecutionOutcome.StalePolicy,
-                "policy_changed",
-                "Die Moderationsregeln oder der Kanalkontext haben sich geändert.",
+                "selected_rule_inactive",
+                "Die ausgewählte Verstoßkategorie ist für den gespeicherten Kategorienkontext nicht mehr aktiv.",
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -909,19 +911,6 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             now,
             cancellationToken).ConfigureAwait(false);
 
-        var accepted = ModerationRuleCodes.AllowsTriggerLearning(request.RuleCode)
-            ? NormalizePhrases(request.AcceptedTriggerPhrases)
-            : [];
-        await WritePhraseFeedbackAsync(
-            connection,
-            transaction,
-            $"read-only:{moderationCase.CaseId}",
-            moderationCase,
-            request,
-            accepted,
-            now,
-            cancellationToken).ConfigureAwait(false);
-
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         _learningContextRevision.Advance();
 
@@ -1064,9 +1053,6 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
         }
 
         var twitchExecuted = completion.Outcome == ModerationExecutionOutcome.Succeeded;
-        var accepted = ModerationRuleCodes.AllowsTriggerLearning(request.RuleCode)
-            ? NormalizePhrases(request.AcceptedTriggerPhrases)
-            : [];
         var learningAccepted = twitchExecuted;
         await InsertModerationFeedbackAsync(
             connection,
@@ -1084,19 +1070,6 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             now,
             cancellationToken).ConfigureAwait(false);
 
-        if (twitchExecuted)
-        {
-            await WritePhraseFeedbackAsync(
-                connection,
-                transaction,
-                $"execution:{executionId}",
-                moderationCase,
-                request,
-                accepted,
-                now,
-                cancellationToken).ConfigureAwait(false);
-        }
-
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         if (learningAccepted)
         {
@@ -1110,240 +1083,6 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             learningAccepted,
             completion.StatusCode,
             completion.Message);
-    }
-
-    private static async Task WritePhraseFeedbackAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        string sourceEventPrefix,
-        ModerationCase moderationCase,
-        ModerationExecutionRequest request,
-        HashSet<string> accepted,
-        DateTimeOffset confirmedAt,
-        CancellationToken cancellationToken)
-    {
-        var index = 0;
-        foreach (var triggerPhrase in accepted.OrderBy(
-                     item => item,
-                     StringComparer.Ordinal))
-        {
-            var eligible = await UpdatePhraseConfirmationAsync(
-                connection,
-                transaction,
-                triggerPhrase,
-                request.PolicySet,
-                request.RuleCode!,
-                isPositive: true,
-                cancellationToken).ConfigureAwait(false);
-
-            await using var insert = connection.CreateCommand();
-            insert.Transaction = transaction;
-            insert.CommandText =
-                """
-                INSERT INTO phrase_feedback(
-                    case_id, source_kind, source_event_id, label_action,
-                    rule_code, trigger_phrase, policy_set, is_positive,
-                    category_id, message_normalized, eligible, confirmed_utc)
-                VALUES(
-                    @case_id, 'operator_execute', @source_event_id, @label_action,
-                    @rule_code, @trigger_phrase, @policy_set, 1,
-                    @category_id, @message_normalized, @eligible, @confirmed_utc);
-                """;
-            insert.Parameters.AddWithValue("@case_id", moderationCase.CaseId);
-            insert.Parameters.AddWithValue(
-                "@source_event_id",
-                $"{sourceEventPrefix}:{index++}");
-            insert.Parameters.AddWithValue("@label_action", ToDatabaseAction(request.Action));
-            insert.Parameters.AddWithValue("@rule_code", request.RuleCode!);
-            insert.Parameters.AddWithValue("@trigger_phrase", triggerPhrase);
-            insert.Parameters.AddWithValue(
-                "@policy_set",
-                ToDatabasePolicySet(request.PolicySet));
-            insert.Parameters.AddWithValue(
-                "@category_id",
-                SqliteData.DbValue(moderationCase.Message.ChannelContext.CategoryId));
-            insert.Parameters.AddWithValue(
-                "@message_normalized",
-                moderationCase.Message.Text.RuleNormalizedText);
-            insert.Parameters.AddWithValue("@eligible", eligible ? 1 : 0);
-            insert.Parameters.AddWithValue(
-                "@confirmed_utc",
-                SqliteData.ToDatabaseTimestamp(confirmedAt));
-            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-    }
-
-    private static async Task<bool> UpdatePhraseConfirmationAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        string normalizedPhrase,
-        PolicySetCode policySet,
-        string ruleCode,
-        bool isPositive,
-        CancellationToken cancellationToken)
-    {
-        long? phraseId = null;
-        long? scopeId = null;
-        await using (var read = connection.CreateCommand())
-        {
-            read.Transaction = transaction;
-            read.CommandText =
-                """
-                SELECT p.phrase_id, s.scope_id
-                FROM phrase_rules p
-                INNER JOIN blacklist_rules r ON r.rule_id = p.rule_id
-                INNER JOIN policy_sets s ON s.scope_id = r.scope_id
-                WHERE s.broadcaster_id = @global_scope
-                  AND s.set_code = @policy_set
-                  AND r.rule_code = @rule_code
-                  AND p.normalized_phrase = @phrase
-                  AND p.archived_utc IS NULL
-                  AND r.archived_utc IS NULL
-                LIMIT 1;
-                """;
-            read.Parameters.AddWithValue(
-                "@global_scope",
-                GlobalPolicyStorage.BroadcasterId);
-            read.Parameters.AddWithValue("@policy_set", ToDatabasePolicySet(policySet));
-            read.Parameters.AddWithValue("@rule_code", ruleCode);
-            read.Parameters.AddWithValue("@phrase", normalizedPhrase);
-            await using var reader = await read.ExecuteReaderAsync(cancellationToken)
-                .ConfigureAwait(false);
-            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                phraseId = reader.GetInt64(0);
-                scopeId = reader.GetInt64(1);
-            }
-        }
-
-        if (!phraseId.HasValue && isPositive)
-        {
-            long ruleId;
-            await using (var readRule = connection.CreateCommand())
-            {
-                readRule.Transaction = transaction;
-                readRule.CommandText =
-                    """
-                    SELECT r.rule_id, s.scope_id
-                    FROM blacklist_rules r
-                    INNER JOIN policy_sets s ON s.scope_id = r.scope_id
-                    WHERE s.broadcaster_id = @global_scope
-                      AND s.set_code = @policy_set
-                      AND r.rule_code = @rule_code
-                      AND s.enabled = 1
-                      AND s.archived_utc IS NULL
-                      AND r.enabled = 1
-                      AND r.archived_utc IS NULL
-                    LIMIT 1;
-                    """;
-                readRule.Parameters.AddWithValue(
-                    "@global_scope",
-                    GlobalPolicyStorage.BroadcasterId);
-                readRule.Parameters.AddWithValue(
-                    "@policy_set",
-                    ToDatabasePolicySet(policySet));
-                readRule.Parameters.AddWithValue("@rule_code", ruleCode);
-                await using var reader = await readRule
-                    .ExecuteReaderAsync(cancellationToken)
-                    .ConfigureAwait(false);
-                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    return false;
-                }
-
-                ruleId = reader.GetInt64(0);
-                scopeId = reader.GetInt64(1);
-            }
-
-            var now = SqliteData.ToDatabaseTimestamp(DateTimeOffset.UtcNow);
-            await using (var insert = connection.CreateCommand())
-            {
-                insert.Transaction = transaction;
-                insert.CommandText =
-                    """
-                    INSERT OR IGNORE INTO phrase_rules(
-                        rule_id, phrase, normalized_phrase, enabled,
-                        manual_override, positive_confirmations, negative_confirmations,
-                        row_version, created_utc, updated_utc)
-                    VALUES(
-                        @rule_id, @phrase, @phrase, 1,
-                        'auto', 0, 0,
-                        1, @now, @now);
-                    """;
-                insert.Parameters.AddWithValue("@rule_id", ruleId);
-                insert.Parameters.AddWithValue("@phrase", normalizedPhrase);
-                insert.Parameters.AddWithValue("@now", now);
-                await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            await using (var readInserted = connection.CreateCommand())
-            {
-                readInserted.Transaction = transaction;
-                readInserted.CommandText =
-                    """
-                    SELECT phrase_id
-                    FROM phrase_rules
-                    WHERE rule_id = @rule_id
-                      AND normalized_phrase = @phrase
-                      AND archived_utc IS NULL;
-                    """;
-                readInserted.Parameters.AddWithValue("@rule_id", ruleId);
-                readInserted.Parameters.AddWithValue("@phrase", normalizedPhrase);
-                var value = await readInserted.ExecuteScalarAsync(cancellationToken)
-                    .ConfigureAwait(false);
-                phraseId = value is null
-                    ? null
-                    : Convert.ToInt64(value, CultureInfo.InvariantCulture);
-            }
-        }
-
-        if (phraseId.HasValue)
-        {
-            await using var update = connection.CreateCommand();
-            update.Transaction = transaction;
-            update.CommandText = isPositive
-                ? """
-                  UPDATE phrase_rules
-                  SET positive_confirmations = positive_confirmations + 1,
-                      row_version = row_version + 1,
-                      updated_utc = @updated_utc
-                  WHERE phrase_id = @phrase_id;
-                  """
-                : """
-                  UPDATE phrase_rules
-                  SET negative_confirmations = negative_confirmations + 1,
-                      row_version = row_version + 1,
-                      updated_utc = @updated_utc
-                  WHERE phrase_id = @phrase_id;
-                  """;
-            update.Parameters.AddWithValue("@phrase_id", phraseId.Value);
-            update.Parameters.AddWithValue(
-                "@updated_utc",
-                SqliteData.ToDatabaseTimestamp(DateTimeOffset.UtcNow));
-            await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-
-            if (scopeId.HasValue)
-            {
-                await using var bumpRevision = connection.CreateCommand();
-                bumpRevision.Transaction = transaction;
-                bumpRevision.CommandText =
-                    """
-                    UPDATE policy_sets
-                    SET revision = revision + 1,
-                        row_version = row_version + 1,
-                        updated_utc = @updated_utc
-                    WHERE scope_id = @scope_id;
-                    """;
-                bumpRevision.Parameters.AddWithValue("@scope_id", scopeId.Value);
-                bumpRevision.Parameters.AddWithValue(
-                    "@updated_utc",
-                    SqliteData.ToDatabaseTimestamp(DateTimeOffset.UtcNow));
-                await bumpRevision.ExecuteNonQueryAsync(cancellationToken)
-                    .ConfigureAwait(false);
-            }
-        }
-
-        return phraseId.HasValue;
     }
 
     private static async Task InsertModerationFeedbackAsync(
@@ -1393,14 +1132,6 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             "@decided_utc",
             SqliteData.ToDatabaseTimestamp(decidedAt));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private HashSet<string> NormalizePhrases(IEnumerable<string> phrases)
-    {
-        return phrases
-            .Select(_normalizer.Normalize)
-            .Where(item => item.Length > 0)
-            .ToHashSet(StringComparer.Ordinal);
     }
 
     private static string ToDatabaseAction(ModerationActionKind action)

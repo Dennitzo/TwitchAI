@@ -186,9 +186,9 @@
                 <Expander
                   Grid.Row="2"
                   HorizontalAlignment="Stretch"
-                  Header="Trefferphrasen"
+                  Header="AI-Trefferbeleg"
                   HorizontalContentAlignment="Stretch"
-                  Visibility="{x:Bind ModerationEditorVisibility, Mode=OneWay}">
+                  Visibility="{x:Bind TriggerEvidenceVisibility, Mode=OneWay}">
                   <ItemsControl
                     Margin="0,4,0,0"
                     ItemsSource="{x:Bind TriggerPhrases}">
@@ -196,8 +196,11 @@
                       <DataTemplate x:DataType="vm:TriggerPhraseItem">
                         <CheckBox
                           MinHeight="28"
-                          Content="{x:Bind Phrase}"
-                          IsChecked="{x:Bind IsSelected, Mode=TwoWay}" />
+                          IsChecked="{x:Bind IsSelected, Mode=TwoWay}">
+                          <TextBlock
+                            Text="{x:Bind Phrase}"
+                            TextWrapping="Wrap" />
+                        </CheckBox>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>

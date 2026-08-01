@@ -36,13 +36,6 @@ public interface IMessageAvailabilityStore
         DateTimeOffset messageReceivedAt,
         CancellationToken cancellationToken = default);
 
-    Task<bool> AcceptExternalDeleteFeedbackAsync(
-        string eventSubMessageId,
-        long caseId,
-        string triggerPhrase,
-        PolicySetCode policySet,
-        CancellationToken cancellationToken = default);
-
     Task<int> DeleteUnlinkedOlderThanAsync(
         DateTimeOffset cutoff,
         CancellationToken cancellationToken = default) =>
@@ -53,15 +46,14 @@ public sealed class SqliteMessageAvailabilityStore : IMessageAvailabilityStore
 {
     private readonly ISqliteConnectionFactory _connectionFactory;
     private readonly ISqliteWriteCoordinator _writeCoordinator;
-    private readonly IChatTextNormalizer _normalizer;
 
     public SqliteMessageAvailabilityStore(
         ISqliteConnectionFactory connectionFactory,
         IChatTextNormalizer normalizer,
         ISqliteWriteCoordinator? writeCoordinator = null)
     {
+        ArgumentNullException.ThrowIfNull(normalizer);
         _connectionFactory = connectionFactory;
-        _normalizer = normalizer;
         _writeCoordinator = writeCoordinator ?? SqliteWriteCoordinator.ProcessWide;
     }
 
@@ -391,129 +383,6 @@ public sealed class SqliteMessageAvailabilityStore : IMessageAvailabilityStore
                 1);
     }
 
-    public async Task<bool> AcceptExternalDeleteFeedbackAsync(
-        string eventSubMessageId,
-        long caseId,
-        string triggerPhrase,
-        PolicySetCode policySet,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(eventSubMessageId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(triggerPhrase);
-        var normalizedPhrase = _normalizer.Normalize(triggerPhrase);
-
-        await using var writeLease = await _writeCoordinator
-            .AcquireAsync(cancellationToken)
-            .ConfigureAwait(false);
-        await using var connection = await _connectionFactory
-            .OpenConnectionAsync(cancellationToken)
-            .ConfigureAwait(false);
-        await using var transaction = connection.BeginTransaction();
-
-        string? categoryId;
-        string messageNormalized;
-        string? violationRuleCode;
-        string storedPolicySet;
-        await using (var read = connection.CreateCommand())
-        {
-            read.Transaction = transaction;
-            read.CommandText =
-                """
-                SELECT c.category_id, c.message_text_normalized,
-                       c.violation_rule_code, c.policy_set
-                FROM moderation_cases c
-                INNER JOIN message_availability_events e ON e.case_id = c.case_id
-                WHERE c.case_id = @case_id
-                  AND e.eventsub_message_id = @event_id
-                  AND e.learning_state = 'pending_review';
-                """;
-            read.Parameters.AddWithValue("@case_id", caseId);
-            read.Parameters.AddWithValue("@event_id", eventSubMessageId);
-            await using var reader = await read.ExecuteReaderAsync(cancellationToken)
-                .ConfigureAwait(false);
-            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-                return false;
-            }
-
-            categoryId = reader.IsDBNull(0) ? null : reader.GetString(0);
-            messageNormalized = reader.GetString(1);
-            violationRuleCode = reader.IsDBNull(2) ? null : reader.GetString(2);
-            storedPolicySet = reader.GetString(3);
-        }
-
-        var requestedPolicySet = ToDatabasePolicySet(policySet);
-        if (string.IsNullOrWhiteSpace(violationRuleCode)
-            || !string.Equals(
-                storedPolicySet,
-                requestedPolicySet,
-                StringComparison.Ordinal))
-        {
-            await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-            return false;
-        }
-
-        var eligible = ModerationRuleCodes.AllowsTriggerLearning(violationRuleCode)
-            && await IncrementPhraseConfirmationAsync(
-            connection,
-            transaction,
-            normalizedPhrase,
-            requestedPolicySet,
-            violationRuleCode,
-            cancellationToken).ConfigureAwait(false);
-
-        if (ModerationRuleCodes.AllowsTriggerLearning(violationRuleCode))
-        {
-            await using var insert = connection.CreateCommand();
-            insert.Transaction = transaction;
-            insert.CommandText =
-                """
-                INSERT OR IGNORE INTO phrase_feedback(
-                    case_id, source_kind, source_event_id, label_action,
-                    rule_code, trigger_phrase, policy_set, is_positive,
-                    category_id, message_normalized, eligible, confirmed_utc)
-                VALUES(
-                    @case_id, 'external_delete', @event_id, 'delete',
-                    @rule_code, @trigger_phrase, @policy_set, 1,
-                    @category_id, @message_normalized, @eligible, @confirmed_utc);
-                """;
-            insert.Parameters.AddWithValue("@case_id", caseId);
-            insert.Parameters.AddWithValue("@event_id", eventSubMessageId);
-            insert.Parameters.AddWithValue("@rule_code", violationRuleCode);
-            insert.Parameters.AddWithValue("@trigger_phrase", normalizedPhrase);
-            insert.Parameters.AddWithValue("@policy_set", requestedPolicySet);
-            insert.Parameters.AddWithValue("@category_id", SqliteData.DbValue(categoryId));
-            insert.Parameters.AddWithValue("@message_normalized", messageNormalized);
-            insert.Parameters.AddWithValue("@eligible", eligible ? 1 : 0);
-            insert.Parameters.AddWithValue(
-                "@confirmed_utc",
-                SqliteData.ToDatabaseTimestamp(DateTimeOffset.UtcNow));
-            if (await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
-            {
-                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-                return false;
-            }
-        }
-
-        await using (var update = connection.CreateCommand())
-        {
-            update.Transaction = transaction;
-            update.CommandText =
-                """
-                UPDATE message_availability_events
-                SET learning_state = 'accepted'
-                WHERE eventsub_message_id = @event_id
-                  AND learning_state = 'pending_review';
-                """;
-            update.Parameters.AddWithValue("@event_id", eventSubMessageId);
-            await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return true;
-    }
-
     private async Task RecordClearAsync(
         string eventId,
         string broadcasterId,
@@ -662,71 +531,6 @@ public sealed class SqliteMessageAvailabilityStore : IMessageAvailabilityStore
         return caseId.HasValue ? "external_unmatched" : "orphan";
     }
 
-    private static async Task<bool> IncrementPhraseConfirmationAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        string normalizedPhrase,
-        string policySet,
-        string ruleCode,
-        CancellationToken cancellationToken)
-    {
-        long? phraseId = null;
-        await using (var read = connection.CreateCommand())
-        {
-            read.Transaction = transaction;
-            read.CommandText =
-                """
-                SELECT p.phrase_id
-                FROM phrase_rules p
-                INNER JOIN blacklist_rules r ON r.rule_id = p.rule_id
-                INNER JOIN policy_sets s ON s.scope_id = r.scope_id
-                WHERE p.normalized_phrase = @phrase
-                  AND s.set_code = @policy_set
-                  AND r.rule_code = @rule_code
-                  AND s.broadcaster_id = @global_scope
-                  AND s.enabled = 1
-                  AND s.archived_utc IS NULL
-                  AND p.archived_utc IS NULL
-                  AND r.enabled = 1
-                  AND r.archived_utc IS NULL
-                LIMIT 1;
-                """;
-            read.Parameters.AddWithValue("@phrase", normalizedPhrase);
-            read.Parameters.AddWithValue("@policy_set", policySet);
-            read.Parameters.AddWithValue("@rule_code", ruleCode);
-            read.Parameters.AddWithValue(
-                "@global_scope",
-                GlobalPolicyStorage.BroadcasterId);
-            await using var reader = await read.ExecuteReaderAsync(cancellationToken)
-                .ConfigureAwait(false);
-            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                phraseId = reader.GetInt64(0);
-            }
-        }
-
-        if (phraseId.HasValue)
-        {
-            await using var update = connection.CreateCommand();
-            update.Transaction = transaction;
-            update.CommandText =
-                """
-                UPDATE phrase_rules
-                SET positive_confirmations = positive_confirmations + 1,
-                    row_version = row_version + 1,
-                    updated_utc = @updated_utc
-                WHERE phrase_id = @phrase_id;
-                """;
-            update.Parameters.AddWithValue(
-                "@updated_utc",
-                SqliteData.ToDatabaseTimestamp(DateTimeOffset.UtcNow));
-            update.Parameters.AddWithValue("@phrase_id", phraseId.Value);
-            await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        return phraseId.HasValue;
-    }
-
     private static MessageAvailability ParseAvailability(string value)
     {
         return value switch
@@ -739,15 +543,6 @@ public sealed class SqliteMessageAvailabilityStore : IMessageAvailabilityStore
         };
     }
 
-    private static string ToDatabasePolicySet(PolicySetCode policySet)
-    {
-        return policySet switch
-        {
-            PolicySetCode.General => "general",
-            PolicySetCode.Backseatgaming => "backseatgaming",
-            _ => throw new ArgumentOutOfRangeException(nameof(policySet), policySet, null),
-        };
-    }
 }
 
 internal sealed class AvailabilityRetentionHostedService(

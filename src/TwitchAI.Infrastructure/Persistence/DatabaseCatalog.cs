@@ -159,6 +159,7 @@ public sealed class DatabaseCatalog : IDatabaseCatalog
             Audit("phrase_feedback", "feedback_id"),
             Audit("configuration_audit", "change_id"),
             Audit("ai_run_metrics", "request_id"),
+            ReadOnlyAudit("ai_validation_attempts", "validation_attempt_id"),
             Audit("data_deletion_audit", "deletion_id"),
             Audit("chat_reply_proposals", "proposal_id"),
             Editable(
@@ -256,6 +257,17 @@ public sealed class DatabaseCatalog : IDatabaseCatalog
             name,
             primaryKey,
             DatabaseTableAccessClass.UserEditable,
+            new Dictionary<string, DatabaseColumnDefinition>(StringComparer.Ordinal),
+            SupportsSoftArchive: false,
+            UsesRowVersion: false);
+    }
+
+    private static DatabaseTableDefinition ReadOnlyAudit(string name, string primaryKey)
+    {
+        return new DatabaseTableDefinition(
+            name,
+            primaryKey,
+            DatabaseTableAccessClass.AuditReadOnly,
             new Dictionary<string, DatabaseColumnDefinition>(StringComparer.Ordinal),
             SupportsSoftArchive: false,
             UsesRowVersion: false);

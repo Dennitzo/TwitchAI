@@ -29,15 +29,28 @@ Inferenz gesammelt werden; der Inferenz-Worker bleibt seriell.
 
 ## Modellgrenze
 
-Das Request-Envelope enthält keine Twitch-Identitäten. Ein lokales Mapping
-verbindet temporäre IDs mit den Snapshots. Die Antwort wird als Ganzes
-verworfen, wenn unter anderem eine ID fehlt/doppelt/unbekannt ist, ein Regelset
-inaktiv ist, Timeoutwerte ungültig sind oder eine Triggerphrase nicht im
-Lowercase-Text vorkommt.
+Das kompakte Request-/Response-Envelope v7 enthält keine Twitch-Identitäten. Ein
+lokales Mapping verbindet temporäre IDs mit den Snapshots. Das Ergebnis ist ein
+Objekt, in dem jede temporäre ID als verpflichtender Schlüssel genau einmal
+vorkommt. `null` bedeutet erlaubt; Moderationen und optionale Chat-Antworten
+bleiben kompakte Werte. Damit erzwingt bereits das dynamische JSON-Schema die
+vollständige, eindeutige Zuordnung. Der Validator leitet das Regelset lokal aus
+dem Regelcode ab.
+
+Bei einem Fehler mit sicher zuordenbarer Message-ID bleiben gültige
+Entscheidungen erhalten und nur die betroffene Nachricht wird einmal kompakt
+repariert. Ungültiges Root-JSON, unbekannte IDs oder eine beschädigte
+Gesamtstruktur lösen weiterhin höchstens eine vollständige Batchreparatur aus.
+Bleibt das Ergebnis ungültig, entsteht kein Moderationsfall.
 
 Retrieval ist auf sechs Beispiele und ungefähr 800 Tokens begrenzt. Lokale
 Blacklistbestände werden nicht in den Prompt kopiert; nur gefundene Regelcodes
 werden übertragen.
+
+`ai_validation_attempts` protokolliert Initial-, Repair- und lokale
+Fallback-Prüfungen ausschließlich mit Fehlercodes, Zeichenzählern und einem
+SHA-256-Fingerprint der Antwort. Chattexte, Modellantworten und lesbare
+Fehlertexte werden dort nicht gespeichert.
 
 ## Freigabe und Idempotenz
 
@@ -80,9 +93,13 @@ Lesezugriffe bleiben parallel. Beim Start werden zurückgelassene
 `intent`-/`executing`-Datensätze atomar und idempotent in `OutcomeUnknown`
 überführt.
 
-Automatische Phrasenaktivierung wird aus positivem und negativem Feedback
-abgeleitet. Eine Phrase benötigt mindestens eine positive Bestätigung und eine
-Positivquote von mindestens 60 Prozent, sofern kein manueller Override greift.
+Die Phrasenlisten sind ausschließlich manuell gepflegte Konfiguration. Live-,
+Read-Only-, externe und manuelle Lernentscheidungen verändern weder
+`phrase_rules` noch `whitelist_phrases` oder deren Bestätigungszähler. Sie
+werden als vollständige Kontextbeispiele in der separaten Learning-Projektion
+gespeichert. Optionale Trigger dienen nur als Metadaten und benötigen mindestens
+zwei lexikalische Wörter; Retrieval und Klassifikation verwenden immer die
+vollständige Nachricht.
 
 ## Datenschutz
 

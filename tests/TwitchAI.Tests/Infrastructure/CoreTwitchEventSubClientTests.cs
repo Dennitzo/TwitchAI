@@ -39,6 +39,38 @@ public sealed class CoreTwitchEventSubClientTests
                 chatEvent.Message));
     }
 
+    [Fact]
+    public async Task ReadEventsAsync_PreservesStructuredEmoteMetadata()
+    {
+        var message = new TwitchChatMessageEvent(
+            "eventsub-message-emotes",
+            "channel-1",
+            DateTimeOffset.UtcNow,
+            "message-emotes",
+            "viewer-1",
+            "viewer",
+            "Viewer",
+            "Kappa Kappa Kappa",
+            IsModerator: false,
+            new Dictionary<string, string>(),
+            SourceBroadcasterId: null,
+            SourceMessageId: null)
+        {
+            TwitchEmoteCount = 3,
+            IsTwitchEmoteOnly = true,
+        };
+        var client = CreateClient(
+            message,
+            new ThrowingAvailabilityStore(AvailabilityFailure.None),
+            new RecordingDedupeStore(),
+            new ThrowingChannelStateRepository());
+
+        var chatEvent = await ReadSingleAsync(client);
+
+        Assert.Equal(3, chatEvent.TwitchEmoteCount);
+        Assert.True(chatEvent.IsTwitchEmoteOnly);
+    }
+
     [Theory]
     [InlineData("moderator")]
     [InlineData("lead_moderator")]
@@ -292,16 +324,6 @@ public sealed class CoreTwitchEventSubClientTests
                     DateTimeOffset.UtcNow,
                     "observed_active",
                     Revision: 1));
-        }
-
-        public Task<bool> AcceptExternalDeleteFeedbackAsync(
-            string eventSubMessageId,
-            long caseId,
-            string triggerPhrase,
-            PolicySetCode policySet,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(false);
         }
 
         public Task<int> DeleteUnlinkedOlderThanAsync(

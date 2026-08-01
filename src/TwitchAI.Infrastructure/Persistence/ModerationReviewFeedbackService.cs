@@ -201,77 +201,6 @@ public sealed class SqliteModerationReviewFeedbackService
             await feedback.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        var ordered = learnAsAllowed
-            ? selected.OrderBy(item => item, StringComparer.Ordinal).ToArray()
-            : [];
-        for (var index = 0; index < ordered.Length; index++)
-        {
-            var phrase = ordered[index];
-            // An allowed review is negative feedback for moderation, not a new
-            // forbidden phrase. Only an already configured/learned phrase may
-            // receive a negative counter.
-            var target = await FindPhraseTargetAsync(
-                connection,
-                transaction,
-                databasePolicySet!,
-                feedbackRuleCode!,
-                phrase,
-                cancellationToken).ConfigureAwait(false);
-            await using var phraseFeedback = connection.CreateCommand();
-            phraseFeedback.Transaction = transaction;
-            phraseFeedback.CommandText =
-                """
-                INSERT INTO phrase_feedback(
-                    case_id, source_kind, source_event_id, label_action,
-                    rule_code, trigger_phrase, policy_set, is_positive,
-                    category_id, message_normalized, eligible, confirmed_utc)
-                VALUES(
-                    @case_id, 'operator_discard', @source_event_id, 'none',
-                    @rule_code, @trigger_phrase, @policy_set, 0,
-                    @category_id, @message_normalized, @eligible, @confirmed_utc);
-                """;
-            phraseFeedback.Parameters.AddWithValue("@case_id", caseId);
-            phraseFeedback.Parameters.AddWithValue(
-                "@source_event_id",
-                $"discard:{caseId}:{index}");
-            phraseFeedback.Parameters.AddWithValue(
-                "@rule_code",
-                feedbackRuleCode!);
-            phraseFeedback.Parameters.AddWithValue("@trigger_phrase", phrase);
-            phraseFeedback.Parameters.AddWithValue(
-                "@policy_set",
-                databasePolicySet!);
-            phraseFeedback.Parameters.AddWithValue(
-                "@category_id",
-                SqliteData.DbValue(moderationCase.Message.ChannelContext.CategoryId));
-            phraseFeedback.Parameters.AddWithValue(
-                "@message_normalized",
-                moderationCase.Message.Text.RuleNormalizedText);
-            phraseFeedback.Parameters.AddWithValue(
-                "@eligible",
-                target.PhraseId.HasValue ? 1 : 0);
-            phraseFeedback.Parameters.AddWithValue(
-                "@confirmed_utc",
-                SqliteData.ToDatabaseTimestamp(decidedAt));
-            await phraseFeedback.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-            if (target.PhraseId.HasValue)
-            {
-                await IncrementNegativeAsync(
-                    connection,
-                    transaction,
-                    target.PhraseId.Value,
-                    cancellationToken).ConfigureAwait(false);
-                if (target.ScopeId.HasValue)
-                {
-                    await BumpPolicyRevisionAsync(
-                        connection,
-                        transaction,
-                        target.ScopeId.Value,
-                        cancellationToken).ConfigureAwait(false);
-                }
-            }
-        }
-
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         if (learnAsAllowed)
@@ -287,32 +216,7 @@ public sealed class SqliteModerationReviewFeedbackService
             "discarded",
             !learnAsAllowed
                 ? "Der Vorschlag wurde ohne Twitch-Aktion und ohne Lernsignal abgebrochen."
-                : selected.Count > 0
-                ? "Der Vorschlag wurde als erlaubtes Fallbeispiel gespeichert; neue Verbotsphrasen wurden nicht angelegt."
-                : "Der Vorschlag wurde als negatives Fallbeispiel ohne Phrasen-Lernsignal gespeichert.");
-    }
-
-    private static async Task IncrementNegativeAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        long phraseId,
-        CancellationToken cancellationToken)
-    {
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText =
-            """
-            UPDATE phrase_rules
-            SET negative_confirmations = negative_confirmations + 1,
-                row_version = row_version + 1,
-                updated_utc = @updated_utc
-            WHERE phrase_id = @phrase_id;
-            """;
-        command.Parameters.AddWithValue("@phrase_id", phraseId);
-        command.Parameters.AddWithValue(
-            "@updated_utc",
-            SqliteData.ToDatabaseTimestamp(DateTimeOffset.UtcNow));
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                : "Der Vorschlag wurde ausschließlich als erlaubtes Learning-Beispiel gespeichert.");
     }
 
     public async ValueTask<ModerationExecutionResult> CompleteUnavailableAsync(
@@ -363,9 +267,6 @@ public sealed class SqliteModerationReviewFeedbackService
                 "Die gespeicherte Regelkategorie fehlt.");
         }
 
-        var accepted = ModerationRuleCodes.AllowsTriggerLearning(request.RuleCode)
-            ? NormalizeDistinct(request.AcceptedTriggerPhrases)
-            : [];
         await using var writeLease = await _writeCoordinator
             .AcquireAsync(cancellationToken)
             .ConfigureAwait(false);
@@ -406,17 +307,6 @@ public sealed class SqliteModerationReviewFeedbackService
             learn,
             cancellationToken).ConfigureAwait(false);
 
-        if (learn)
-        {
-            await WritePositiveUnavailablePhraseFeedbackAsync(
-                connection,
-                transaction,
-                moderationCase,
-                request,
-                accepted,
-                cancellationToken).ConfigureAwait(false);
-        }
-
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         if (learn)
         {
@@ -440,83 +330,6 @@ public sealed class SqliteModerationReviewFeedbackService
     {
         var proposed = NormalizeDistinct(moderationCase.TriggerPhrases);
         return NormalizeDistinct(request.AcceptedTriggerPhrases).All(proposed.Contains);
-    }
-
-    private static async Task WritePositiveUnavailablePhraseFeedbackAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        ModerationCase moderationCase,
-        ModerationExecutionRequest request,
-        HashSet<string> accepted,
-        CancellationToken cancellationToken)
-    {
-        var ordered = accepted.OrderBy(item => item, StringComparer.Ordinal).ToArray();
-        for (var index = 0; index < ordered.Length; index++)
-        {
-            var phrase = ordered[index];
-            var target = await EnsurePhraseTargetAsync(
-                connection,
-                transaction,
-                ToDatabasePolicySet(request.PolicySet),
-                request.RuleCode!,
-                phrase,
-                cancellationToken).ConfigureAwait(false);
-
-            await using var insert = connection.CreateCommand();
-            insert.Transaction = transaction;
-            insert.CommandText =
-                """
-                INSERT OR IGNORE INTO phrase_feedback(
-                    case_id, source_kind, source_event_id, label_action,
-                    rule_code, trigger_phrase, policy_set, is_positive,
-                    category_id, message_normalized, eligible, confirmed_utc)
-                VALUES(
-                    @case_id, 'external_delete', @source_event_id, @label_action,
-                    @rule_code, @trigger_phrase, @policy_set, 1,
-                    @category_id, @message_normalized, @eligible, @confirmed_utc);
-                """;
-            insert.Parameters.AddWithValue("@case_id", moderationCase.CaseId);
-            insert.Parameters.AddWithValue(
-                "@source_event_id",
-                $"unavailable-review:{moderationCase.CaseId}:{index}");
-            insert.Parameters.AddWithValue("@label_action", ToDatabaseAction(request.Action));
-            insert.Parameters.AddWithValue(
-                "@rule_code",
-                request.RuleCode!);
-            insert.Parameters.AddWithValue("@trigger_phrase", phrase);
-            insert.Parameters.AddWithValue(
-                "@policy_set",
-                ToDatabasePolicySet(request.PolicySet));
-            insert.Parameters.AddWithValue(
-                "@category_id",
-                SqliteData.DbValue(moderationCase.Message.ChannelContext.CategoryId));
-            insert.Parameters.AddWithValue(
-                "@message_normalized",
-                moderationCase.Message.Text.RuleNormalizedText);
-            insert.Parameters.AddWithValue(
-                "@eligible",
-                target.PhraseId.HasValue ? 1 : 0);
-            insert.Parameters.AddWithValue(
-                "@confirmed_utc",
-                SqliteData.ToDatabaseTimestamp(DateTimeOffset.UtcNow));
-            if (await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1 &&
-                target.PhraseId.HasValue)
-            {
-                await IncrementPositiveAsync(
-                    connection,
-                    transaction,
-                    target.PhraseId.Value,
-                    cancellationToken).ConfigureAwait(false);
-                if (target.ScopeId.HasValue)
-                {
-                    await BumpPolicyRevisionAsync(
-                        connection,
-                        transaction,
-                        target.ScopeId.Value,
-                        cancellationToken).ConfigureAwait(false);
-                }
-            }
-        }
     }
 
     private static async Task UpsertUnavailableFeedbackAsync(
@@ -657,191 +470,6 @@ public sealed class SqliteModerationReviewFeedbackService
             System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
-    private static async Task<PhraseTarget> FindPhraseTargetAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        string policySet,
-        string ruleCode,
-        string phrase,
-        CancellationToken cancellationToken)
-    {
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText =
-            """
-            SELECT p.phrase_id, r.rule_code, s.scope_id
-            FROM phrase_rules p
-            INNER JOIN blacklist_rules r ON r.rule_id = p.rule_id
-            INNER JOIN policy_sets s ON s.scope_id = r.scope_id
-            WHERE s.broadcaster_id = @global_scope
-              AND s.set_code = @policy_set
-              AND r.rule_code = @rule_code
-              AND p.normalized_phrase = @phrase
-              AND p.archived_utc IS NULL
-              AND r.archived_utc IS NULL
-            LIMIT 1;
-            """;
-        command.Parameters.AddWithValue(
-            "@global_scope",
-            GlobalPolicyStorage.BroadcasterId);
-        command.Parameters.AddWithValue("@policy_set", policySet);
-        command.Parameters.AddWithValue("@rule_code", ruleCode);
-        command.Parameters.AddWithValue("@phrase", phrase);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
-            .ConfigureAwait(false);
-        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? new PhraseTarget(
-                reader.GetInt64(0),
-                reader.GetString(1),
-                reader.GetInt64(2))
-            : new PhraseTarget(null, null, null);
-    }
-
-    private static async Task<PhraseTarget> EnsurePhraseTargetAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        string policySet,
-        string ruleCode,
-        string phrase,
-        CancellationToken cancellationToken)
-    {
-        var existing = await FindPhraseTargetAsync(
-            connection,
-            transaction,
-            policySet,
-            ruleCode,
-            phrase,
-            cancellationToken).ConfigureAwait(false);
-        if (existing.PhraseId.HasValue)
-        {
-            return existing;
-        }
-
-        long ruleId;
-        long scopeId;
-        await using (var findRule = connection.CreateCommand())
-        {
-            findRule.Transaction = transaction;
-            findRule.CommandText =
-                """
-                SELECT r.rule_id, s.scope_id
-                FROM blacklist_rules r
-                INNER JOIN policy_sets s ON s.scope_id = r.scope_id
-                WHERE s.broadcaster_id = @global_scope
-                  AND s.set_code = @policy_set
-                  AND r.rule_code = @rule_code
-                  AND s.enabled = 1
-                  AND s.archived_utc IS NULL
-                  AND r.enabled = 1
-                  AND r.archived_utc IS NULL
-                LIMIT 1;
-                """;
-            findRule.Parameters.AddWithValue(
-                "@global_scope",
-                GlobalPolicyStorage.BroadcasterId);
-            findRule.Parameters.AddWithValue("@policy_set", policySet);
-            findRule.Parameters.AddWithValue("@rule_code", ruleCode);
-            await using var reader = await findRule
-                .ExecuteReaderAsync(cancellationToken)
-                .ConfigureAwait(false);
-            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                return existing;
-            }
-
-            ruleId = reader.GetInt64(0);
-            scopeId = reader.GetInt64(1);
-        }
-
-        var now = SqliteData.ToDatabaseTimestamp(DateTimeOffset.UtcNow);
-        await using (var insert = connection.CreateCommand())
-        {
-            insert.Transaction = transaction;
-            insert.CommandText =
-                """
-                INSERT OR IGNORE INTO phrase_rules(
-                    rule_id, phrase, normalized_phrase, enabled,
-                    manual_override, positive_confirmations, negative_confirmations,
-                    row_version, created_utc, updated_utc)
-                VALUES(
-                    @rule_id, @phrase, @phrase, 1,
-                    'auto', 0, 0,
-                    1, @now, @now);
-                """;
-            insert.Parameters.AddWithValue("@rule_id", ruleId);
-            insert.Parameters.AddWithValue("@phrase", phrase);
-            insert.Parameters.AddWithValue("@now", now);
-            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-
-        await using var readInserted = connection.CreateCommand();
-        readInserted.Transaction = transaction;
-        readInserted.CommandText =
-            """
-            SELECT phrase_id
-            FROM phrase_rules
-            WHERE rule_id = @rule_id
-              AND normalized_phrase = @phrase
-              AND archived_utc IS NULL;
-            """;
-        readInserted.Parameters.AddWithValue("@rule_id", ruleId);
-        readInserted.Parameters.AddWithValue("@phrase", phrase);
-        var value = await readInserted.ExecuteScalarAsync(cancellationToken)
-            .ConfigureAwait(false);
-        return value is null
-            ? existing
-            : new PhraseTarget(
-                Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture),
-                ruleCode,
-                scopeId);
-    }
-
-    private static async Task IncrementPositiveAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        long phraseId,
-        CancellationToken cancellationToken)
-    {
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText =
-            """
-            UPDATE phrase_rules
-            SET positive_confirmations = positive_confirmations + 1,
-                row_version = row_version + 1,
-                updated_utc = @updated_utc
-            WHERE phrase_id = @phrase_id;
-            """;
-        command.Parameters.AddWithValue("@phrase_id", phraseId);
-        command.Parameters.AddWithValue(
-            "@updated_utc",
-            SqliteData.ToDatabaseTimestamp(DateTimeOffset.UtcNow));
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async Task BumpPolicyRevisionAsync(
-        SqliteConnection connection,
-        SqliteTransaction transaction,
-        long scopeId,
-        CancellationToken cancellationToken)
-    {
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText =
-            """
-            UPDATE policy_sets
-            SET revision = revision + 1,
-                row_version = row_version + 1,
-                updated_utc = @updated_utc
-            WHERE scope_id = @scope_id;
-            """;
-        command.Parameters.AddWithValue("@scope_id", scopeId);
-        command.Parameters.AddWithValue(
-            "@updated_utc",
-            SqliteData.ToDatabaseTimestamp(DateTimeOffset.UtcNow));
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
-
     private HashSet<string> NormalizeDistinct(IEnumerable<string> phrases)
     {
         return phrases
@@ -888,8 +516,4 @@ public sealed class SqliteModerationReviewFeedbackService
         bool LearningAccepted,
         bool ReviewCompleted);
 
-    private readonly record struct PhraseTarget(
-        long? PhraseId,
-        string? RuleCode,
-        long? ScopeId);
 }

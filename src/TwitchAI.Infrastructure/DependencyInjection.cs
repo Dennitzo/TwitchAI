@@ -83,6 +83,9 @@ public static class DependencyInjection
         services.AddSingleton<
             CoreContracts.ILearningDatasetService,
             SqliteLearningDatasetService>();
+        services.AddSingleton<
+            CoreContracts.IAiValidationAttemptStore,
+            SqliteAiValidationAttemptStore>();
 
         services.AddSingleton<ITwitchCredentialVault, WindowsPasswordVaultCredentialStore>();
         services.AddSingleton<ITwitchAccessTokenProvider, TwitchAccessTokenProvider>();
@@ -127,6 +130,8 @@ public static class DependencyInjection
         services.AddSingleton<
             ILmStudioCredentialVault,
             WindowsLmStudioCredentialVault>();
+        services.AddSingleton<CoreContracts.IModerationPromptCompiler,
+            TwitchAI.Core.Services.ModerationPromptCompiler>();
         services
             .AddHttpClient<ILmStudioClient, LmStudioClient>(client =>
             {

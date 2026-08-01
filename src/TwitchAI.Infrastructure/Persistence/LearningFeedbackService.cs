@@ -78,7 +78,9 @@ public sealed class SqliteLearningFeedbackService : ILearningFeedbackService
                 "Die ausgewählte Verstoßkategorie ist nicht mehr im gewählten Regelset aktiv.");
         }
 
-        var normalizedTriggers = NormalizeTriggers(review);
+        var normalizedTriggers = decision == LearningFeedbackDecision.ConfirmedViolation
+            ? NormalizeTriggers(review)
+            : [];
         var now = DateTimeOffset.UtcNow;
         long manualExampleId;
 
@@ -209,7 +211,11 @@ public sealed class SqliteLearningFeedbackService : ILearningFeedbackService
                 nameof(review));
         }
 
-        return selected;
+        return ModerationTriggerEvidenceNormalizer.Normalize(
+                review.TestResult.LowerText,
+                review.RuleCode,
+                selected)
+            .ToArray();
     }
 
     private static async Task<long?> FindExistingAsync(

@@ -88,4 +88,9 @@ public sealed record ChatMessageSnapshot(
     ChatMessageIdentityV1 Identity,
     ProcessedChatText Text,
     ChannelContextSnapshot ChannelContext,
-    long IngressSequence);
+    long IngressSequence)
+{
+    public int TwitchEmoteCount { get; init; }
+
+    public bool IsTwitchEmoteOnly { get; init; }
+}

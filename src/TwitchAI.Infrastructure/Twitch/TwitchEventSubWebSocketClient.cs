@@ -32,7 +32,12 @@ public sealed record TwitchChatMessageEvent(
     string? SourceBroadcasterId,
     string? SourceMessageId,
     IReadOnlyDictionary<string, string>? SourceBadges = null)
-    : TwitchEventSubEvent(EventMessageId, BroadcasterId, ObservedAt);
+    : TwitchEventSubEvent(EventMessageId, BroadcasterId, ObservedAt)
+{
+    public int TwitchEmoteCount { get; init; }
+
+    public bool IsTwitchEmoteOnly { get; init; }
+}
 
 public sealed record TwitchCategoryChangedEvent(
     string EventMessageId,
@@ -701,6 +706,8 @@ public sealed class TwitchEventSubWebSocketClient :
             NullIfEmpty(OptionalString(@event, "source_broadcaster_user_id"));
         var badges = ParseBadges(@event, "badges");
         var sourceBadges = ParseBadges(@event, "source_badges");
+        var (twitchEmoteCount, isTwitchEmoteOnly) =
+            ParseTwitchEmoteMetadata(message);
 
         var isModerator =
             string.Equals(
@@ -729,7 +736,40 @@ public sealed class TwitchEventSubWebSocketClient :
             badges,
             sourceBroadcasterId,
             NullIfEmpty(OptionalString(@event, "source_message_id")),
-            sourceBadges);
+            sourceBadges)
+        {
+            TwitchEmoteCount = twitchEmoteCount,
+            IsTwitchEmoteOnly = isTwitchEmoteOnly,
+        };
+    }
+
+    private static (int Count, bool IsEmoteOnly) ParseTwitchEmoteMetadata(
+        JsonElement message)
+    {
+        if (!message.TryGetProperty("fragments", out var fragments)
+            || fragments.ValueKind != JsonValueKind.Array)
+        {
+            return (0, false);
+        }
+
+        var emoteCount = 0;
+        var hasNonEmoteContent = false;
+        foreach (var fragment in fragments.EnumerateArray())
+        {
+            var type = OptionalString(fragment, "type");
+            if (string.Equals(type, "emote", StringComparison.Ordinal))
+            {
+                emoteCount++;
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(OptionalString(fragment, "text")))
+            {
+                hasNonEmoteContent = true;
+            }
+        }
+
+        return (emoteCount, emoteCount > 0 && !hasNonEmoteContent);
     }
 
     private static Dictionary<string, string> ParseBadges(

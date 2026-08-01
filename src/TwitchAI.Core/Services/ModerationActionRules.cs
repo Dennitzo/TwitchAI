@@ -106,6 +106,7 @@ public static class ModerationActionRules
         return ruleCode is not (
             ModerationRuleCodes.OtherAbuse
             or ModerationRuleCodes.Begging
+            or ModerationRuleCodes.StreamerInstruction
             or ModerationRuleCodes.Backseatgaming
             or ModerationRuleCodes.Spam
             or ModerationRuleCodes.Disruption);

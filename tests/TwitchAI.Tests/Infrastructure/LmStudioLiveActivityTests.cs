@@ -321,6 +321,63 @@ public sealed class LmStudioLiveActivityTests
     }
 
     [Fact]
+    public async Task CompleteModerationAsync_UsesPrecompiledResponseFormatUnchanged()
+    {
+        var responseBody = JsonSerializer.Serialize(
+            new
+            {
+                model = "openai/gpt-oss-20b",
+                choices = new[]
+                {
+                    new
+                    {
+                        message = new { content = "{}" },
+                        finish_reason = "stop",
+                    },
+                },
+            });
+        var handler = new StaticResponseHandler(HttpStatusCode.OK, responseBody);
+        using var httpClient = CreateHttpClient(handler);
+        var sut = new LmStudioClient(
+            httpClient,
+            new RecordingMetricsStore(),
+            new EmptyCredentialVault(),
+            CreateOptions());
+        var responseFormat = JsonSerializer.SerializeToElement(
+            new
+            {
+                type = "json_schema",
+                json_schema = new
+                {
+                    name = "precompiled",
+                    strict = true,
+                    schema = new
+                    {
+                        type = "object",
+                        additionalProperties = false,
+                    },
+                },
+            });
+
+        await sut.CompleteModerationAsync(
+            new LmStudioModerationRequest(
+                "batch-1",
+                "policy",
+                1,
+                "system",
+                "{}",
+                ["G_INSULT"],
+                [],
+                LmStudioResponseSchemaKind.ModerationV6,
+                ResponseFormat: responseFormat));
+
+        using var document = JsonDocument.Parse(handler.RequestBody!);
+        Assert.Equal(
+            responseFormat.GetRawText(),
+            document.RootElement.GetProperty("response_format").GetRawText());
+    }
+
+    [Fact]
     public async Task CompleteModerationAsync_LearningTestUsesDedicatedSchemaAndActivityKind()
     {
         var responseBody = JsonSerializer.Serialize(

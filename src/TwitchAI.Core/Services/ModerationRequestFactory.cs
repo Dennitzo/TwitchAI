@@ -1,35 +1,30 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
+using TwitchAI.Core.Contracts;
 using TwitchAI.Core.Models;
 
 namespace TwitchAI.Core.Services;
 
-public sealed record ModerationPrompt(
-    ModerationRequestEnvelopeV3 Envelope,
-    string SystemPrompt,
-    string UserPrompt);
+public sealed record ModerationPrompt(CompiledModerationPrompt CompiledPrompt)
+{
+    public ModerationRequestEnvelopeV3 Envelope => CompiledPrompt.Envelope;
+
+    public string SystemPrompt => CompiledPrompt.SystemPrompt;
+
+    public string UserPrompt => CompiledPrompt.UserPrompt;
+}
 
 public sealed class ModerationRequestFactory
 {
-    public const string RequestEnvelopeVersion = "twitchai.moderation.request.v4";
+    public const string RequestEnvelopeVersion = ModerationPromptCompiler.RequestEnvelopeVersion;
+    public const string LegacyRequestEnvelopeVersion = "twitchai.moderation.request.v5";
     public const int MaximumExamples = 6;
     public const int MaximumRetrievalTokens = 800;
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
-
-    static ModerationRequestFactory()
-    {
-        JsonOptions.Converters.Add(new PolicySetCodeJsonConverter());
-        JsonOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
-    }
+    private static readonly ModerationPromptCompiler PromptCompiler = new();
 
     public static ModerationPrompt Create(
         ModerationBatch batch,
-        IEnumerable<RetrievalExample> retrievalExamples)
+        IEnumerable<RetrievalExample> retrievalExamples,
+        IModerationPromptCompiler? promptCompiler = null)
     {
         ArgumentNullException.ThrowIfNull(batch);
         ArgumentNullException.ThrowIfNull(retrievalExamples);
@@ -58,15 +53,21 @@ public sealed class ModerationRequestFactory
                 message.LocalMatches
                     .Select(match => match.RuleCode)
                     .Distinct(StringComparer.Ordinal)
-                    .ToArray()))
+                    .ToArray())
+                {
+                    TwitchEmoteCount = message.Message.TwitchEmoteCount > 0
+                        ? message.Message.TwitchEmoteCount
+                        : null,
+                    IsTwitchEmoteOnly = message.Message.TwitchEmoteCount > 0
+                        ? message.Message.IsTwitchEmoteOnly
+                        : null,
+                })
                 .ToArray(),
             examples,
             replyTemplates);
 
         return new ModerationPrompt(
-            envelope,
-            CreateSystemPrompt(envelope),
-            JsonSerializer.Serialize(envelope, JsonOptions));
+            (promptCompiler ?? PromptCompiler).Compile(envelope));
     }
 
     public static string CreateSystemPrompt(ModerationRequestEnvelopeV3 request)
@@ -91,21 +92,23 @@ public sealed class ModerationRequestFactory
             Deviate from that baseline only when the message clearly supports a lighter or more severe tier:
             - 2-second timeout as purge for a very light disruption where that user's recent messages should be cleared
             - 120-second timeout for light spam
-            - 600-second timeout for ordinary actionable abuse, light insults, or clear backseatgaming
+            - 600-second timeout for ordinary actionable abuse, light insults, streamer instructions, or clear backseatgaming
             - 86400-second timeout for strong insults that are serious but not unambiguously ban-worthy, and for G_BEGGING
             - ban for unambiguously extreme abuse, and for confirmed G_ADVERTISING self-promotion or promotion of another channel
             - delete only for a single low-context, unnecessary nuisance message with no substantive or serious violation
             Every moderate G_ADVERTISING decision must use ban. Every moderate G_BEGGING decision must use a 86400-second timeout.
             Never choose delete merely because a message is short, unwanted, or the first scale option.
             Never choose delete for insults, harassment, hate, threats, sexualization, personal data, scams,
-            advertising, begging, repeated spam, meaningful disruption, or backseatgaming.
+            advertising, begging, streamer instructions, repeated spam, meaningful disruption, or backseatgaming.
             The active rule defaults are fallbacks, not constraints; choose the action and timeout from the message context and this scale.
-            Never ban for an unnecessary message, spam, begging, or backseatgaming alone.
+            Never ban for an unnecessary message, spam, begging, streamer instructions, or backseatgaming alone.
             For delete or ban, timeoutSeconds must be null. For timeout, timeoutSeconds must be exactly 2, 120, 600, or 86400.
             For every actionable decision, reason must be one short German sentence of at most 120 characters.
             When a person is the target, call them "Nutzer oder Streamer", never only "Nutzer".
             Describe only the violation. Never mention policy codes, the action, or a recommendation.
-            Trigger phrases must be lowercase substrings copied exactly from that message, at most three.
+            Return at most one trigger phrase: the smallest contiguous lowercase evidence span copied exactly from that message, never a keyword list.
+            For G_INSULT it must contain both the addressed person and the actual insult or degradation; without that evidence return none.
+            Usernames, @mentions, pronouns, emotes, filler, or isolated words alone are not evidence.
             For G_PERSONAL_DATA, always return an empty triggerPhrases array so personal data is never learned as a phrase.
             replyTemplates contains only opaque temporary IDs and lowercase example messages. It never contains the configured answer.
             For action none, select replyTemplateId only when the chat message has substantially the same intent as exactly one example.
@@ -117,6 +120,8 @@ public sealed class ModerationRequestFactory
             Do not infer protected traits from usernames. Quoting, reporting, condemning, or neutrally discussing harmful content is not by itself a violation.
             Never invent Twitch IDs, usernames, temporary message IDs, rule codes, or policy sets.
             """
+            + "\n"
+            + ModerationRuleCodes.SpamClassifierGuidance
             + "\n"
             + backseat;
     }
