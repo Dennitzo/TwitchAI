@@ -971,6 +971,13 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             return;
         }
 
+        validation = await VerifyActionableDecisionsAsync(
+                analysisBatch,
+                validation,
+                retrievalExamples,
+                cancellationToken)
+            .ConfigureAwait(false);
+
         if (!validation.IsValid)
         {
             Publish(
@@ -1226,6 +1233,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                         ReanalysisCaseId = batchMessage.ReanalysisCaseId,
                         ReanalysisCaseRowVersion =
                             batchMessage.ReanalysisCaseRowVersion,
+                        PhraseMatches = batchMessage.LocalMatches,
                     },
                     cancellationToken)
                 .ConfigureAwait(false);
@@ -1261,6 +1269,82 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     aiLatencyMilliseconds: aiLatencyMilliseconds,
                     activeRules: batch.Context.EffectivePolicy.ActiveRules));
         }
+    }
+
+    private async Task<ModerationValidationReport> VerifyActionableDecisionsAsync(
+        ModerationBatch batch,
+        ModerationValidationReport initial,
+        IReadOnlyList<RetrievalExample> retrievalExamples,
+        CancellationToken cancellationToken)
+    {
+        var actionable = initial.Envelope!.Decisions
+            .Where(decision => decision.Action != ModerationActionKind.None)
+            .ToArray();
+        if (actionable.Length == 0)
+        {
+            return initial;
+        }
+
+        var ids = actionable.Select(item => item.TemporaryMessageId)
+            .ToHashSet(StringComparer.Ordinal);
+        var ruleCodes = actionable.Select(item => item.RuleCode!)
+            .ToHashSet(StringComparer.Ordinal);
+        var verifyPolicy = batch.Context.EffectivePolicy with
+        {
+            ActiveRules = batch.Context.EffectivePolicy.ActiveRules
+                .Where(rule => ruleCodes.Contains(rule.RuleCode))
+                .ToArray(),
+        };
+        var verifyBatch = batch with
+        {
+            Context = new ModerationBatchContext(batch.Context.Channel, verifyPolicy),
+            Messages = batch.Messages
+                .Where(message => ids.Contains(message.TemporaryMessageId))
+                .ToArray(),
+            ReplyTemplates = [],
+        };
+        var allowBoundary = retrievalExamples
+            .Where(example => !example.IsPositive)
+            .Take(1)
+            .ToArray();
+        var verifyPrompt = ModerationRequestFactory.Create(
+            verifyBatch,
+            allowBoundary,
+            _promptCompiler);
+        var verifyResponse = await _localModerationClient
+            .ModerateAsync(verifyPrompt.CompiledPrompt, cancellationToken)
+            .ConfigureAwait(false);
+        var verified = ValidateRuntimeResponse(verifyResponse, verifyBatch);
+        var verifiedById = verified.IsValid
+            ? verified.Envelope!.Decisions.ToDictionary(
+                item => item.TemporaryMessageId,
+                StringComparer.Ordinal)
+            : new Dictionary<string, ValidatedModerationDecision>(StringComparer.Ordinal);
+        var decisions = initial.Envelope.Decisions
+            .Select(decision => decision.Action == ModerationActionKind.None
+                ? decision
+                : verifiedById.TryGetValue(decision.TemporaryMessageId, out var confirmation)
+                    && confirmation.Action != ModerationActionKind.None
+                    && string.Equals(
+                        confirmation.RuleCode,
+                        decision.RuleCode,
+                        StringComparison.Ordinal)
+                        ? decision
+                        : new ValidatedModerationDecision(
+                            decision.TemporaryMessageId,
+                            ModerationActionKind.None,
+                            null,
+                            null,
+                            string.Empty,
+                            [],
+                            confirmation?.Confidence ?? decision.Confidence))
+            .ToArray();
+        var envelope = new ValidatedModerationEnvelope(batch.BatchId, decisions);
+        return initial with
+        {
+            Envelope = envelope,
+            ValidDecisions = decisions,
+        };
     }
 
     private ModerationValidationReport ValidateRuntimeResponse(
@@ -1700,13 +1784,28 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                         : PolicySetCode.General,
                     rule.Title,
                     rule.PromptInstruction,
-                    rule.DefaultAction == ModerationRuleAction.Timeout
-                        ? ModerationActionKind.Timeout
-                        : ModerationActionKind.Delete,
+                    rule.DefaultAction switch
+                    {
+                        _ when string.Equals(rule.RuleCode, ModerationRuleCodes.LocalBlacklist, StringComparison.Ordinal) => ModerationActionKind.Ban,
+                        _ when string.Equals(rule.RuleCode, ModerationRuleCodes.BotScam, StringComparison.Ordinal) => ModerationActionKind.Ban,
+                        ModerationRuleAction.Timeout => ModerationActionKind.Timeout,
+                        ModerationRuleAction.Ban => ModerationActionKind.Ban,
+                        _ => ModerationActionKind.Delete,
+                    },
                     rule.DefaultTimeoutSeconds,
                     rule.PublicReason,
                     rule.Priority,
-                    ModerationRuleCodes.AllowsTriggerLearning(rule.RuleCode)))
+                    ModerationRuleCodes.AllowsTriggerLearning(rule.RuleCode))
+                {
+                    EvaluationMode = rule.EvaluationMode switch
+                    {
+                        RuleEvaluationMode.DeterministicPhrase =>
+                            ModerationRuleEvaluationMode.DeterministicPhrase,
+                        RuleEvaluationMode.HumanOnly =>
+                            ModerationRuleEvaluationMode.HumanOnly,
+                        _ => ModerationRuleEvaluationMode.SemanticAi,
+                    },
+                })
                 .Where(rule => resolved.Contains(rule.PolicySet))
                 .OrderBy(rule => rule.Priority)
                 .ThenBy(rule => rule.RuleCode, StringComparer.Ordinal)

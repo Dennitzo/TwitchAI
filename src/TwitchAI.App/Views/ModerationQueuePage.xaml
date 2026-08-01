@@ -134,6 +134,12 @@
                         Foreground="{ThemeResource MutedTextBrush}"
                         Text="{x:Bind ReceivedAtDisplay}"
                         TextTrimming="CharacterEllipsis" />
+                      <TextBlock
+                        FontSize="10"
+                        FontWeight="SemiBold"
+                        Foreground="{ThemeResource WarningBrush}"
+                        Text="{x:Bind ProposalOriginLabel}"
+                        Visibility="{x:Bind ProposalOriginVisibility}" />
                     </StackPanel>
                   </StackPanel>
                   <Border
@@ -230,7 +236,7 @@
                       <ColumnDefinition Width="Auto" />
                       <ColumnDefinition Width="230" />
                       <ColumnDefinition Width="*" />
-                      <ColumnDefinition Width="230" />
+                      <ColumnDefinition Width="280" />
                     </Grid.ColumnDefinitions>
 
                     <Grid Grid.ColumnSpan="5" Margin="0,0,0,1">
@@ -320,25 +326,85 @@
                         FontSize="12"
                         Foreground="{ThemeResource MutedTextBrush}"
                         Text="Aktionen" />
-                      <Grid ColumnSpacing="8">
+                      <Grid
+                        x:Name="ModerationActionButtonsGrid"
+                        ColumnSpacing="8"
+                        RowSpacing="8"
+                        SizeChanged="OnModerationActionButtonsSizeChanged"
+                        Visibility="{x:Bind ModerationEditorVisibility, Mode=OneWay}">
+                        <Grid.RowDefinitions>
+                          <RowDefinition Height="Auto" />
+                          <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="*" />
+                          <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button
+                          x:Name="AllowButton"
+                          HorizontalAlignment="Stretch"
+                          AutomationProperties.Name="Vorschlag erlauben"
+                          Click="OnAllowClicked"
+                          Content="Erlauben"
+                          IsEnabled="{x:Bind CanAllow, Mode=OneWay}"
+                          MinWidth="0"
+                          Padding="8"
+                          Tag="{x:Bind}"
+                          ToolTipService.ToolTip="Als erlaubt lernen und Vorschlag schließen"
+                          Style="{StaticResource SubtleButtonStyle}" />
+                        <Button
+                          x:Name="DiscardModerationButton"
+                          Grid.Column="1"
+                          HorizontalAlignment="Stretch"
+                          AutomationProperties.Name="Vorschlag verwerfen"
+                          Click="OnDiscardClicked"
+                          Content="Verwerfen"
+                          IsEnabled="{x:Bind CanDiscard, Mode=OneWay}"
+                          MinWidth="0"
+                          Padding="8"
+                          Tag="{x:Bind}"
+                          ToolTipService.ToolTip="Ohne Learning verwerfen"
+                          Style="{StaticResource SubtleButtonStyle}" />
+                        <Button
+                          x:Name="ExecuteModerationButton"
+                          Grid.Column="2"
+                          HorizontalAlignment="Stretch"
+                          AutomationProperties.Name="Vorschlag ausführen"
+                          Click="OnExecuteClicked"
+                          Content="Ausführen"
+                          IsEnabled="{x:Bind CanExecute, Mode=OneWay}"
+                          MinWidth="0"
+                          Padding="8"
+                          Tag="{x:Bind}"
+                          ToolTipService.ToolTip="Moderationsaktion direkt ausführen"
+                          Style="{StaticResource AccentButtonStyle}" />
+                      </Grid>
+                      <Grid
+                        ColumnSpacing="8"
+                        Visibility="{x:Bind ChatReplyEditorVisibility, Mode=OneWay}">
                         <Grid.ColumnDefinitions>
                           <ColumnDefinition Width="*" />
                           <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
                         <Button
                           HorizontalAlignment="Stretch"
+                          AutomationProperties.Name="Chat-Antwort verwerfen"
                           Click="OnDiscardClicked"
                           Content="Verwerfen"
                           IsEnabled="{x:Bind CanDiscard, Mode=OneWay}"
                           Tag="{x:Bind}"
+                          ToolTipService.ToolTip="Chat-Antwort ohne Senden verwerfen"
                           Style="{StaticResource SubtleButtonStyle}" />
                         <Button
                           Grid.Column="1"
                           HorizontalAlignment="Stretch"
+                          AutomationProperties.Name="Chat-Antwort ausführen"
                           Click="OnExecuteClicked"
                           Content="Ausführen"
                           IsEnabled="{x:Bind CanExecute, Mode=OneWay}"
                           Tag="{x:Bind}"
+                          ToolTipService.ToolTip="Chat-Antwort direkt senden"
                           Style="{StaticResource AccentButtonStyle}" />
                       </Grid>
                     </StackPanel>

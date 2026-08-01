@@ -26,7 +26,7 @@ public sealed class SqliteLearningDatasetService : ILearningDatasetService
                     moderation.violation_rule_code,
                     CASE moderation.policy_set
                         WHEN 'backseatgaming' THEN 'BACKSEATGAMING'
-                        ELSE 'G_OTHER_ABUSE'
+                        ELSE 'G_PERSONAL_ATTACK'
                     END) AS rule_code,
                 CASE feedback.operator_decision
                     WHEN 'executed' THEN feedback.actual_action
@@ -89,7 +89,7 @@ public sealed class SqliteLearningDatasetService : ILearningDatasetService
             FROM manual_learning_examples example
             WHERE example.eligible_for_learning = 1
         ),
-        effective_examples AS (
+        raw_effective_examples AS (
             SELECT
                 base.source_kind,
                 base.source_id,
@@ -127,6 +127,32 @@ public sealed class SqliteLearningDatasetService : ILearningDatasetService
             LEFT JOIN learning_example_overrides edited
               ON edited.source_kind = base.source_kind
              AND edited.source_id = base.source_id
+        ),
+        effective_examples AS (
+            SELECT source_kind, source_id, original_text, lower_text,
+                   learning_decision, policy_set,
+                   CASE rule_code
+                       WHEN 'G_SEXUALIZATION' THEN 'G_SEXUAL_CONTENT'
+                       WHEN 'G_SEXUAL_EXPLICIT' THEN 'G_SEXUAL_CONTENT'
+                       WHEN 'G_SEXISM' THEN 'G_SEXUAL_CONTENT'
+                       WHEN 'G_INSULT' THEN 'G_PERSONAL_ATTACK'
+                       WHEN 'G_HARASSMENT' THEN 'G_PERSONAL_ATTACK'
+                       WHEN 'G_RACISM' THEN 'G_HATE'
+                       WHEN 'G_LGBTQ_HATE' THEN 'G_HATE'
+                       WHEN 'G_ABLEISM' THEN 'G_HATE'
+                       WHEN 'G_HATE_OTHER' THEN 'G_HATE'
+                       WHEN 'G_THREAT' THEN 'G_HARM'
+                       WHEN 'G_VIOLENCE' THEN 'G_HARM'
+                       WHEN 'G_SELF_HARM_INCITEMENT' THEN 'G_HARM'
+                       ELSE rule_code END AS rule_code,
+                   action, timeout_seconds, reason, source_label,
+                   occurred_utc, category_id,
+                   CASE WHEN rule_code IN (
+                       'G_ADVERTISING','G_SCAM','G_OTHER_ABUSE','G_DISRUPTION',
+                       'G_STREAMER_INSTRUCTION','LOCAL_BLACKLIST')
+                       THEN 1 ELSE is_removed END AS is_removed,
+                   row_version, effective_utc
+            FROM raw_effective_examples
         )
         """;
 

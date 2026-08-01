@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using TwitchAI.Core.Models;
 using TwitchAI.Core.Services;
 using TwitchAI.Infrastructure.Persistence;
 
@@ -628,6 +629,8 @@ public sealed class LmStudioClient : ILmStudioClient
                                 "timeoutSeconds",
                                 "policySet",
                                 "ruleCode",
+                                "evidenceKind",
+                                "sensitiveDataType",
                                 "reason",
                                 "triggerPhrases",
                                 "confidence",
@@ -665,6 +668,26 @@ public sealed class LmStudioClient : ILmStudioClient
                                 {
                                     type = "string",
                                     @enum = ruleCodes,
+                                },
+                                evidenceKind = new
+                                {
+                                    type = new[] { "string", "null" },
+                                    @enum = ruleCodes
+                                        .Cast<string>()
+                                        .SelectMany(ModerationEvidenceKinds.ForRule)
+                                        .Distinct(StringComparer.Ordinal)
+                                        .Cast<object?>()
+                                        .Append(null)
+                                        .ToArray(),
+                                },
+                                sensitiveDataType = new
+                                {
+                                    type = new[] { "string", "null" },
+                                    @enum = new object?[]
+                                    {
+                                        null, "address", "phone", "email", "ip",
+                                        "identity", "location", "credentials", "other",
+                                    },
                                 },
                                 reason = new
                                 {

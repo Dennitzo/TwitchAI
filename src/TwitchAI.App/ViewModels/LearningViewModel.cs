@@ -227,6 +227,7 @@ public sealed partial class LearningReviewViewModel : ObservableObject
     {
         Result = result;
         RuleOptions = result.ActiveRules
+            .Where(rule => ModerationRuleCodes.IsSemanticAiRule(rule.RuleCode))
             .OrderBy(rule => rule.PolicySet)
             .ThenBy(rule => rule.Priority)
             .ThenBy(rule => rule.Title, StringComparer.CurrentCultureIgnoreCase)
@@ -243,12 +244,6 @@ public sealed partial class LearningReviewViewModel : ObservableObject
                     option.Code,
                     result.ProposedRuleCode,
                     StringComparison.OrdinalIgnoreCase))
-            ?? RuleOptions.FirstOrDefault(
-                option => string.Equals(
-                    option.Code,
-                    ModerationRuleCodes.OtherAbuse,
-                    StringComparison.Ordinal))
-            ?? (RuleOptions.Count > 0 ? RuleOptions[0] : null)
             ?? throw new InvalidOperationException(
                 "Für den Lerntest ist keine Verstoßkategorie verfügbar.");
 

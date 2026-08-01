@@ -39,6 +39,14 @@ public enum ModerationRuleAction
 {
     Delete,
     Timeout,
+    Ban,
+}
+
+public enum RuleEvaluationMode
+{
+    SemanticAi,
+    DeterministicPhrase,
+    HumanOnly,
 }
 
 public sealed record PolicyScopeRecord(
@@ -63,7 +71,8 @@ public sealed record BlacklistRuleRecord(
     long RowVersion,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? ArchivedAt);
+    DateTimeOffset? ArchivedAt,
+    RuleEvaluationMode EvaluationMode = RuleEvaluationMode.SemanticAi);
 
 public sealed record BlacklistPhraseRecord(
     long PhraseId,

@@ -427,6 +427,74 @@ public sealed class ModerationPromptCompilerTests
                 .Select(item => item.GetString()!));
     }
 
+    [Fact]
+    public void Compile_PhraseGatedRulesExposeOnlyActualMatchAndExcludeUnmatchedRule()
+    {
+        var source = Envelope(
+            Guid.Parse("c3432580-eaa9-43ae-9786-727a1cd7e9cd"),
+            [new ModerationRequestMessageV3(
+                "m1",
+                "check me out on my stream",
+                [ModerationRuleCodes.SelfPromotion])
+            {
+                LocalPhraseMatches =
+                [
+                    new ModerationRequestPhraseMatchV1(
+                        35,
+                        ModerationRuleCodes.SelfPromotion,
+                        "check me out"),
+                ],
+            }]);
+        var envelope = source with
+        {
+            ActiveRules =
+            [
+                .. source.ActiveRules,
+                new ModerationRuleDefinition(
+                    ModerationRuleCodes.SelfPromotion,
+                    PolicySetCode.General,
+                    "Eigenwerbung",
+                    ModerationRuleCodes.SelfPromotionPromptInstruction,
+                    ModerationActionKind.Timeout,
+                    86400,
+                    "Eigenwerbung.",
+                    60),
+                new ModerationRuleDefinition(
+                    ModerationRuleCodes.BotScam,
+                    PolicySetCode.General,
+                    "Bot / Scam",
+                    ModerationRuleCodes.BotScamPromptInstruction,
+                    ModerationActionKind.Timeout,
+                    86400,
+                    "Bot-/Scam-Werbung.",
+                    65),
+            ],
+        };
+
+        var compiled = new ModerationPromptCompiler().Compile(envelope);
+        using var json = JsonDocument.Parse(compiled.UserPrompt);
+        var message = json.RootElement.GetProperty("messages")[0];
+
+        Assert.Equal(
+            [ModerationRuleCodes.SelfPromotion],
+            message.GetProperty("localMatchCodes").EnumerateArray()
+                .Select(item => item.GetString()));
+        var phraseMatch = Assert.Single(
+            message.GetProperty("localPhraseMatches").EnumerateArray());
+        Assert.Equal(35, phraseMatch.GetProperty("phraseId").GetInt64());
+        Assert.Equal(ModerationRuleCodes.SelfPromotion,
+            phraseMatch.GetProperty("ruleCode").GetString());
+        Assert.Equal("check me out", phraseMatch.GetProperty("phrase").GetString());
+        Assert.Contains(
+            ModerationRuleCodes.BotScam,
+            message.GetProperty("excludedRuleCodes").EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.DoesNotContain(
+            ModerationRuleCodes.SelfPromotion,
+            message.GetProperty("excludedRuleCodes").EnumerateArray()
+                .Select(item => item.GetString()));
+    }
+
     private static ModerationRequestEnvelopeV3 Envelope(
         Guid batchId,
         IReadOnlyList<ModerationRequestMessageV3> messages)

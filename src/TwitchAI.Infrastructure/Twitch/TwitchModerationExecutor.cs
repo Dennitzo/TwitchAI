@@ -145,6 +145,22 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                 cancellationToken).ConfigureAwait(false);
         }
 
+        if ((moderationCase.ProposalOrigin == ModerationProposalOrigin.DeterministicPhrase
+                || ModerationRuleCodes.RequiresLocalPhraseMatch(moderationCase.RuleCode))
+            && !await PhraseMatchesAreCurrentAsync(
+                moderationCase.CaseId,
+                cancellationToken).ConfigureAwait(false))
+        {
+            return await CompleteWithoutMutationAsync(
+                moderationCase,
+                request,
+                CoreModerationCaseStatus.StalePolicy,
+                ModerationExecutionOutcome.StalePolicy,
+                "blacklist_phrase_changed",
+                "Die auslösende lokale Blacklistphrase wurde geändert oder deaktiviert.",
+                cancellationToken).ConfigureAwait(false);
+        }
+
         var enteredAsReadOnly = _runtimeMode.IsReadOnly;
         if (!enteredAsReadOnly)
         {
@@ -433,6 +449,38 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             CancellationToken.None).ConfigureAwait(false);
     }
 
+    private async Task<bool> PhraseMatchesAreCurrentAsync(
+        long caseId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await _connectionFactory
+            .OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT COUNT(*),
+                   SUM(CASE WHEN phrase.enabled = 1
+                                 AND phrase.archived_utc IS NULL
+                                 AND phrase.row_version = match.phrase_row_version
+                                 AND phrase.normalized_phrase = match.normalized_phrase_snapshot
+                            THEN 1 ELSE 0 END)
+            FROM moderation_case_phrase_matches match
+            INNER JOIN phrase_rules phrase ON phrase.phrase_id = match.phrase_id
+            WHERE match.case_id = @case_id;
+            """;
+        command.Parameters.AddWithValue("@case_id", caseId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        var total = reader.GetInt32(0);
+        var current = reader.IsDBNull(1) ? 0 : reader.GetInt32(1);
+        return total > 0 && total == current;
+    }
+
     private static string? ValidateRequest(ModerationExecutionRequest request)
     {
         if (request.CaseId <= 0 || request.ExpectedRowVersion <= 0)
@@ -519,13 +567,27 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                         : PolicySetCode.General,
                     rule.Title,
                     rule.PromptInstruction,
-                    rule.DefaultAction == ModerationRuleAction.Timeout
-                        ? ModerationActionKind.Timeout
-                        : ModerationActionKind.Delete,
+                    rule.DefaultAction switch
+                    {
+                        _ when string.Equals(rule.RuleCode, ModerationRuleCodes.LocalBlacklist, StringComparison.Ordinal) => ModerationActionKind.Ban,
+                        _ when string.Equals(rule.RuleCode, ModerationRuleCodes.BotScam, StringComparison.Ordinal) => ModerationActionKind.Ban,
+                        ModerationRuleAction.Timeout => ModerationActionKind.Timeout,
+                        ModerationRuleAction.Ban => ModerationActionKind.Ban,
+                        _ => ModerationActionKind.Delete,
+                    },
                     rule.DefaultTimeoutSeconds,
                     rule.PublicReason,
                     rule.Priority,
-                    ModerationRuleCodes.AllowsTriggerLearning(rule.RuleCode)))
+                    ModerationRuleCodes.AllowsTriggerLearning(rule.RuleCode))
+                {
+                    EvaluationMode = rule.EvaluationMode switch
+                    {
+                        RuleEvaluationMode.DeterministicPhrase =>
+                            ModerationRuleEvaluationMode.DeterministicPhrase,
+                        RuleEvaluationMode.HumanOnly => ModerationRuleEvaluationMode.HumanOnly,
+                        _ => ModerationRuleEvaluationMode.SemanticAi,
+                    },
+                })
                 .Where(rule => resolved.Contains(rule.PolicySet))
                 .OrderBy(rule => rule.Priority)
                 .ThenBy(rule => rule.RuleCode, StringComparer.Ordinal)
@@ -601,6 +663,10 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                     proposed_timeout_seconds = @approved_timeout_seconds,
                     reason = @approved_reason,
                     policy_set = @approved_policy_set,
+                    violation_subtype = CASE
+                        WHEN violation_rule_code = @approved_rule_code THEN violation_subtype
+                        ELSE NULL
+                    END,
                     violation_rule_code = @approved_rule_code,
                     trigger_phrases_json = @approved_triggers
                 WHERE case_id = @case_id
@@ -638,10 +704,13 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                 """
                 INSERT INTO action_attempts(
                     case_id, broadcaster_id, twitch_message_id, target_user_id,
-                    action, timeout_seconds, reason, rule_code, status, requested_utc)
+                    action, timeout_seconds, reason, rule_code, violation_subtype,
+                    status, requested_utc)
                 VALUES(
                     @case_id, @broadcaster_id, @message_id, @target_user_id,
-                    @action, @timeout_seconds, @reason, @rule_code, 'intent', @requested_utc);
+                    @action, @timeout_seconds, @reason, @rule_code,
+                    (SELECT violation_subtype FROM moderation_cases WHERE case_id = @case_id),
+                    'intent', @requested_utc);
                 SELECT last_insert_rowid();
                 """;
             insert.Parameters.AddWithValue("@case_id", moderationCase.CaseId);
@@ -761,6 +830,11 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                     violation_rule_code = CASE
                         WHEN @persist_review = 1 THEN @approved_rule_code
                         ELSE violation_rule_code
+                    END,
+                    violation_subtype = CASE
+                        WHEN @persist_review = 1
+                             AND violation_rule_code <> @approved_rule_code THEN NULL
+                        ELSE violation_subtype
                     END,
                     trigger_phrases_json = CASE
                         WHEN @persist_review = 1 THEN @approved_triggers
@@ -1107,11 +1181,13 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
             INSERT INTO moderation_feedback(
                 case_id, operator_decision, actual_action,
                 actual_timeout_seconds, actual_reason, discard_reason, rule_code,
+                violation_subtype,
                 eligible_for_learning, human_approved, twitch_executed,
                 learning_accepted, review_completed, decided_utc)
             VALUES(
                 @case_id, 'executed', @actual_action,
                 @timeout_seconds, @reason, NULL, @rule_code,
+                (SELECT violation_subtype FROM moderation_cases WHERE case_id = @case_id),
                 @eligible, 1, @twitch_executed,
                 @learning_accepted, @review_completed, @decided_utc);
             """;

@@ -8,6 +8,12 @@ public enum ModerationActionKind
     Ban,
 }
 
+public enum ModerationProposalOrigin
+{
+    LocalAi,
+    DeterministicPhrase,
+}
+
 public enum ModerationCaseStatus
 {
     Pending,
@@ -120,10 +126,17 @@ public sealed record ModerationRequestMessageV3(
     string LowerText,
     IReadOnlyList<string> LocalMatchCodes)
 {
+    public IReadOnlyList<ModerationRequestPhraseMatchV1> LocalPhraseMatches { get; init; } = [];
+
     public int? TwitchEmoteCount { get; init; }
 
     public bool? IsTwitchEmoteOnly { get; init; }
 }
+
+public sealed record ModerationRequestPhraseMatchV1(
+    long PhraseId,
+    string RuleCode,
+    string Phrase);
 
 public sealed record ModerationDecisionCandidateV3(
     string MessageId,
@@ -152,7 +165,44 @@ public sealed record ValidatedModerationDecision(
     double Confidence,
     string? RuleCode = null,
     string? ReplyTemplateId = null,
-    double? ReplyConfidence = null);
+    double? ReplyConfidence = null)
+{
+    public string? EvidenceKind { get; init; }
+
+    public string? SensitiveDataType { get; init; }
+}
+
+public static class ModerationEvidenceKinds
+{
+    private static readonly Dictionary<string, IReadOnlySet<string>> Allowed =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+        {
+            [ModerationRuleCodes.PersonalAttack] = Set("direct_insult", "verified_harassment"),
+            [ModerationRuleCodes.SexualContent] = Set("sexualization", "sexual_solicitation", "explicit_sexual", "sexist_degradation"),
+            [ModerationRuleCodes.Hate] = Set("racist", "lgbtq_hostility", "ableist", "religious_or_other"),
+            [ModerationRuleCodes.Harm] = Set("direct_threat", "violence_incitation", "self_harm_incitation"),
+            [ModerationRuleCodes.PersonalData] = Set("disclosure", "targeted_request", "threat_to_disclose"),
+            [ModerationRuleCodes.Begging] = Set("subscription", "money_or_item", "giveaway_pressure"),
+            [ModerationRuleCodes.Spam] = Set("emote_flood", "text_flood", "symbol_flood"),
+            [ModerationRuleCodes.Backseatgaming] = Set("instruction", "solution", "spoiler", "hidden_danger"),
+            [ModerationRuleCodes.SelfPromotion] = Set("self_channel_promotion", "automated_self_promotion", "malicious_self_promotion"),
+            [ModerationRuleCodes.BotScam] = Set("bot_advertising", "scam_service", "phishing"),
+        };
+
+    public static IReadOnlyList<string> ForRule(string? ruleCode) =>
+        ruleCode is not null && Allowed.TryGetValue(ruleCode, out var values)
+            ? values.Order(StringComparer.Ordinal).ToArray()
+            : [];
+
+    public static bool IsValid(string? ruleCode, string? evidenceKind) =>
+        ruleCode is not null
+        && evidenceKind is not null
+        && Allowed.TryGetValue(ruleCode, out var values)
+        && values.Contains(evidenceKind);
+
+    private static HashSet<string> Set(params string[] values) =>
+        values.ToHashSet(StringComparer.Ordinal);
+}
 
 public sealed record ValidatedModerationEnvelope(
     Guid BatchId,
@@ -188,6 +238,11 @@ public sealed record ModerationCase(
     long? AiLatencyMilliseconds)
 {
     public string? RuleCode { get; init; }
+
+    public string? EvidenceKind { get; init; }
+
+    public ModerationProposalOrigin ProposalOrigin { get; init; } =
+        ModerationProposalOrigin.LocalAi;
 
     public ModerationCase(
         long CaseId,
@@ -227,6 +282,11 @@ public sealed record ModerationCaseCreationMetadata(
     IReadOnlyList<string> LocalMatchCodes,
     long? AiLatencyMilliseconds)
 {
+    public ModerationProposalOrigin ProposalOrigin { get; init; } =
+        ModerationProposalOrigin.LocalAi;
+
+    public IReadOnlyList<BlacklistMatch> PhraseMatches { get; init; } = [];
+
     public long? ReanalysisCaseId { get; init; }
 
     public long? ReanalysisCaseRowVersion { get; init; }

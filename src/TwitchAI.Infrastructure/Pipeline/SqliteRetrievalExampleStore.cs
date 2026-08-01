@@ -43,6 +43,7 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
 {
     private const int MaximumCandidates = 1_000;
     private const int MaximumRankedExamples = 24;
+    private const double MinimumSimilarity = 0.20d;
 
     public ValueTask<IReadOnlyList<RetrievalExample>> GetRelevantAsync(
         string channelId,
@@ -134,6 +135,31 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
             active_rules(policy_set, rule_code) AS (
                 VALUES {{activeRuleValues}}
             ),
+            taxonomy_examples AS (
+                SELECT source_kind, source_id, original_text, lower_text,
+                       learning_decision, policy_set,
+                       CASE rule_code
+                           WHEN 'G_SEXUALIZATION' THEN 'G_SEXUAL_CONTENT'
+                           WHEN 'G_SEXUAL_EXPLICIT' THEN 'G_SEXUAL_CONTENT'
+                           WHEN 'G_SEXISM' THEN 'G_SEXUAL_CONTENT'
+                           WHEN 'G_INSULT' THEN 'G_PERSONAL_ATTACK'
+                           WHEN 'G_HARASSMENT' THEN 'G_PERSONAL_ATTACK'
+                           WHEN 'G_RACISM' THEN 'G_HATE'
+                           WHEN 'G_LGBTQ_HATE' THEN 'G_HATE'
+                           WHEN 'G_ABLEISM' THEN 'G_HATE'
+                           WHEN 'G_HATE_OTHER' THEN 'G_HATE'
+                           WHEN 'G_THREAT' THEN 'G_HARM'
+                           WHEN 'G_VIOLENCE' THEN 'G_HARM'
+                           WHEN 'G_SELF_HARM_INCITEMENT' THEN 'G_HARM'
+                           ELSE rule_code
+                       END AS rule_code,
+                       action, timeout_seconds, reason, is_removed,
+                       row_version, effective_utc
+                FROM effective_examples
+                WHERE rule_code NOT IN (
+                    'G_ADVERTISING','G_SCAM','G_OTHER_ABUSE','G_DISRUPTION',
+                    'G_STREAMER_INSTRUCTION','LOCAL_BLACKLIST')
+            ),
             newest_human_decisions AS (
                 SELECT source_kind, source_id, lower_text, action,
                        timeout_seconds, policy_set, reason, learning_decision,
@@ -144,7 +170,7 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
                                     effective_utc DESC,
                                     source_kind DESC,
                                     source_id DESC) AS decision_rank
-                FROM effective_examples
+                FROM taxonomy_examples
                 WHERE is_removed = 0
             )
             """ + "\n" +
@@ -231,53 +257,17 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
             .ThenByDescending(item => item.SourceId)
             .DistinctBy(item => item.Example.LowerText, StringComparer.Ordinal)
             .Select(item => new ScoredCandidate(item, Similarity(item.Example.LowerText, queries)))
+            .Where(item => item.Score >= MinimumSimilarity)
             .ToArray();
 
-        var moderated = BalanceSources(
+        var moderated = SortCandidates(
             distinct.Where(item => item.Candidate.Example.IsPositive));
-        var allowed = BalanceSources(
+        var allowed = SortCandidates(
             distinct.Where(item => !item.Candidate.Example.IsPositive));
         return InterleaveDecisions(moderated, allowed)
             .Take(MaximumRankedExamples)
             .Select(item => item.Candidate.Example)
             .ToArray();
-    }
-
-    private static List<ScoredCandidate> BalanceSources(
-        IEnumerable<ScoredCandidate> candidates)
-    {
-        var manual = SortCandidates(candidates.Where(
-            item => item.Candidate.SourceKind == LearningSourceKind.ManualTest));
-        var twitch = SortCandidates(candidates.Where(
-            item => item.Candidate.SourceKind == LearningSourceKind.TwitchModeration));
-        var result = new List<ScoredCandidate>(manual.Count + twitch.Count);
-        var manualIndex = 0;
-        var twitchIndex = 0;
-        var preferManual = manual.Count > 0 &&
-            (twitch.Count == 0 || manual[0].Score >= twitch[0].Score);
-        while (manualIndex < manual.Count || twitchIndex < twitch.Count)
-        {
-            if (preferManual && manualIndex < manual.Count)
-            {
-                result.Add(manual[manualIndex++]);
-            }
-            else if (!preferManual && twitchIndex < twitch.Count)
-            {
-                result.Add(twitch[twitchIndex++]);
-            }
-            else if (manualIndex < manual.Count)
-            {
-                result.Add(manual[manualIndex++]);
-            }
-            else
-            {
-                result.Add(twitch[twitchIndex++]);
-            }
-
-            preferManual = !preferManual;
-        }
-
-        return result;
     }
 
     private static List<ScoredCandidate> InterleaveDecisions(

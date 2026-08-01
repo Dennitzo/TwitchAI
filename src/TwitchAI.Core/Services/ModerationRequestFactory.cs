@@ -55,6 +55,15 @@ public sealed class ModerationRequestFactory
                     .Distinct(StringComparer.Ordinal)
                     .ToArray())
                 {
+                    LocalPhraseMatches = message.LocalMatches
+                        .GroupBy(match => match.PhraseId)
+                        .Select(group => group.First())
+                        .Select(match => new ModerationRequestPhraseMatchV1(
+                            match.PhraseId,
+                            match.RuleCode,
+                            match.MatchedPhrase))
+                        .Take(3)
+                        .ToArray(),
                     TwitchEmoteCount = message.Message.TwitchEmoteCount > 0
                         ? message.Message.TwitchEmoteCount
                         : null,
@@ -94,9 +103,9 @@ public sealed class ModerationRequestFactory
             - 120-second timeout for light spam
             - 600-second timeout for ordinary actionable abuse, light insults, or clear backseatgaming
             - 86400-second timeout for strong insults that are serious but not unambiguously ban-worthy, and for G_BEGGING
-            - ban for unambiguously extreme abuse, and for confirmed G_ADVERTISING self-promotion or promotion of another channel
-            - delete only for a single low-context, unnecessary nuisance message with no substantive or serious violation
-            Every moderate G_ADVERTISING decision must use ban. Every moderate G_BEGGING decision must use a 86400-second timeout.
+            Follow the rule-specific v8 action matrix. Never use delete for missing context, irrelevance, or nuisance.
+            G_BEGGING requires a 86400-second timeout. G_SPAM permits delete, timeout 2, or timeout 120.
+            G_SELF_PROMOTION permits timeout 86400 or ban. G_BOT_SCAM requires ban.
             Never choose delete merely because a message is short, unwanted, or the first scale option.
             Never choose delete for insults, harassment, hate, threats, sexualization, personal data, scams,
             advertising, begging, repeated spam, meaningful disruption, or backseatgaming.

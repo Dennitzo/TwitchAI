@@ -8,7 +8,7 @@ namespace TwitchAI.Infrastructure.Persistence;
 public static class GlobalPolicyStorage
 {
     public const string BroadcasterId = "*";
-    public const string GeneralRuleCode = "G_OTHER_ABUSE";
+    public const string GeneralRuleCode = "G_PERSONAL_ATTACK";
     public const string BackseatgamingRuleCode = "BACKSEATGAMING";
     public const string JustChattingCategoryId = "509658";
     public const string IrlCategoryId = "509672";

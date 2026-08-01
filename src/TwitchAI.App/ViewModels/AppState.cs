@@ -166,6 +166,7 @@ public sealed partial class ModerationCaseItem : ObservableObject
             EnsureProvisionalViolationRule();
             OnPropertyChanged(nameof(ViolationCategoryDisplayName));
             OnPropertyChanged(nameof(CanExecute));
+            OnPropertyChanged(nameof(CanAllow));
 
             if (!_suppressViolationRuleDefaults
                 && _hasViolationRuleSnapshot
@@ -205,6 +206,13 @@ public sealed partial class ModerationCaseItem : ObservableObject
 
     public IReadOnlyList<string> LocalMatchCodes { get; init; } = [];
 
+    public string ProposalOriginLabel { get; init; } = string.Empty;
+
+    public Visibility ProposalOriginVisibility =>
+        string.IsNullOrWhiteSpace(ProposalOriginLabel)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+
     public long? AiLatencyMilliseconds { get; init; }
 
     public string AiDurationLabel => AiLatencyMilliseconds is { } duration
@@ -234,6 +242,12 @@ public sealed partial class ModerationCaseItem : ObservableObject
         && (IsChatReply || HasUsableViolationRule)
         && Status is "Pending" or "Extern erledigt · Lernentscheidung offen";
 
+    public bool CanAllow =>
+        !IsChatReply
+        && !IsBusy
+        && HasUsableViolationRule
+        && Status == "Pending";
+
     public bool CanDiscard =>
         !IsBusy
         && (Status == "Pending"
@@ -246,17 +260,22 @@ public sealed partial class ModerationCaseItem : ObservableObject
     partial void OnIsBusyChanged(bool value)
     {
         OnPropertyChanged(nameof(CanExecute));
+        OnPropertyChanged(nameof(CanAllow));
         OnPropertyChanged(nameof(CanDiscard));
     }
 
     partial void OnStatusChanged(string value)
     {
         OnPropertyChanged(nameof(CanExecute));
+        OnPropertyChanged(nameof(CanAllow));
         OnPropertyChanged(nameof(CanDiscard));
     }
 
-    partial void OnPolicySetChanged(string value) =>
+    partial void OnPolicySetChanged(string value)
+    {
         OnPropertyChanged(nameof(CanExecute));
+        OnPropertyChanged(nameof(CanAllow));
+    }
 
     public bool TrySelectViolationRule(string? ruleCode)
     {
@@ -343,6 +362,7 @@ public sealed partial class ModerationCaseItem : ObservableObject
         OnPropertyChanged(nameof(HasViolationRuleSnapshot));
         OnPropertyChanged(nameof(ViolationCategoryDisplayName));
         OnPropertyChanged(nameof(CanExecute));
+        OnPropertyChanged(nameof(CanAllow));
         if (applyFallbackDefaults && selectedOption is not null)
         {
             ApplyViolationRuleDefaults(selectedOption);
@@ -620,6 +640,11 @@ public sealed record ViolationCategoryOption(
     public static string GetFallbackDisplayName(string? ruleCode) =>
         ruleCode?.Trim().ToUpperInvariant() switch
         {
+            "G_HARM" => "Gewalt, Drohungen & Selbstverletzung",
+            "G_HATE" => "Hassrede & Diskriminierung",
+            "G_SEXUAL_CONTENT" => "Sexuelle & sexistische Inhalte",
+            "G_PERSONAL_ATTACK" => "Beleidigung & Belästigung",
+            "LOCAL_BLACKLIST" => "Lokaler Blacklist-Treffer",
             "G_SEXUALIZATION" => "Sexualisierung",
             "G_SEXUAL_EXPLICIT" => "Explizit sexueller Inhalt",
             "G_INSULT" => "Beleidigung",
@@ -638,6 +663,8 @@ public sealed record ViolationCategoryOption(
             "G_SCAM" => "Betrug / Phishing",
             "G_DISRUPTION" => "Chatstörung",
             "G_ADVERTISING" => "Werbung",
+            ModerationRuleCodes.SelfPromotion => "Eigenwerbung",
+            ModerationRuleCodes.BotScam => "Bot / Scam",
             "G_BEGGING" => "Gebettel",
             "G_OTHER_ABUSE" => "Sonstiger General-Verstoß",
             "BACKSEATGAMING" => "Backseatgaming",

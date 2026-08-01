@@ -715,11 +715,12 @@ public sealed partial class LearningDatasetViewModel : ObservableObject, IDispos
     {
         var rules = await _configuration.LoadPolicyRulesAsync(cancellationToken);
         return rules
-            .Where(rule => _queryPolicySet is null
-                || string.Equals(
-                    rule.PolicySet,
-                    _queryPolicySet.Value.ToString(),
-                    StringComparison.Ordinal))
+            .Where(rule => ModerationRuleCodes.IsSemanticAiRule(rule.RuleCode)
+                && (_queryPolicySet is null
+                    || string.Equals(
+                        rule.PolicySet,
+                        _queryPolicySet.Value.ToString(),
+                        StringComparison.Ordinal)))
             .Select(rule => new LearningRuleOption(
                 rule.RuleCode,
                 ParsePolicySet(rule.PolicySet),

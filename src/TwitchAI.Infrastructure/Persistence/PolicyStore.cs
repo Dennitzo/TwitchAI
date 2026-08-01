@@ -433,6 +433,7 @@ public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
                    r.default_timeout_seconds, r.public_reason,
                    r.priority, r.enabled, r.row_version,
                    r.created_utc, r.updated_utc, r.archived_utc,
+                   r.evaluation_mode,
                    CASE s.scope_kind WHEN 'general' THEN 0 ELSE 1 END AS scope_rank
             FROM blacklist_rules r
             INNER JOIN policy_sets s ON s.scope_id = r.scope_id
@@ -451,7 +452,7 @@ public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
         {
             rules.Add(new ScopedRule(
                 ReadRule(reader),
-                reader.GetInt32(14)));
+                reader.GetInt32(15)));
         }
 
         return rules;
@@ -538,7 +539,12 @@ public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
             builder.Append(item.ScopeRank == 0 ? "g|" : "c|");
             builder.Append(SingleLine(rule.RuleCode));
             builder.Append("|a=");
-            builder.Append(rule.DefaultAction == ModerationRuleAction.Timeout ? "timeout" : "delete");
+            builder.Append(rule.DefaultAction switch
+            {
+                ModerationRuleAction.Timeout => "timeout",
+                ModerationRuleAction.Ban => "ban",
+                _ => "delete",
+            });
             if (rule.DefaultTimeoutSeconds is { } seconds)
             {
                 builder.Append("|s=");
@@ -577,7 +583,8 @@ public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
             reader.GetInt64(10),
             SqliteData.GetDateTimeOffset(reader, 11),
             SqliteData.GetDateTimeOffset(reader, 12),
-            SqliteData.GetNullableDateTimeOffset(reader, 13));
+            SqliteData.GetNullableDateTimeOffset(reader, 13),
+            ParseEvaluationMode(reader.GetString(14)));
     }
 
     private static async Task InsertScopeAsync(
@@ -779,9 +786,18 @@ public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
         {
             "delete" => ModerationRuleAction.Delete,
             "timeout" => ModerationRuleAction.Timeout,
+            "ban" => ModerationRuleAction.Ban,
             _ => throw new InvalidDataException($"Unsupported moderation action '{value}'."),
         };
     }
+
+    private static RuleEvaluationMode ParseEvaluationMode(string value) => value switch
+    {
+        "semantic_ai" => RuleEvaluationMode.SemanticAi,
+        "deterministic_phrase" => RuleEvaluationMode.DeterministicPhrase,
+        "human_only" => RuleEvaluationMode.HumanOnly,
+        _ => throw new InvalidDataException($"Unsupported evaluation mode '{value}'."),
+    };
 
     private sealed record ScopedRule(BlacklistRuleRecord Rule, int ScopeRank);
 

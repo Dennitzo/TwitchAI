@@ -260,6 +260,12 @@ public sealed class ModerationUiBridge : IDisposable
             AiLatencyMilliseconds = eventArgs.AiLatencyMilliseconds,
             AvailabilityLabel = "Nachricht verfügbar",
             Status = "Pending",
+            ProposalOriginLabel = string.Equals(
+                decision.RuleCode,
+                ModerationRuleCodes.LocalBlacklist,
+                StringComparison.Ordinal)
+                ? "Lokaler Blacklist-Treffer"
+                : string.Empty,
         };
         foreach (var phrase in decision.TriggerPhrases)
         {
@@ -271,6 +277,15 @@ public sealed class ModerationUiBridge : IDisposable
         // collection so ItemsRepeater never has to render a transient empty
         // category while a second database lookup is pending.
         var violationCategories = eventArgs.ActiveRules
+            .Where(rule => ModerationRuleCodes.IsSemanticAiRule(rule.RuleCode)
+                || string.Equals(
+                    decision.RuleCode,
+                    ModerationRuleCodes.LocalBlacklist,
+                    StringComparison.Ordinal)
+                && string.Equals(
+                    rule.RuleCode,
+                    ModerationRuleCodes.LocalBlacklist,
+                    StringComparison.Ordinal))
             .Select(ViolationCategoryOption.FromDefinition)
             .ToArray();
         item.ReplaceViolationRuleOptions(

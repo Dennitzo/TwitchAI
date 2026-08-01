@@ -24,6 +24,8 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             "timeoutSeconds",
             "policySet",
             "ruleCode",
+            "evidenceKind",
+            "sensitiveDataType",
             "reason",
             "triggerPhrases",
             "confidence",
@@ -51,6 +53,8 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             "action",
             "timeoutSeconds",
             "ruleCode",
+            "evidenceKind",
+            "sensitiveDataType",
             "reason",
             "triggerPhrases",
             "confidence");
@@ -79,7 +83,7 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             "confidence");
 
     private static readonly HashSet<string> RequiredKeyedModerationProperties =
-        Set("action", "ruleCode", "reason", "triggerPhrases", "confidence");
+        Set("action", "ruleCode", "evidenceKind", "reason", "triggerPhrases", "confidence");
 
     private static readonly HashSet<string> KeyedReplyProperties =
         Set("replyTemplateId", "confidence");
@@ -922,25 +926,61 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 $"Decision '{messageId}' selects a rule from an inactive policy set.");
         }
 
+        if (ModerationRuleCodes.RequiresLocalPhraseMatch(rule.RuleCode)
+            && !source.LocalMatches.Any(match => string.Equals(
+                match.RuleCode,
+                rule.RuleCode,
+                StringComparison.Ordinal)))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "phrase_gate_missing",
+                $"Decision '{messageId}' selects {rule.RuleCode} without a matching active local phrase.");
+        }
+
         (action, timeoutSeconds) =
             ModerationActionRules.NormalizeAiSuggestionForRule(
                 action,
                 timeoutSeconds,
                 rule.RuleCode);
-        if (!ModerationActionRules.IsValidAiSuggestion(action, timeoutSeconds))
-        {
-            return SparseDecisionValidationResult.Invalid(
-                messageId,
-                "timeout_invalid",
-                $"Decision '{messageId}' has an invalid action or timeout value.");
-        }
-
-        if (!ModerationActionRules.IsValidAiRuleAction(action, rule.RuleCode))
+        if (!ModerationActionRules.IsValidAiRuleSuggestion(
+                action,
+                timeoutSeconds,
+                rule.RuleCode))
         {
             return SparseDecisionValidationResult.Invalid(
                 messageId,
                 "action_rule_invalid",
-                $"Decision '{messageId}': The selected rule cannot justify a permanent ban on its own.");
+                $"Decision '{messageId}' has an action or timeout that is invalid for {rule.RuleCode}.");
+        }
+
+        var evidenceKind = element.TryGetProperty("evidenceKind", out var evidenceElement)
+            && evidenceElement.ValueKind == JsonValueKind.String
+            ? evidenceElement.GetString()
+            : null;
+        if (isKeyedDecision
+            && !ModerationEvidenceKinds.IsValid(rule.RuleCode, evidenceKind))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "evidence_kind_invalid",
+                $"Decision '{messageId}' requires a rule-compatible evidenceKind.");
+        }
+
+        var sensitiveDataType = element.TryGetProperty(
+                "sensitiveDataType",
+                out var sensitiveElement)
+            && sensitiveElement.ValueKind == JsonValueKind.String
+            ? sensitiveElement.GetString()
+            : null;
+        if (string.Equals(rule.RuleCode, ModerationRuleCodes.PersonalData, StringComparison.Ordinal)
+            && isKeyedDecision
+            && string.IsNullOrWhiteSpace(sensitiveDataType))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "sensitive_data_type_missing",
+                $"Decision '{messageId}' requires sensitiveDataType.");
         }
 
         if (string.Equals(
@@ -988,6 +1028,12 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             candidateReason,
             rule,
             rule.PolicySet);
+        if (ModerationReasonNormalizer.IsSelfNegating(candidateReason))
+        {
+            return SparseDecisionValidationResult.Valid(
+                NoActionDecision(messageId),
+                usedLocalFallback: true);
+        }
 
         var triggerResult = ParseTriggerPhrases(
             element.GetProperty("triggerPhrases"),
@@ -1062,11 +1108,11 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 $"Decision '{messageId}': Backseatgaming requires at least one concrete multi-word trigger phrase.");
         }
 
-        var insultEvidenceMissing = string.Equals(
+        var evidenceMissing = !string.Equals(
                 rule.RuleCode,
-                ModerationRuleCodes.Insult,
+                ModerationRuleCodes.PersonalData,
                 StringComparison.Ordinal)
-            && triggerResult.TriggerPhrases!.Count == 0;
+            && triggerResult.TriggerPhrases!.Count != 1;
 
         var confidenceElement = element.GetProperty("confidence");
         if (confidenceElement.ValueKind != JsonValueKind.Number
@@ -1080,14 +1126,12 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 $"Decision '{messageId}' has an invalid confidence.");
         }
 
-        if (insultEvidenceMissing)
+        if (evidenceMissing)
         {
-            // An insult without a contiguous target + degradation span is too
-            // ambiguous to surface. Treat it as no action locally instead of
-            // spending another full model run on optional evidence metadata.
-            return SparseDecisionValidationResult.Valid(
-                NoActionDecision(messageId),
-                usedLocalFallback: true);
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "evidence_phrase_missing",
+                $"Decision '{messageId}' requires exactly one contiguous evidence phrase.");
         }
 
         return SparseDecisionValidationResult.Valid(
@@ -1099,7 +1143,11 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 reason,
                 triggerResult.TriggerPhrases!,
                 confidence,
-                rule.RuleCode),
+                rule.RuleCode)
+            {
+                EvidenceKind = evidenceKind,
+                SensitiveDataType = sensitiveDataType,
+            },
             usedLocalFallback);
     }
 
@@ -1506,6 +1554,18 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             return DecisionValidationResult.Invalid(
                 ruleResult.Error.Code,
                 $"Decision '{messageId}': {ruleResult.Error.Message}");
+        }
+
+        if (action != ModerationActionKind.None
+            && ModerationRuleCodes.RequiresLocalPhraseMatch(ruleResult.Rule?.RuleCode)
+            && !source.LocalMatches.Any(match => string.Equals(
+                match.RuleCode,
+                ruleResult.Rule?.RuleCode,
+                StringComparison.Ordinal)))
+        {
+            return DecisionValidationResult.Invalid(
+                "phrase_gate_missing",
+                $"Decision '{messageId}' selects a phrase-gated rule without a matching active local phrase.");
         }
 
         (action, timeoutSeconds) =

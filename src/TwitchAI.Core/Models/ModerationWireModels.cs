@@ -25,9 +25,16 @@ public sealed record ModerationWireMessageV6(
     string MessageId,
     string Text,
     IReadOnlyList<string>? LocalMatchCodes = null,
+    IReadOnlyList<ModerationWirePhraseMatchV1>? LocalPhraseMatches = null,
     IReadOnlyList<string>? ExcludedRuleCodes = null,
     int? TwitchEmoteCount = null,
-    bool? IsTwitchEmoteOnly = null);
+    bool? IsTwitchEmoteOnly = null,
+    IReadOnlyList<string>? ReplyCandidateIds = null);
+
+public sealed record ModerationWirePhraseMatchV1(
+    long PhraseId,
+    string RuleCode,
+    string Phrase);
 
 public sealed record ModerationWireExampleV6(
     string Text,
@@ -91,7 +98,9 @@ public sealed record ModerationWireDecisionV6(
     string RuleCode,
     string Reason,
     IReadOnlyList<string> TriggerPhrases,
-    double Confidence);
+    double Confidence,
+    string EvidenceKind,
+    string? SensitiveDataType = null);
 
 public sealed record ModerationWireReplyV6(
     string MessageId,

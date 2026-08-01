@@ -121,7 +121,9 @@ public sealed class LearningTestService : ILearningTestService
             var promptCharacters = prompt.PromptCharacters with
             {
                 Schema = LmStudioClient.GetLearningTestResponseFormatCharacterCount(
-                    policy.ActiveRules.Select(item => item.RuleCode)),
+                    policy.ActiveRules
+                        .Where(item => ModerationRuleCodes.IsSemanticAiRule(item.RuleCode))
+                        .Select(item => item.RuleCode)),
             };
             PublishQueued(correlationId);
 
@@ -160,7 +162,7 @@ public sealed class LearningTestService : ILearningTestService
                     completion.RawEnvelope,
                     prompt.Envelope,
                     policy,
-                    allowMissingRuleFallback: true);
+                    allowMissingRuleFallback: false);
                 if (fallbackValidation.IsValid)
                 {
                     validation = fallbackValidation;
@@ -198,7 +200,7 @@ public sealed class LearningTestService : ILearningTestService
                         completion.RawEnvelope,
                         prompt.Envelope,
                         policy,
-                        allowMissingRuleFallback: true);
+                        allowMissingRuleFallback: false);
                     if (fallbackValidation.IsValid)
                     {
                         validation = fallbackValidation;
@@ -294,6 +296,8 @@ public sealed class LearningTestService : ILearningTestService
                 decision.UsedRuleFallback)
             {
                 LearningContextRevision = learningRevision,
+                EvidenceKind = decision.EvidenceKind,
+                SensitiveDataType = decision.SensitiveDataType,
             };
         }
         finally
@@ -344,6 +348,7 @@ public sealed class LearningTestService : ILearningTestService
                 systemPrompt,
                 userPrompt,
                 policy.ActiveRules
+                    .Where(item => ModerationRuleCodes.IsSemanticAiRule(item.RuleCode))
                     .Select(item => item.RuleCode)
                     .Distinct(StringComparer.Ordinal)
                     .ToArray(),
@@ -398,7 +403,9 @@ public sealed class LearningTestService : ILearningTestService
                 prompt.PromptCharacters.Examples,
                 Templates: 0,
                 Schema: LmStudioClient.GetLearningTestResponseFormatCharacterCount(
-                    policy.ActiveRules.Select(item => item.RuleCode))),
+                    policy.ActiveRules
+                        .Where(item => ModerationRuleCodes.IsSemanticAiRule(item.RuleCode))
+                        .Select(item => item.RuleCode))),
             errors);
     }
 
@@ -536,18 +543,34 @@ public sealed class LearningTestService : ILearningTestService
                         : PolicySetCode.General,
                     rule.Title,
                     rule.PromptInstruction,
-                    rule.DefaultAction == ModerationRuleAction.Timeout
-                        ? ModerationActionKind.Timeout
-                        : ModerationActionKind.Delete,
+                    rule.DefaultAction switch
+                    {
+                        _ when string.Equals(rule.RuleCode, ModerationRuleCodes.LocalBlacklist, StringComparison.Ordinal) => ModerationActionKind.Ban,
+                        _ when string.Equals(rule.RuleCode, ModerationRuleCodes.BotScam, StringComparison.Ordinal) => ModerationActionKind.Ban,
+                        ModerationRuleAction.Timeout => ModerationActionKind.Timeout,
+                        ModerationRuleAction.Ban => ModerationActionKind.Ban,
+                        _ => ModerationActionKind.Delete,
+                    },
                     rule.DefaultTimeoutSeconds,
                     rule.PublicReason,
                     rule.Priority,
-                    ModerationRuleCodes.AllowsTriggerLearning(rule.RuleCode)))
+                    ModerationRuleCodes.AllowsTriggerLearning(rule.RuleCode))
+                {
+                    EvaluationMode = rule.EvaluationMode switch
+                    {
+                        RuleEvaluationMode.DeterministicPhrase =>
+                            ModerationRuleEvaluationMode.DeterministicPhrase,
+                        RuleEvaluationMode.HumanOnly => ModerationRuleEvaluationMode.HumanOnly,
+                        _ => ModerationRuleEvaluationMode.SemanticAi,
+                    },
+                })
                 .OrderBy(rule => rule.Priority)
                 .ThenBy(rule => rule.RuleCode, StringComparer.Ordinal)
                 .ToArray(),
         };
-        if (result.FindRule(ModerationRuleCodes.OtherAbuse) is null
+        if (!result.ActiveRules.Any(rule =>
+                rule.PolicySet == PolicySetCode.General
+                && ModerationRuleCodes.IsSemanticAiRule(rule.RuleCode))
             || result.FindRule(ModerationRuleCodes.Backseatgaming) is null)
         {
             throw new InvalidOperationException(
@@ -572,7 +595,9 @@ internal sealed record ValidatedLearningTestDecision(
     string Reason,
     IReadOnlyList<string> TriggerPhrases,
     double Confidence,
-    bool UsedRuleFallback);
+    bool UsedRuleFallback,
+    string? EvidenceKind,
+    string? SensitiveDataType);
 
 internal sealed record LearningEnvelopeValidationResult(
     ValidatedLearningTestDecision? Decision,
@@ -593,6 +618,8 @@ internal static class LearningEnvelopeValidator
         "timeoutSeconds",
         "policySet",
         "ruleCode",
+        "evidenceKind",
+        "sensitiveDataType",
         "reason",
         "triggerPhrases",
         "confidence",
@@ -761,6 +788,30 @@ internal static class LearningEnvelopeValidator
                 return Invalid("reason_invalid", "The reason must be a string.");
             }
 
+            var evidenceKind = element.TryGetProperty("evidenceKind", out var evidenceElement)
+                && evidenceElement.ValueKind == JsonValueKind.String
+                ? evidenceElement.GetString()
+                : null;
+            var sensitiveDataType = element.TryGetProperty(
+                    "sensitiveDataType", out var sensitiveElement)
+                && sensitiveElement.ValueKind == JsonValueKind.String
+                ? sensitiveElement.GetString()
+                : null;
+            if (verdict == LearningVerdict.Moderate
+                && !ModerationEvidenceKinds.IsValid(rule!.RuleCode, evidenceKind))
+            {
+                return Invalid(
+                    "evidence_kind_invalid",
+                    "A moderate verdict requires a rule-compatible evidenceKind.");
+            }
+
+            if (verdict == LearningVerdict.Moderate
+                && string.Equals(rule!.RuleCode, ModerationRuleCodes.PersonalData, StringComparison.Ordinal)
+                && string.IsNullOrWhiteSpace(sensitiveDataType))
+            {
+                return Invalid("sensitive_data_type_missing", "Personal data requires sensitiveDataType.");
+            }
+
             if (!TryTriggers(
                     element,
                     request.Message.LowerText,
@@ -818,8 +869,8 @@ internal static class LearningEnvelopeValidator
             else
             {
                 if (action == ModerationActionKind.None
-                    || !ModerationActionRules.IsValidAiSuggestion(action, timeoutSeconds)
-                    || !ModerationActionRules.IsValidAiRuleAction(action, rule.RuleCode))
+                    || !ModerationActionRules.IsValidAiRuleSuggestion(
+                        action, timeoutSeconds, rule.RuleCode))
                 {
                     return Invalid(
                         "moderation_action_invalid",
@@ -866,7 +917,9 @@ internal static class LearningEnvelopeValidator
                     reason,
                     triggers,
                     confidence,
-                    usedRuleFallback),
+                    usedRuleFallback,
+                    evidenceKind,
+                    sensitiveDataType),
                 []);
         }
         catch (JsonException exception)

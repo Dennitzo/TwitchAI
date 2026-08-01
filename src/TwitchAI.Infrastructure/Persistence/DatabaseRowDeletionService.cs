@@ -933,7 +933,7 @@ public sealed class DatabaseRowDeletionService : IDatabaseRowDeletionService
                     rule_code,
                     CASE policy_set
                         WHEN 'backseatgaming' THEN 'BACKSEATGAMING'
-                        ELSE 'G_OTHER_ABUSE'
+                        ELSE 'G_PERSONAL_ATTACK'
                     END),
                 trigger_phrase,
                 SUM(CASE WHEN is_positive = 1 THEN 1 ELSE 0 END),
@@ -946,7 +946,7 @@ public sealed class DatabaseRowDeletionService : IDatabaseRowDeletionService
                     rule_code,
                     CASE policy_set
                         WHEN 'backseatgaming' THEN 'BACKSEATGAMING'
-                        ELSE 'G_OTHER_ABUSE'
+                        ELSE 'G_PERSONAL_ATTACK'
                     END),
                 trigger_phrase;
             """;

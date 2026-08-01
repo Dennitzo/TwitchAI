@@ -39,6 +39,7 @@ public sealed class DatabaseMigrationTests
         Assert.Contains("chat_reply_proposals", tables);
         Assert.Contains("manual_learning_examples", tables);
         Assert.Contains("learning_example_overrides", tables);
+        Assert.Contains("moderation_case_phrase_matches", tables);
         Assert.Equal(["32982", "509658", "509672"], categories);
 
         await using var seedCommand = connection.CreateCommand();
@@ -69,9 +70,56 @@ public sealed class DatabaseMigrationTests
         var journalMode = await ScalarAsync<string>(connection, "PRAGMA journal_mode;");
         var foreignKeys = await ScalarAsync<long>(connection, "PRAGMA foreign_keys;");
 
-        Assert.Equal(25, migrationCount);
+        Assert.Equal(27, migrationCount);
         Assert.Equal("wal", journalMode, ignoreCase: true);
         Assert.Equal(1, foreignKeys);
+    }
+
+    [Fact]
+    public async Task Version27_ConvertsLocalBlacklistToPhraseGatedAiCategories()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(25);
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var connection = await database.OpenConnectionAsync();
+        var activeRules = await ReadStringsAsync(
+            connection,
+            """
+            SELECT rule_code || '|' || evaluation_mode
+            FROM blacklist_rules
+            WHERE enabled = 1 AND archived_utc IS NULL
+            ORDER BY rule_code;
+            """);
+        Assert.Equal(
+        [
+            "BACKSEATGAMING|semantic_ai",
+            "G_BEGGING|semantic_ai",
+            "G_BOT_SCAM|semantic_ai",
+            "G_HARM|semantic_ai",
+            "G_HATE|semantic_ai",
+            "G_PERSONAL_ATTACK|semantic_ai",
+            "G_PERSONAL_DATA|semantic_ai",
+            "G_SELF_PROMOTION|semantic_ai",
+            "G_SEXUAL_CONTENT|semantic_ai",
+            "G_SPAM|semantic_ai",
+        ], activeRules);
+
+        var localPhrases = await ReadStringsAsync(
+            connection,
+            """
+            SELECT normalized_phrase || '|' || manual_override
+            FROM phrase_rules phrase
+            INNER JOIN blacklist_rules rule ON rule.rule_id = phrase.rule_id
+            WHERE rule.rule_code IN ('G_SELF_PROMOTION','G_BOT_SCAM')
+            ORDER BY normalized_phrase;
+            """);
+        Assert.Contains("join my twitch|active", localPhrases);
+        Assert.Contains("check me out|inactive", localPhrases);
+        Assert.Equal(0, await ScalarAsync<long>(connection,
+            "SELECT COUNT(*) FROM blacklist_rules WHERE rule_code = 'LOCAL_BLACKLIST' AND archived_utc IS NULL;"));
+        Assert.Empty(await ReadStringsAsync(connection, "PRAGMA foreign_key_check;"));
     }
 
     [Fact]

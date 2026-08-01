@@ -230,7 +230,8 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
                 .Select(rule => rule.RuleCode)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var options = definitions
-                .Where(definition => activeCodes.Contains(definition.RuleCode))
+                .Where(definition => activeCodes.Contains(definition.RuleCode)
+                    && ModerationRuleCodes.IsSemanticAiRule(definition.RuleCode))
                 .Select(
                     definition => new ViolationCategoryOption(
                         definition.PolicySet,
@@ -253,7 +254,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
                     ?.Code;
                 var baseRuleCode = item.PolicySet == "Backseatgaming"
                     ? ModerationRuleCodes.Backseatgaming
-                    : ModerationRuleCodes.OtherAbuse;
+                    : ModerationRuleCodes.PersonalAttack;
                 selectedRuleCode ??= options.FirstOrDefault(
                         option => string.Equals(
                             option.Code,
@@ -480,7 +481,25 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         }
     }
 
-    public async Task<ModerationExecutionResult> DiscardAsync(
+    public Task<ModerationExecutionResult> AllowAsync(
+        ModerationCaseItem item,
+        CancellationToken cancellationToken = default) =>
+        CompleteReviewAsync(
+            item,
+            "Als erlaubt markiert",
+            learnAsAllowed: true,
+            cancellationToken);
+
+    public Task<ModerationExecutionResult> DiscardAsync(
+        ModerationCaseItem item,
+        CancellationToken cancellationToken = default) =>
+        CompleteReviewAsync(
+            item,
+            "Vorschlag verworfen",
+            learnAsAllowed: false,
+            cancellationToken);
+
+    private async Task<ModerationExecutionResult> CompleteReviewAsync(
         ModerationCaseItem item,
         string discardReason,
         bool learnAsAllowed,
@@ -500,7 +519,9 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
             : ((PolicySetCode PolicySet, string RuleCode)?)null;
         var previousStatus = item.Status;
         item.IsBusy = true;
-        item.Status = "Verwerfung wird gespeichert";
+        item.Status = learnAsAllowed
+            ? "Erlaubtes Learning wird gespeichert"
+            : "Vorschlag wird verworfen";
         try
         {
             var result = await _feedbackService
@@ -522,7 +543,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
                 item.RowVersion++;
                 AddAudit(
                     item,
-                    "Verworfen",
+                    learnAsAllowed ? "Erlaubt" : "Verworfen",
                     "Keine Twitch-Aktion",
                     includeActionDetails: false);
                 RemoveResolvedCase(item);

@@ -248,6 +248,38 @@ public sealed class ModerationRequestFactoryTests
             StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("wer ist denn alles da")]
+    [InlineData("wer ist dieses mal alles da")]
+    public void ReplyCandidateHints_RecognizeFillerWordParaphrases(string message)
+    {
+        var batch = Batch(PolicySetCode.General);
+        var source = Assert.Single(batch.Messages);
+        batch = batch with
+        {
+            Messages =
+            [
+                source with
+                {
+                    Message = source.Message with
+                    {
+                        Text = new ChatTextNormalizer().Process(message),
+                    },
+                },
+            ],
+            ReplyTemplates =
+            [
+                new ChatReplyTemplatePrompt("r-match", "wer ist alles da?"),
+                new ChatReplyTemplatePrompt("r-other", "wie lange geht das event?"),
+            ],
+        };
+
+        var prompt = ModerationRequestFactory.Create(batch, []);
+
+        Assert.Contains("\"replyCandidateIds\":[\"r-match\"]", prompt.UserPrompt);
+        Assert.DoesNotContain("\"replyCandidateIds\":[\"r-other\"]", prompt.UserPrompt);
+    }
+
     private sealed class RecordingPromptCompiler : IModerationPromptCompiler
     {
         private readonly ModerationPromptCompiler _inner = new();
@@ -302,12 +334,12 @@ public sealed class ModerationRequestFactoryTests
                         "Unaufgeforderter Spielhinweis oder Spoiler.",
                         Priority: 10)
                     : new ModerationRuleDefinition(
-                        ModerationRuleCodes.GeneralPhrase,
+                        ModerationRuleCodes.PersonalAttack,
                         code,
                         "Allgemein",
-                        "Sonstiger Missbrauch.",
-                        ModerationActionKind.Delete,
-                        null,
+                        ModerationRuleCodes.PersonalAttackPromptInstruction,
+                        ModerationActionKind.Timeout,
+                        600,
                         "Sonstiger Verstoß gegen die Chatregeln.",
                         Priority: 100))
                 .ToArray(),

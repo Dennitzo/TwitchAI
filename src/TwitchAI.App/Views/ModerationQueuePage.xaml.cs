@@ -160,7 +160,7 @@ public sealed partial class ModerationQueuePage : Page
                 GridLength.Auto,
                 new GridLength(230),
                 new GridLength(1, GridUnitType.Star),
-                new GridLength(230));
+                new GridLength(280));
             PlaceReviewElement(actionEditor, row: 1, column: 0);
             PlaceReviewElement(timeoutEditor, row: 1, column: 1);
             PlaceReviewElement(violationEditor, row: 1, column: 2);
@@ -251,6 +251,37 @@ public sealed partial class ModerationQueuePage : Page
         Grid.SetRow(element, row);
         Grid.SetColumn(element, column);
         Grid.SetColumnSpan(element, columnSpan);
+    }
+
+    private void OnModerationActionButtonsSizeChanged(
+        object sender,
+        SizeChangedEventArgs e)
+    {
+        if (sender is not Grid actionGrid
+            || actionGrid.ColumnDefinitions.Count < 3
+            || FindNamedChild<Button>(actionGrid, "AllowButton") is not { } allowButton
+            || FindNamedChild<Button>(actionGrid, "DiscardModerationButton") is not { } discardButton
+            || FindNamedChild<Button>(actionGrid, "ExecuteModerationButton") is not { } executeButton)
+        {
+            return;
+        }
+
+        var useSingleRow = e.NewSize.Width >= 280;
+        actionGrid.ColumnDefinitions[0].Width =
+            new GridLength(1, GridUnitType.Star);
+        actionGrid.ColumnDefinitions[1].Width =
+            new GridLength(1, GridUnitType.Star);
+        actionGrid.ColumnDefinitions[2].Width = useSingleRow
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+
+        PlaceReviewElement(allowButton, row: 0, column: 0);
+        PlaceReviewElement(discardButton, row: 0, column: 1);
+        PlaceReviewElement(
+            executeButton,
+            row: useSingleRow ? 0 : 1,
+            column: useSingleRow ? 2 : 0,
+            columnSpan: useSingleRow ? 1 : 2);
     }
 
     private void UpdateEmptyState()
@@ -406,35 +437,29 @@ public sealed partial class ModerationQueuePage : Page
             return;
         }
 
-        var dialog = new ContentDialog
-        {
-            XamlRoot = XamlRoot,
-            Title = "Vorschlag verwerfen",
-            Content =
-                "„Als erlaubt markieren“ speichert den Vorschlag als Fehlalarm "
-                + "für das lokale Lernen.\n\n"
-                + "„Nur Vorschlag abbrechen“ entfernt ihn ohne Twitch-Aktion, "
-                + "ohne Lernsignal und ohne Whitelist-Eintrag.",
-            PrimaryButtonText = "Als erlaubt markieren",
-            SecondaryButtonText = "Nur Vorschlag abbrechen",
-            CloseButtonText = "Zurück",
-            DefaultButton = ContentDialogButton.Close,
-        };
-        var choice = await dialog.ShowAsync();
-        if (choice == ContentDialogResult.None)
+        await CompleteModerationReviewAsync(item, allow: false);
+    }
+
+    private async void OnAllowClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: ModerationCaseItem item }
+            || item.IsChatReply)
         {
             return;
         }
 
+        await CompleteModerationReviewAsync(item, allow: true);
+    }
+
+    private async Task CompleteModerationReviewAsync(
+        ModerationCaseItem item,
+        bool allow)
+    {
         try
         {
-            var learnAsAllowed = choice == ContentDialogResult.Primary;
-            var result = await ViewModel.DiscardAsync(
-                item,
-                learnAsAllowed
-                    ? "Als erlaubt markiert"
-                    : "Testvorschlag abgebrochen",
-                learnAsAllowed);
+            var result = allow
+                ? await ViewModel.AllowAsync(item)
+                : await ViewModel.DiscardAsync(item);
             if (result.Outcome != ModerationExecutionOutcome.Succeeded)
             {
                 await ShowResultAsync(result);

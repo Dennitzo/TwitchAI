@@ -140,7 +140,7 @@ public sealed class ModerationRepairClient : IModerationRepairClient
             + "Classify them again from the trusted compact request; do not recreate omitted batch messages. "
             + "Previous local validation codes: "
             + string.Join(",", validationCodes)
-            + ". Return only the required response.v7 JSON.";
+            + ". Return only the required response.v8 JSON.";
         var repairSystemPrompt = compiled.SystemPrompt + "\n" + repairDirective;
         compiled = compiled with
         {
@@ -289,9 +289,9 @@ public sealed class ModerationRepairClient : IModerationRepairClient
                     120-second timeout for light spam;
                     600-second timeout for ordinary actionable abuse, light insults, or clear backseatgaming;
                     86400-second timeout for strong insults that are not unambiguously ban-worthy and for G_BEGGING;
-                    ban for unambiguously extreme abuse and for confirmed G_ADVERTISING self-promotion or promotion of another channel;
-                    delete only for a single low-context, unnecessary nuisance message with no substantive or serious violation.
-                    Every actionable G_ADVERTISING decision must use ban. Every actionable G_BEGGING decision must use a 86400-second timeout.
+                    follow the selected rule's v8 action matrix exactly; never use delete for missing context, irrelevance, or nuisance.
+                    G_BEGGING requires a 86400-second timeout. G_SPAM permits delete, timeout 2, or timeout 120.
+                    G_SELF_PROMOTION permits timeout 86400 or ban. G_BOT_SCAM requires ban.
                     Never use delete merely because a message is short or unwanted, and never for insults, harassment,
                     hate, threats, sexualization, personal data, scams, advertising, begging, repeated spam,
                     meaningful disruption, or backseatgaming.

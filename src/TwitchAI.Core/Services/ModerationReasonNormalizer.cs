@@ -7,6 +7,18 @@ public static partial class ModerationReasonNormalizer
 {
     public const int MaximumLength = 120;
 
+    public static bool IsSelfNegating(string? reason)
+    {
+        var value = CollapseWhitespace().Replace(reason?.Trim() ?? string.Empty, " ")
+            .ToLowerInvariant();
+        return value.Contains("kein verstoß", StringComparison.Ordinal)
+            || value.Contains("keine regelverletzung", StringComparison.Ordinal)
+            || value.Contains("kein klarer", StringComparison.Ordinal)
+            || value.Contains("nicht eindeutig", StringComparison.Ordinal)
+            || value.Contains("unklar", StringComparison.Ordinal)
+            || value.Contains("keine moderation", StringComparison.Ordinal);
+    }
+
     public static string Normalize(string? reason, PolicySetCode? policySet)
     {
         return Normalize(reason, ruleCode: null, policySet);
@@ -105,6 +117,13 @@ public static partial class ModerationReasonNormalizer
     {
         return ValidConfiguredReason(configuredPublicReason) ?? ruleCode switch
         {
+            ModerationRuleCodes.SexualContent =>
+                "Sexueller oder sexistischer Inhalt gegen einen Nutzer oder Streamer.",
+            ModerationRuleCodes.PersonalAttack =>
+                "Beleidigung oder Belästigung eines Nutzers oder Streamers.",
+            ModerationRuleCodes.Hate => "Hassrede oder diskriminierende Aussage.",
+            ModerationRuleCodes.Harm =>
+                "Drohung oder Aufforderung zu Gewalt oder Selbstverletzung.",
             "G_SEXUALIZATION" => "Sexualisierende Aussage über eine Person.",
             "G_SEXUAL_EXPLICIT" => "Sexuell expliziter Inhalt.",
             "G_INSULT" => "Direkte Beleidigung eines Nutzers oder Streamers.",
@@ -129,6 +148,12 @@ public static partial class ModerationReasonNormalizer
             "G_OTHER_ABUSE" => "Sonstiger Verstoß gegen die Chatregeln.",
             ModerationRuleCodes.Backseatgaming =>
                 "Unaufgeforderter Spielhinweis oder Spoiler.",
+            ModerationRuleCodes.LocalBlacklist =>
+                "Treffer in der manuellen Bot-/Scam-Blacklist.",
+            ModerationRuleCodes.SelfPromotion =>
+                "Unaufgeforderte Eigenwerbung für einen eigenen Kanal oder Stream.",
+            ModerationRuleCodes.BotScam =>
+                "Automatisierte oder betrügerische Werbung im Chat.",
             _ when policySet == PolicySetCode.Backseatgaming =>
                 "Unaufgeforderter Spielhinweis oder Spoiler.",
             _ => "Verstoß gegen die allgemeinen Chatregeln.",

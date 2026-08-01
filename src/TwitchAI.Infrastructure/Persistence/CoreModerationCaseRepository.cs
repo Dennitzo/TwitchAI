@@ -40,7 +40,7 @@ public sealed class CoreModerationCaseRepository : IModerationCaseRepository
                    policy_set, trigger_phrases_json, confidence,
                    effective_policy_hash, status, created_utc,
                    batch_id, local_match_codes_json, ai_latency_ms,
-                   violation_rule_code
+                   violation_rule_code, violation_subtype, proposal_origin
             FROM moderation_cases
             WHERE case_id = @case_id;
             """;
@@ -81,6 +81,10 @@ public sealed class CoreModerationCaseRepository : IModerationCaseRepository
             reader.IsDBNull(14) ? null : reader.GetInt64(14))
         {
             RuleCode = reader.IsDBNull(15) ? null : reader.GetString(15),
+            EvidenceKind = reader.IsDBNull(16) ? null : reader.GetString(16),
+            ProposalOrigin = reader.GetString(17) == "deterministic_phrase"
+                ? ModerationProposalOrigin.DeterministicPhrase
+                : ModerationProposalOrigin.LocalAi,
         };
     }
 
@@ -236,6 +240,14 @@ public sealed class CoreModerationCaseRepository : IModerationCaseRepository
                 "@trigger_phrases",
                 JsonSerializer.Serialize(decision.TriggerPhrases, JsonOptions));
             target.Parameters.AddWithValue("@confidence", decision.Confidence);
+            target.Parameters.AddWithValue("@proposal_origin", metadata.ProposalOrigin switch
+            {
+                ModerationProposalOrigin.DeterministicPhrase => "deterministic_phrase",
+                _ => "local_ai",
+            });
+            target.Parameters.AddWithValue(
+                "@violation_subtype",
+                SqliteData.DbValue(decision.EvidenceKind));
         }
 
         await using (var refresh = connection.CreateCommand())
@@ -258,6 +270,8 @@ public sealed class CoreModerationCaseRepository : IModerationCaseRepository
                     policy_set = @policy_set,
                     trigger_phrases_json = @trigger_phrases,
                     confidence = @confidence,
+                    proposal_origin = @proposal_origin,
+                    violation_subtype = @violation_subtype,
                     status = 'pending',
                     row_version = row_version + 1,
                     resolved_utc = NULL
@@ -299,11 +313,13 @@ public sealed class CoreModerationCaseRepository : IModerationCaseRepository
                 await removeLegacyStaleFeedback
                     .ExecuteNonQueryAsync(cancellationToken)
                     .ConfigureAwait(false);
+                var refreshedId = Convert.ToInt64(refreshedCaseId, CultureInfo.InvariantCulture);
+                await ReplacePhraseMatchesAsync(
+                    connection, transaction, refreshedId, metadata.PhraseMatches, cancellationToken)
+                    .ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 return new ModerationCaseAddResult(
-                    Convert.ToInt64(
-                        refreshedCaseId,
-                        CultureInfo.InvariantCulture),
+                    refreshedId,
                     IsCreated: true);
             }
 
@@ -328,6 +344,7 @@ public sealed class CoreModerationCaseRepository : IModerationCaseRepository
                 local_match_codes_json, ai_latency_ms,
                 proposed_action, proposed_timeout_seconds, violation_rule_code,
                 reason, policy_set, trigger_phrases_json, confidence,
+                proposal_origin, violation_subtype,
                 status, row_version, created_utc)
             VALUES(
                 @message_id, @broadcaster_id, @chatter_user_id,
@@ -338,6 +355,7 @@ public sealed class CoreModerationCaseRepository : IModerationCaseRepository
                 @local_match_codes, @ai_latency_ms,
                 @action, @timeout_seconds, @violation_rule_code,
                 @reason, @policy_set, @trigger_phrases, @confidence,
+                @proposal_origin, @violation_subtype,
                 'pending', 1, @created_utc);
             SELECT last_insert_rowid();
             """;
@@ -356,8 +374,42 @@ public sealed class CoreModerationCaseRepository : IModerationCaseRepository
         command.Parameters.AddWithValue("@created_utc", SqliteData.ToDatabaseTimestamp(now));
         var result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         var caseId = Convert.ToInt64(result, CultureInfo.InvariantCulture);
+        await ReplacePhraseMatchesAsync(
+            connection, transaction, caseId, metadata.PhraseMatches, cancellationToken)
+            .ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new ModerationCaseAddResult(caseId, IsCreated: true);
+    }
+
+    private static async Task ReplacePhraseMatchesAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long caseId,
+        IReadOnlyList<BlacklistMatch> matches,
+        CancellationToken cancellationToken)
+    {
+        await using var delete = connection.CreateCommand();
+        delete.Transaction = transaction;
+        delete.CommandText = "DELETE FROM moderation_case_phrase_matches WHERE case_id = @case_id;";
+        delete.Parameters.AddWithValue("@case_id", caseId);
+        await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+        foreach (var match in matches.DistinctBy(item => item.PhraseId))
+        {
+            await using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText =
+                """
+                INSERT INTO moderation_case_phrase_matches(
+                    case_id, phrase_id, phrase_row_version, normalized_phrase_snapshot)
+                SELECT @case_id, phrase_id, row_version, @phrase
+                FROM phrase_rules WHERE phrase_id = @phrase_id;
+                """;
+            insert.Parameters.AddWithValue("@case_id", caseId);
+            insert.Parameters.AddWithValue("@phrase_id", match.PhraseId);
+            insert.Parameters.AddWithValue("@phrase", match.MatchedPhrase);
+            await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private static async ValueTask<long?> FindActiveDuplicateAsync(

@@ -50,64 +50,64 @@ public static class ModerationActionRules
             int? timeoutSeconds,
             string? ruleCode)
     {
-        if (action == ModerationActionKind.None)
-        {
-            return (action, timeoutSeconds);
-        }
-
-        if (string.Equals(
-                ruleCode,
-                ModerationRuleCodes.Advertising,
-                StringComparison.Ordinal))
-        {
-            return (ModerationActionKind.Ban, null);
-        }
-
-        if (string.Equals(
-                ruleCode,
-                ModerationRuleCodes.Begging,
-                StringComparison.Ordinal))
-        {
-            return (ModerationActionKind.Timeout, SevereTimeoutSeconds);
-        }
-
-        if (action != ModerationActionKind.Delete
-            || string.Equals(
-                ruleCode,
-                ModerationRuleCodes.OtherAbuse,
-                StringComparison.Ordinal))
-        {
-            return (action, timeoutSeconds);
-        }
-
-        var normalizedTimeout = ruleCode switch
-        {
-            ModerationRuleCodes.Spam =>
-                LightTimeoutSeconds,
-            ModerationRuleCodes.Disruption =>
-                PurgeTimeoutSeconds,
-            _ => DefaultTimeoutSeconds,
-        };
-        return (ModerationActionKind.Timeout, normalizedTimeout);
+        // AI output is deliberately not escalated or silently rewritten. Invalid
+        // rule/action combinations are repaired by the validator or become none.
+        return (action, timeoutSeconds);
     }
 
     public static bool IsValidAiRuleAction(
         ModerationActionKind action,
         string? ruleCode)
     {
-        if (action != ModerationActionKind.Ban)
+        return action != ModerationActionKind.Ban
+            || ruleCode is ModerationRuleCodes.PersonalData
+                or ModerationRuleCodes.Harm
+                or ModerationRuleCodes.Hate
+                or ModerationRuleCodes.PersonalAttack
+                or ModerationRuleCodes.SelfPromotion
+                or ModerationRuleCodes.BotScam;
+    }
+
+    public static bool IsValidAiRuleSuggestion(
+        ModerationActionKind action,
+        int? timeoutSeconds,
+        string? ruleCode)
+    {
+        if (!IsValidAiSuggestion(action, timeoutSeconds)
+            || !IsValidAiRuleAction(action, ruleCode))
         {
-            return true;
+            return false;
         }
 
-        // These rule groups can justify deletion or a proportionate timeout,
-        // but never a permanent ban on their own. A human reviewer may still
-        // deliberately override the AI proposal in the review UI.
-        return ruleCode is not (
-            ModerationRuleCodes.OtherAbuse
-            or ModerationRuleCodes.Begging
-            or ModerationRuleCodes.Backseatgaming
-            or ModerationRuleCodes.Spam
-            or ModerationRuleCodes.Disruption);
+        return ruleCode switch
+        {
+            ModerationRuleCodes.PersonalData or ModerationRuleCodes.Harm =>
+                action == ModerationActionKind.Ban
+                || action == ModerationActionKind.Timeout
+                    && timeoutSeconds == SevereTimeoutSeconds,
+            ModerationRuleCodes.Hate or ModerationRuleCodes.PersonalAttack =>
+                action == ModerationActionKind.Ban
+                || action == ModerationActionKind.Timeout
+                    && timeoutSeconds is DefaultTimeoutSeconds or SevereTimeoutSeconds,
+            ModerationRuleCodes.SexualContent =>
+                action == ModerationActionKind.Timeout
+                && timeoutSeconds is DefaultTimeoutSeconds or SevereTimeoutSeconds,
+            ModerationRuleCodes.Begging =>
+                action == ModerationActionKind.Timeout
+                && timeoutSeconds == SevereTimeoutSeconds,
+            ModerationRuleCodes.Spam =>
+                action == ModerationActionKind.Delete
+                || action == ModerationActionKind.Timeout
+                    && timeoutSeconds is PurgeTimeoutSeconds or LightTimeoutSeconds,
+            ModerationRuleCodes.Backseatgaming =>
+                action == ModerationActionKind.Timeout
+                && timeoutSeconds == DefaultTimeoutSeconds,
+            ModerationRuleCodes.SelfPromotion =>
+                action == ModerationActionKind.Ban
+                || action == ModerationActionKind.Timeout
+                    && timeoutSeconds == SevereTimeoutSeconds,
+            ModerationRuleCodes.BotScam => action == ModerationActionKind.Ban,
+            _ => false,
+        };
     }
 }

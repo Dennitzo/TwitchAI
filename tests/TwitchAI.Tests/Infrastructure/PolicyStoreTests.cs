@@ -116,13 +116,12 @@ public sealed class PolicyStoreTests
 
         Assert.Null(policy.CategoryId);
         Assert.Equal(0, policy.CategoryRevision);
-        Assert.Equal(19, policy.Rules.Count);
-        Assert.Contains(
-            policy.Rules,
-            rule => rule.RuleCode == GlobalPolicyStorage.GeneralRuleCode);
-        Assert.All(
-            policy.Rules,
-            rule => Assert.StartsWith("G_", rule.RuleCode, StringComparison.Ordinal));
+        Assert.Equal(
+        [
+            "G_PERSONAL_DATA", "G_HARM", "G_HATE", "G_SEXUAL_CONTENT",
+            "G_PERSONAL_ATTACK", "G_BEGGING", "G_SPAM",
+            "G_SELF_PROMOTION", "G_BOT_SCAM",
+        ], policy.Rules.Select(rule => rule.RuleCode));
     }
 
     [Fact]

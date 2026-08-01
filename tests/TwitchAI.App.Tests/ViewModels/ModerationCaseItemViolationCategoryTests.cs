@@ -89,10 +89,41 @@ public sealed class ModerationCaseItemViolationCategoryTests
         Assert.Equal("Betteln nach Subs oder Giveaways.", item.Reason);
     }
 
-    private static ModerationCaseItem CreateCase() =>
+    [Fact]
+    public void DirectReviewActions_KeepAllowStricterThanDiscard()
+    {
+        var item = CreateCase();
+
+        Assert.False(item.CanAllow);
+        Assert.True(item.CanDiscard);
+
+        item.RuleCode = ModerationRuleCodes.Spam;
+
+        Assert.True(item.CanAllow);
+        Assert.True(item.CanDiscard);
+
+        item.IsBusy = true;
+
+        Assert.False(item.CanAllow);
+        Assert.False(item.CanDiscard);
+        Assert.False(item.CanExecute);
+    }
+
+    [Fact]
+    public void ChatReply_DoesNotOfferAllowedLearning()
+    {
+        var item = CreateCase(isChatReply: true);
+
+        Assert.False(item.CanAllow);
+        Assert.True(item.CanDiscard);
+        Assert.True(item.CanExecute);
+    }
+
+    private static ModerationCaseItem CreateCase(bool isChatReply = false) =>
         new()
         {
             CaseId = 1,
+            IsChatReply = isChatReply,
             ChannelId = "channel-1",
             UserName = "viewer",
             OriginalMessage = "test",

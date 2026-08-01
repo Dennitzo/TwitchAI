@@ -2946,5 +2946,408 @@ internal static class SchemaMigrations
             DROP TABLE twitchai_v25_affected_policy_scopes;
             """,
             RequiresBackup: true),
+        new(
+            26,
+            "Simplify moderation taxonomy and introduce deterministic local blacklist rules",
+            """
+            ALTER TABLE blacklist_rules ADD COLUMN evaluation_mode TEXT NOT NULL
+                DEFAULT 'semantic_ai' CHECK(evaluation_mode IN (
+                    'semantic_ai','deterministic_phrase','human_only'));
+            ALTER TABLE moderation_cases ADD COLUMN proposal_origin TEXT NOT NULL
+                DEFAULT 'local_ai' CHECK(proposal_origin IN (
+                    'local_ai','deterministic_phrase'));
+            ALTER TABLE moderation_cases ADD COLUMN violation_subtype TEXT;
+            ALTER TABLE moderation_feedback ADD COLUMN violation_subtype TEXT;
+            ALTER TABLE action_attempts ADD COLUMN violation_subtype TEXT;
+            ALTER TABLE manual_learning_examples ADD COLUMN violation_subtype TEXT;
+            ALTER TABLE learning_example_overrides ADD COLUMN violation_subtype TEXT;
+
+            CREATE TABLE moderation_case_phrase_matches (
+                case_id                    INTEGER NOT NULL,
+                phrase_id                  INTEGER NOT NULL,
+                phrase_row_version         INTEGER NOT NULL CHECK(phrase_row_version > 0),
+                normalized_phrase_snapshot TEXT NOT NULL,
+                PRIMARY KEY(case_id, phrase_id),
+                FOREIGN KEY(case_id) REFERENCES moderation_cases(case_id) ON DELETE CASCADE,
+                FOREIGN KEY(phrase_id) REFERENCES phrase_rules(phrase_id) ON DELETE RESTRICT
+            ) STRICT;
+
+            CREATE TEMP TABLE twitchai_v26_scopes(scope_id INTEGER PRIMARY KEY) STRICT;
+            INSERT INTO twitchai_v26_scopes(scope_id)
+            SELECT scope_id FROM policy_sets
+            WHERE broadcaster_id = '*' AND set_code = 'general'
+              AND enabled = 1 AND archived_utc IS NULL;
+
+            INSERT OR IGNORE INTO blacklist_rules(
+                scope_id, rule_code, title, prompt_instruction,
+                default_action, default_timeout_seconds, public_reason,
+                priority, enabled, row_version, created_utc, updated_utc,
+                evaluation_mode)
+            SELECT scope_id, 'G_PERSONAL_DATA', 'Persönliche Daten / Doxxing',
+                'Nur bei einem konkreten nichtöffentlichen Identifikator, einer gezielten privaten Datenanfrage oder der Androhung einer Veröffentlichung. Allgemeine Ortsfragen und freiwillige Selbstauskunft sind none.',
+                'timeout', 86400, 'Veröffentlichung persönlicher Daten.',
+                10, 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'semantic_ai'
+            FROM twitchai_v26_scopes;
+
+            INSERT OR IGNORE INTO blacklist_rules(
+                scope_id, rule_code, title, prompt_instruction,
+                default_action, default_timeout_seconds, public_reason,
+                priority, enabled, row_version, created_utc, updated_utc,
+                evaluation_mode)
+            SELECT scope_id, 'G_HARM', 'Gewalt, Drohungen & Selbstverletzung',
+                'Nur wenn die Nachricht selbst einer realen Zielperson zukünftige körperliche Gewalt androht, zu realer Gewalt auffordert oder sie ausdrücklich befürwortet oder eine identifizierbare Person direkt zu Selbstverletzung beziehungsweise Suizid auffordert. Gewaltwörter, Unfall- oder Gefahrenbeschreibungen, Warnungen, Vergangenheit, Spiel oder Fiktion, Metaphern, Übertreibungen, Scherze, Hypothesen, Fragen, Selbstoffenbarung und Unterstützung ohne Aufforderung sind none.',
+                'timeout', 86400, 'Drohung oder Aufforderung zu Gewalt oder Selbstverletzung.',
+                20, 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'semantic_ai'
+            FROM twitchai_v26_scopes;
+
+            INSERT OR IGNORE INTO blacklist_rules(
+                scope_id, rule_code, title, prompt_instruction,
+                default_action, default_timeout_seconds, public_reason,
+                priority, enabled, row_version, created_utc, updated_utc,
+                evaluation_mode)
+            SELECT scope_id, 'G_HATE', 'Hassrede & Diskriminierung',
+                'Nur wenn eine Person oder Gruppe wegen ethnischer Zugehörigkeit, Hautfarbe, Nationalität, Religion, Behinderung, sexueller Orientierung, Trans-/nichtbinärer Identität oder eines vergleichbaren geschützten Merkmals klar abgewertet, entmenschlicht, ausgeschlossen oder feindselig verallgemeinert wird. Neutrale oder positive Erwähnung, Selbstbezeichnung, Aussehensbeschreibung, Name, Mehrdeutigkeit und bloßes Zitat oder Bericht sind none. Frauen- oder männerfeindliche Aussagen gehören G_SEXUAL_CONTENT.',
+                'timeout', 600, 'Hassrede oder diskriminierende Aussage.',
+                30, 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'semantic_ai'
+            FROM twitchai_v26_scopes;
+
+            INSERT OR IGNORE INTO blacklist_rules(
+                scope_id, rule_code, title, prompt_instruction,
+                default_action, default_timeout_seconds, public_reason,
+                priority, enabled, row_version, created_utc, updated_utc,
+                evaluation_mode)
+            SELECT scope_id, 'G_SEXUAL_CONTENT', 'Sexuelle & sexistische Inhalte',
+                'Nur bei sexueller oder intimer Bewertung, Objektifizierung oder Zuschreibung über eine Person, sexueller Aufforderung oder Anmache, eindeutig expliziter sexueller Beschreibung oder klarer Abwertung beziehungsweise feindseliger Generalisierung wegen Frau-/Mannsein oder Geschlechterrolle. Neutrale Körper-, Kleidungs-, Fitness-, Medizin-, Beziehungs- oder Aufklärungsbezüge, bloße Genre-/Adult-Content-Nennung, neutrale oder positive Geschlechtsnennung und mehrdeutige Begriffe sind none. Abwertung wegen sexueller Orientierung oder Transidentität gehört G_HATE.',
+                'timeout', 600, 'Sexueller oder sexistischer Inhalt gegen einen Nutzer oder Streamer.',
+                40, 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'semantic_ai'
+            FROM twitchai_v26_scopes;
+
+            INSERT OR IGNORE INTO blacklist_rules(
+                scope_id, rule_code, title, prompt_instruction,
+                default_action, default_timeout_seconds, public_reason,
+                priority, enabled, row_version, created_utc, updated_utc,
+                evaluation_mode)
+            SELECT scope_id, 'G_PERSONAL_ATTACK', 'Beleidigung & Belästigung',
+                'Nur bei identifizierbarer Zielperson und direkter, unmissverständlicher persönlicher Beschimpfung, Herabsetzung oder Einschüchterung. Kritik an Handlung, Spiel, Inhalt, Entscheidung oder Leistung, zielloser Fluch, neutrale Anweisung, freundschaftliche Neckerei, Selbstbezug und Username/@ ohne Angriff sind none. Wiederholte Belästigung nur annehmen, wenn lokale Verlaufsdaten die Wiederholung belegen.',
+                'timeout', 600, 'Beleidigung oder Belästigung eines Nutzers oder Streamers.',
+                50, 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'semantic_ai'
+            FROM twitchai_v26_scopes;
+
+            INSERT OR IGNORE INTO blacklist_rules(
+                scope_id, rule_code, title, prompt_instruction,
+                default_action, default_timeout_seconds, public_reason,
+                priority, enabled, row_version, created_utc, updated_utc,
+                evaluation_mode)
+            SELECT scope_id, 'LOCAL_BLACKLIST', 'Manuelle Bot-/Scam-Blacklist',
+                'Nicht an die AI übertragen. Ausschließlich exakter lokaler Phrasentreffer.',
+                'timeout', 86400, 'Treffer in der manuellen Bot-/Scam-Blacklist.',
+                90, 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'deterministic_phrase'
+            FROM twitchai_v26_scopes;
+
+            UPDATE blacklist_rules SET priority = 60,
+                prompt_instruction = 'Nur bei ausdrücklicher Bitte oder Forderung nach kostenlosem Sub, Geld, Geschenk oder zusätzlichem Giveaway für einen Begünstigten. Dank, Wünsche und Preisangaben sind none.',
+                default_action = 'timeout', default_timeout_seconds = 86400,
+                evaluation_mode = 'semantic_ai', row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_code = 'G_BEGGING' AND archived_utc IS NULL;
+            UPDATE blacklist_rules SET priority = 70,
+                prompt_instruction = 'Nur lokal belegtes Flooding: mindestens 20 Twitch-Emotes; Text mit mindestens acht Tokens, vier Wiederholungen und 70 Prozent Wiederholungsanteil; oder mindestens 20 Sonderzeichen bei 70 Prozent Symbolanteil. Belanglosigkeit, Off-topic und Chatstörung sind none.',
+                default_action = 'timeout', default_timeout_seconds = 120,
+                evaluation_mode = 'semantic_ai', row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_code = 'G_SPAM' AND archived_utc IS NULL;
+            UPDATE blacklist_rules SET priority = 80,
+                evaluation_mode = 'semantic_ai', row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_code = 'BACKSEATGAMING' AND archived_utc IS NULL;
+
+            CREATE TEMP TABLE twitchai_v26_rule_map(
+                old_rule_id INTEGER PRIMARY KEY,
+                new_rule_id INTEGER NOT NULL,
+                new_code TEXT NOT NULL
+            ) STRICT;
+            INSERT INTO twitchai_v26_rule_map(old_rule_id,new_rule_id,new_code)
+            SELECT old.rule_id, replacement.rule_id,
+                CASE
+                    WHEN old.rule_code IN ('G_SEXUALIZATION','G_SEXUAL_EXPLICIT','G_SEXISM') THEN 'G_SEXUAL_CONTENT'
+                    WHEN old.rule_code IN ('G_INSULT','G_HARASSMENT') THEN 'G_PERSONAL_ATTACK'
+                    WHEN old.rule_code IN ('G_RACISM','G_LGBTQ_HATE','G_ABLEISM','G_HATE_OTHER') THEN 'G_HATE'
+                    WHEN old.rule_code IN ('G_THREAT','G_VIOLENCE','G_SELF_HARM_INCITEMENT') THEN 'G_HARM'
+                    ELSE 'LOCAL_BLACKLIST'
+                END
+            FROM blacklist_rules old
+            INNER JOIN blacklist_rules replacement
+                ON replacement.scope_id = old.scope_id
+               AND replacement.rule_code = CASE
+                    WHEN old.rule_code IN ('G_SEXUALIZATION','G_SEXUAL_EXPLICIT','G_SEXISM') THEN 'G_SEXUAL_CONTENT'
+                    WHEN old.rule_code IN ('G_INSULT','G_HARASSMENT') THEN 'G_PERSONAL_ATTACK'
+                    WHEN old.rule_code IN ('G_RACISM','G_LGBTQ_HATE','G_ABLEISM','G_HATE_OTHER') THEN 'G_HATE'
+                    WHEN old.rule_code IN ('G_THREAT','G_VIOLENCE','G_SELF_HARM_INCITEMENT') THEN 'G_HARM'
+                    ELSE 'LOCAL_BLACKLIST'
+               END
+               AND replacement.archived_utc IS NULL
+            WHERE old.rule_code IN (
+                'G_SEXUALIZATION','G_SEXUAL_EXPLICIT','G_SEXISM',
+                'G_INSULT','G_HARASSMENT','G_RACISM','G_LGBTQ_HATE',
+                'G_ABLEISM','G_HATE_OTHER','G_THREAT','G_VIOLENCE',
+                'G_SELF_HARM_INCITEMENT','G_ADVERTISING','G_SCAM');
+
+            UPDATE phrase_rules AS phrase
+            SET enabled = 0,
+                archived_utc = COALESCE(archived_utc, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE archived_utc IS NULL
+              AND rule_id IN (SELECT old_rule_id FROM twitchai_v26_rule_map)
+              AND EXISTS (
+                  SELECT 1
+                  FROM phrase_rules earlier
+                  INNER JOIN twitchai_v26_rule_map earlier_map
+                      ON earlier_map.old_rule_id = earlier.rule_id
+                  INNER JOIN twitchai_v26_rule_map current_map
+                      ON current_map.old_rule_id = phrase.rule_id
+                  WHERE earlier_map.new_rule_id = current_map.new_rule_id
+                    AND earlier.normalized_phrase = phrase.normalized_phrase
+                    AND earlier.phrase_id < phrase.phrase_id
+                    AND earlier.archived_utc IS NULL);
+
+            UPDATE phrase_rules
+            SET rule_id = (SELECT new_rule_id FROM twitchai_v26_rule_map
+                           WHERE old_rule_id = phrase_rules.rule_id),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE archived_utc IS NULL
+              AND rule_id IN (SELECT old_rule_id FROM twitchai_v26_rule_map);
+
+            UPDATE blacklist_rules
+            SET enabled = 0,
+                archived_utc = COALESCE(archived_utc, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_id IN (SELECT old_rule_id FROM twitchai_v26_rule_map)
+               OR rule_code IN ('G_OTHER_ABUSE','G_DISRUPTION','G_STREAMER_INSTRUCTION');
+
+            UPDATE blacklist_rules
+            SET enabled = 0,
+                archived_utc = COALESCE(archived_utc, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE archived_utc IS NULL
+              AND rule_code NOT IN (
+                  'G_PERSONAL_DATA','G_HARM','G_HATE','G_SEXUAL_CONTENT',
+                  'G_PERSONAL_ATTACK','G_BEGGING','G_SPAM',
+                  'BACKSEATGAMING','LOCAL_BLACKLIST');
+
+            UPDATE phrase_rules SET enabled = 0,
+                archived_utc = COALESCE(archived_utc, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_id IN (SELECT rule_id FROM blacklist_rules
+                WHERE rule_code IN ('G_OTHER_ABUSE','G_DISRUPTION','G_STREAMER_INSTRUCTION'))
+              AND archived_utc IS NULL;
+
+            INSERT OR IGNORE INTO phrase_rules(
+                rule_id, phrase, normalized_phrase, enabled, manual_override,
+                positive_confirmations, negative_confirmations, row_version,
+                created_utc, updated_utc)
+            SELECT rule_id, seed.phrase, seed.phrase, seed.enabled,
+                CASE seed.enabled WHEN 1 THEN 'active' ELSE 'inactive' END,
+                0, 0, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            FROM blacklist_rules
+            CROSS JOIN (
+                SELECT 'sub to my' phrase, 1 enabled UNION ALL
+                SELECT 'join my twitch', 1 UNION ALL SELECT 'shout me out', 1 UNION ALL
+                SELECT 'support my twitch', 1 UNION ALL SELECT 'mount viewers', 1 UNION ALL
+                SELECT 'viewers followers and primes', 1 UNION ALL
+                SELECT 'buy primes followers and viewers', 1 UNION ALL
+                SELECT 'i am streaming', 0 UNION ALL SELECT 'bin live', 0 UNION ALL
+                SELECT 'check me out', 0
+            ) seed
+            WHERE rule_code = 'LOCAL_BLACKLIST' AND archived_utc IS NULL;
+
+            UPDATE phrase_rules
+            SET enabled = CASE WHEN normalized_phrase IN (
+                    'i am streaming','bin live','check me out') THEN 0 ELSE 1 END,
+                manual_override = CASE WHEN normalized_phrase IN (
+                    'i am streaming','bin live','check me out') THEN 'inactive' ELSE 'active' END,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_id IN (SELECT rule_id FROM blacklist_rules
+                WHERE rule_code = 'LOCAL_BLACKLIST' AND archived_utc IS NULL)
+              AND normalized_phrase IN (
+                  'sub to my','join my twitch','shout me out','support my twitch',
+                  'mount viewers','viewers followers and primes',
+                  'buy primes followers and viewers','i am streaming','bin live','check me out');
+
+            UPDATE learning_example_overrides
+            SET rule_code = CASE rule_code
+                    WHEN 'G_SEXUALIZATION' THEN 'G_SEXUAL_CONTENT'
+                    WHEN 'G_SEXUAL_EXPLICIT' THEN 'G_SEXUAL_CONTENT'
+                    WHEN 'G_SEXISM' THEN 'G_SEXUAL_CONTENT'
+                    WHEN 'G_INSULT' THEN 'G_PERSONAL_ATTACK'
+                    WHEN 'G_HARASSMENT' THEN 'G_PERSONAL_ATTACK'
+                    WHEN 'G_RACISM' THEN 'G_HATE'
+                    WHEN 'G_LGBTQ_HATE' THEN 'G_HATE'
+                    WHEN 'G_ABLEISM' THEN 'G_HATE'
+                    WHEN 'G_HATE_OTHER' THEN 'G_HATE'
+                    WHEN 'G_THREAT' THEN 'G_HARM'
+                    WHEN 'G_VIOLENCE' THEN 'G_HARM'
+                    WHEN 'G_SELF_HARM_INCITEMENT' THEN 'G_HARM'
+                    ELSE rule_code END,
+                is_removed = CASE WHEN rule_code IN (
+                    'G_ADVERTISING','G_SCAM','G_OTHER_ABUSE','G_DISRUPTION',
+                    'G_STREAMER_INSTRUCTION') THEN 1 ELSE is_removed END,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_code IN (
+                'G_SEXUALIZATION','G_SEXUAL_EXPLICIT','G_SEXISM','G_INSULT',
+                'G_HARASSMENT','G_RACISM','G_LGBTQ_HATE','G_ABLEISM',
+                'G_HATE_OTHER','G_THREAT','G_VIOLENCE','G_SELF_HARM_INCITEMENT',
+                'G_ADVERTISING','G_SCAM','G_OTHER_ABUSE','G_DISRUPTION',
+                'G_STREAMER_INSTRUCTION');
+
+            UPDATE moderation_cases
+            SET status = 'discarded',
+                row_version = row_version + 1,
+                resolved_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE status IN ('pending','executing','outcome_unknown')
+              AND COALESCE(violation_rule_code, '') NOT IN (
+                  'G_PERSONAL_DATA','G_HARM','G_HATE','G_SEXUAL_CONTENT',
+                  'G_PERSONAL_ATTACK','G_BEGGING','G_SPAM','BACKSEATGAMING');
+
+            CREATE TRIGGER trg_v26_local_blacklist_feedback
+            AFTER INSERT ON moderation_feedback
+            WHEN NEW.eligible_for_learning = 1
+              AND NEW.human_approved = 1
+              AND EXISTS (SELECT 1 FROM moderation_cases moderation
+                          WHERE moderation.case_id = NEW.case_id
+                            AND moderation.proposal_origin = 'deterministic_phrase')
+            BEGIN
+                INSERT OR IGNORE INTO phrase_feedback(
+                    case_id, manual_example_id, source_kind, source_event_id,
+                    label_action, rule_code, trigger_phrase, policy_set,
+                    is_positive, category_id, message_normalized,
+                    eligible, confirmed_utc)
+                SELECT NEW.case_id, NULL,
+                    CASE NEW.operator_decision WHEN 'executed'
+                        THEN 'operator_execute' ELSE 'operator_discard' END,
+                    'local:' || NEW.feedback_id || ':' || match.phrase_id,
+                    NEW.actual_action, 'LOCAL_BLACKLIST',
+                    match.normalized_phrase_snapshot, 'general',
+                    CASE NEW.operator_decision WHEN 'executed' THEN 1 ELSE 0 END,
+                    moderation.category_id, moderation.message_text_normalized,
+                    1, NEW.decided_utc
+                FROM moderation_case_phrase_matches match
+                INNER JOIN moderation_cases moderation
+                    ON moderation.case_id = match.case_id
+                WHERE match.case_id = NEW.case_id;
+
+                UPDATE phrase_rules
+                SET positive_confirmations = positive_confirmations +
+                        CASE NEW.operator_decision WHEN 'executed' THEN 1 ELSE 0 END,
+                    negative_confirmations = negative_confirmations +
+                        CASE NEW.operator_decision WHEN 'executed' THEN 0 ELSE 1 END,
+                    row_version = row_version + 1,
+                    updated_utc = NEW.decided_utc
+                WHERE phrase_id IN (SELECT phrase_id
+                    FROM moderation_case_phrase_matches WHERE case_id = NEW.case_id);
+            END;
+
+            UPDATE policy_sets SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (SELECT scope_id FROM twitchai_v26_scopes)
+               OR set_code = 'backseatgaming';
+
+            DROP TABLE twitchai_v26_rule_map;
+            DROP TABLE twitchai_v26_scopes;
+            """,
+            RequiresBackup: true),
+        new(
+            27,
+            "Replace deterministic local blacklist with phrase-gated AI categories",
+            """
+            CREATE TEMP TABLE twitchai_v27_scope AS
+            SELECT scope_id
+            FROM policy_sets
+            WHERE broadcaster_id = '*'
+              AND set_code = 'general'
+              AND archived_utc IS NULL
+            LIMIT 1;
+
+            INSERT INTO blacklist_rules(
+                scope_id, rule_code, title, prompt_instruction,
+                default_action, default_timeout_seconds, public_reason,
+                priority, enabled, row_version, created_utc, updated_utc,
+                evaluation_mode)
+            SELECT scope_id, 'G_SELF_PROMOTION', 'Eigenwerbung',
+                'Nur auswählbar, wenn diese Nachricht einen lokalen Phrasentreffer für G_SELF_PROMOTION besitzt. Nur klare unaufgeforderte Werbung für den eigenen Kanal, Stream, Content oder die eigene Reichweite. Ein Link, Channelname, Zitat, eine Warnung oder eine mehrdeutige Verwendung wie ''check me out'' ohne tatsächliche Eigenwerbung ist none. Gewöhnliche klare Eigenwerbung erfordert 86400 Sekunden Timeout; Ban nur bei aggressiver, massenhafter, automatisiert wirkender oder kommerziell-bösartiger Bewerbung.',
+                'timeout', 86400,
+                'Unaufgeforderte Eigenwerbung für einen eigenen Kanal oder Stream.',
+                90, 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'semantic_ai'
+            FROM twitchai_v27_scope
+            WHERE NOT EXISTS (SELECT 1 FROM blacklist_rules
+                WHERE rule_code = 'G_SELF_PROMOTION' AND archived_utc IS NULL);
+
+            INSERT INTO blacklist_rules(
+                scope_id, rule_code, title, prompt_instruction,
+                default_action, default_timeout_seconds, public_reason,
+                priority, enabled, row_version, created_utc, updated_utc,
+                evaluation_mode)
+            SELECT scope_id, 'G_BOT_SCAM', 'Bot / Scam',
+                'Nur auswählbar, wenn diese Nachricht einen lokalen Phrasentreffer für G_BOT_SCAM besitzt. Nur klar automatisierte, betrügerische oder kommerzielle Werbung, insbesondere Viewer-/Follower-/Sub-Manipulation oder Phishing. URL, Channelname, Zitat, Bericht oder Warnung allein ist none. Bei eindeutig bestätigtem Bot-/Scam-Kontext Ban, bei Unsicherheit none.',
+                'timeout', 86400,
+                'Automatisierte oder betrügerische Werbung im Chat.',
+                95, 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'semantic_ai'
+            FROM twitchai_v27_scope
+            WHERE NOT EXISTS (SELECT 1 FROM blacklist_rules
+                WHERE rule_code = 'G_BOT_SCAM' AND archived_utc IS NULL);
+
+            UPDATE phrase_rules
+            SET rule_id = (SELECT rule_id FROM blacklist_rules
+                           WHERE rule_code = 'G_SELF_PROMOTION'
+                             AND archived_utc IS NULL LIMIT 1),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_id IN (SELECT rule_id FROM blacklist_rules
+                              WHERE rule_code = 'LOCAL_BLACKLIST')
+              AND normalized_phrase IN (
+                  'i am streaming','bin live','sub to my','join my twitch',
+                  'shout me out','support my twitch','check me out');
+
+            UPDATE phrase_rules
+            SET rule_id = (SELECT rule_id FROM blacklist_rules
+                           WHERE rule_code = 'G_BOT_SCAM'
+                             AND archived_utc IS NULL LIMIT 1),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_id IN (SELECT rule_id FROM blacklist_rules
+                              WHERE rule_code = 'LOCAL_BLACKLIST');
+
+            UPDATE blacklist_rules
+            SET enabled = 0,
+                archived_utc = COALESCE(archived_utc, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_code = 'LOCAL_BLACKLIST' AND archived_utc IS NULL;
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (SELECT scope_id FROM twitchai_v27_scope);
+
+            DROP TABLE twitchai_v27_scope;
+            """,
+            RequiresBackup: true),
     ];
 }

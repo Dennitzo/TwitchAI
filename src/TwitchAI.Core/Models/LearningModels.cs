@@ -59,6 +59,10 @@ public sealed record LearningTestResult(
     bool UsedRuleFallback)
 {
     public long LearningContextRevision { get; init; }
+
+    public string? EvidenceKind { get; init; }
+
+    public string? SensitiveDataType { get; init; }
 }
 
 public sealed record LearningReviewItem(

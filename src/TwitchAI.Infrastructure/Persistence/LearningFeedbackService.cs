@@ -267,6 +267,7 @@ public sealed class SqliteLearningFeedbackService : ILearningFeedbackService
                 local_match_codes_json, final_decision,
                 actual_action, actual_timeout_seconds,
                 actual_policy_set, actual_rule_code, actual_reason,
+                violation_subtype,
                 actual_trigger_phrases_json,
                 policy_revision_fingerprint, model_id,
                 prompt_tokens, completion_tokens, total_tokens,
@@ -280,6 +281,7 @@ public sealed class SqliteLearningFeedbackService : ILearningFeedbackService
                 @local_match_codes_json, @final_decision,
                 @actual_action, @actual_timeout_seconds,
                 @actual_policy_set, @actual_rule_code, @actual_reason,
+                @violation_subtype,
                 @actual_triggers_json,
                 @policy_fingerprint, @model_id,
                 @prompt_tokens, @completion_tokens, @total_tokens,
@@ -324,6 +326,14 @@ public sealed class SqliteLearningFeedbackService : ILearningFeedbackService
             ToDatabasePolicySet(review.PolicySet));
         command.Parameters.AddWithValue("@actual_rule_code", review.RuleCode);
         command.Parameters.AddWithValue("@actual_reason", review.Reason);
+        command.Parameters.AddWithValue(
+            "@violation_subtype",
+            SqliteData.DbValue(string.Equals(
+                review.RuleCode,
+                result.ProposedRuleCode,
+                StringComparison.Ordinal)
+                ? result.EvidenceKind
+                : null));
         command.Parameters.AddWithValue(
             "@actual_triggers_json",
             JsonSerializer.Serialize(normalizedTriggers, JsonOptions));

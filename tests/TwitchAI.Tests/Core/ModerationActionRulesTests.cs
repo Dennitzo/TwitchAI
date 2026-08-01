@@ -194,4 +194,29 @@ public sealed class ModerationActionRulesTests
                 ModerationActionKind.Delete,
                 ModerationRuleCodes.Backseatgaming));
     }
+
+    [Fact]
+    public void PhraseGatedAdvertisingUsesStrictContextualActionMatrix()
+    {
+        Assert.True(ModerationActionRules.IsValidAiRuleSuggestion(
+            ModerationActionKind.Timeout,
+            86_400,
+            ModerationRuleCodes.SelfPromotion));
+        Assert.True(ModerationActionRules.IsValidAiRuleSuggestion(
+            ModerationActionKind.Ban,
+            null,
+            ModerationRuleCodes.SelfPromotion));
+        Assert.False(ModerationActionRules.IsValidAiRuleSuggestion(
+            ModerationActionKind.Timeout,
+            600,
+            ModerationRuleCodes.SelfPromotion));
+        Assert.True(ModerationActionRules.IsValidAiRuleSuggestion(
+            ModerationActionKind.Ban,
+            null,
+            ModerationRuleCodes.BotScam));
+        Assert.False(ModerationActionRules.IsValidAiRuleSuggestion(
+            ModerationActionKind.Timeout,
+            86_400,
+            ModerationRuleCodes.BotScam));
+    }
 }
