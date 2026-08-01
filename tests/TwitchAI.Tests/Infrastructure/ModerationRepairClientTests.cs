@@ -281,7 +281,7 @@ public sealed class ModerationRepairClientTests
             sent.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Never ban for an unnecessary message, spam, begging, streamer instructions, or backseatgaming alone",
+            "Never ban for an unnecessary message, spam, begging, or backseatgaming alone",
             sent.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(

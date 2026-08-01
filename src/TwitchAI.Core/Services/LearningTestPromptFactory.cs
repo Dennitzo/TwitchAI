@@ -87,10 +87,10 @@ public static class LearningTestPromptFactory
         Follow each activeRules criteria exactly once. If several apply, use the smallest priority.
         localMatchCodes are evidence, not automatic punishment.
         For verdict allow, return action none, null timeoutSeconds, an empty reason, and no trigger phrases.
-        For moderate, use timeout 600 for ordinary abuse, light insults, streamer instructions, or clear backseatgaming.
+        For moderate, use timeout 600 for ordinary abuse, light insults, or clear backseatgaming.
         Use timeout 2 only as purge for very light disruption, 120 for light spam, and 86400 for strong insults or G_BEGGING.
         Confirmed G_ADVERTISING self-promotion or promotion of another channel always uses ban.
-        Ban otherwise only for extreme abuse, never for nuisance, spam, begging, streamer instructions, or backseatgaming alone.
+        Ban otherwise only for extreme abuse, never for nuisance, spam, begging, or backseatgaming alone.
         Delete only a single low-context nuisance without a substantive violation.
         For delete or ban, timeoutSeconds must be null. For timeout, use exactly 2, 120, 600, or 86400 seconds.
         For moderate, reason is one short German sentence up to 120 characters.

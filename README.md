@@ -81,7 +81,7 @@ unter `%LOCALAPPDATA%\TwitchAI`. Der Datenbankpfad ist
    einen Reparaturversuch.
 6. Ein Mensch kann Aktion, Timeoutdauer, Verstoßkategorie, Begründung und
    ausgewählte Triggerphrasen ändern und danach **Ausführen** oder
-   **Verwerfen** wählen. General unterscheidet dabei 20 globale Kategorien;
+   **Verwerfen** wählen. General unterscheidet dabei 19 globale Kategorien;
    `BACKSEATGAMING` bleibt das kategorieabhängige Regelset. Bestätigungen
    werden als vollständige Kontextbeispiele ausschließlich unter **Learning**
    gespeichert; die manuellen **Phrasen**-Listen werden dadurch nie erweitert.

@@ -93,7 +93,7 @@ public sealed class ModerationRequestFactoryTests
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "600-second timeout for ordinary abuse, light insults, streamer instructions, or clear backseatgaming",
+            "600-second timeout for ordinary abuse, light insults, or clear backseatgaming",
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -117,7 +117,7 @@ public sealed class ModerationRequestFactoryTests
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Never ban for nuisance, spam, begging, streamer instructions, or backseatgaming alone",
+            "Never ban for nuisance, spam, begging, or backseatgaming alone",
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(

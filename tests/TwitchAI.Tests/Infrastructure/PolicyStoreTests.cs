@@ -14,10 +14,10 @@ public sealed class PolicyStoreTests
 
         var policy = await sut.GetEffectivePolicyAsync("channel-1", categoryId);
 
-        Assert.Equal(9, policy.GeneralRevision);
+        Assert.Equal(10, policy.GeneralRevision);
         Assert.Equal(0, policy.CategoryRevision);
         Assert.Null(policy.CategoryId);
-        Assert.Equal(20, policy.Rules.Count);
+        Assert.Equal(19, policy.Rules.Count);
         Assert.Contains(
             policy.Rules,
             rule => rule.RuleCode == GlobalPolicyStorage.GeneralRuleCode);
@@ -46,19 +46,9 @@ public sealed class PolicyStoreTests
                 && rule.Title == "Gebettel"
                 && rule.DefaultAction == ModerationRuleAction.Timeout
                 && rule.DefaultTimeoutSeconds == 120);
-        Assert.Contains(
+        Assert.DoesNotContain(
             policy.Rules,
-            rule => rule.RuleCode ==
-                    TwitchAI.Core.Models.ModerationRuleCodes.StreamerInstruction
-                && rule.Title == "Anweisung"
-                && rule.PromptInstruction ==
-                    TwitchAI.Core.Models.ModerationRuleCodes
-                        .StreamerInstructionPromptInstruction
-                && rule.DefaultAction == ModerationRuleAction.Timeout
-                && rule.DefaultTimeoutSeconds == 600
-                && rule.PublicReason ==
-                    "Unaufgeforderte Anweisung; der Streamer entscheidet selbst über seinen Content."
-                && rule.Priority == 77);
+            rule => rule.RuleCode == "G_STREAMER_INSTRUCTION");
         Assert.DoesNotContain(
             policy.Rules,
             rule => string.Equals(
@@ -76,9 +66,9 @@ public sealed class PolicyStoreTests
         var policy = await sut.GetEffectivePolicyAsync("channel-1", "32982");
 
         Assert.Equal("32982", policy.CategoryId);
-        Assert.Equal(9, policy.GeneralRevision);
+        Assert.Equal(10, policy.GeneralRevision);
         Assert.Equal(4, policy.CategoryRevision);
-        Assert.Equal(21, policy.Rules.Count);
+        Assert.Equal(20, policy.Rules.Count);
         var rule = Assert.Single(
             policy.Rules,
             item => item.RuleCode == GlobalPolicyStorage.BackseatgamingRuleCode);
@@ -103,7 +93,7 @@ public sealed class PolicyStoreTests
         var policy = await sut.GetLearningPolicyAsync();
 
         Assert.Equal(GlobalPolicyStorage.BroadcasterId, policy.BroadcasterId);
-        Assert.Equal(9, policy.GeneralRevision);
+        Assert.Equal(10, policy.GeneralRevision);
         Assert.Equal(4, policy.CategoryRevision);
         Assert.Contains(
             policy.Rules,
@@ -111,6 +101,9 @@ public sealed class PolicyStoreTests
         Assert.Contains(
             policy.Rules,
             item => item.RuleCode == GlobalPolicyStorage.BackseatgamingRuleCode);
+        Assert.DoesNotContain(
+            policy.Rules,
+            item => item.RuleCode == "G_STREAMER_INSTRUCTION");
     }
 
     [Fact]
@@ -123,7 +116,7 @@ public sealed class PolicyStoreTests
 
         Assert.Null(policy.CategoryId);
         Assert.Equal(0, policy.CategoryRevision);
-        Assert.Equal(20, policy.Rules.Count);
+        Assert.Equal(19, policy.Rules.Count);
         Assert.Contains(
             policy.Rules,
             rule => rule.RuleCode == GlobalPolicyStorage.GeneralRuleCode);

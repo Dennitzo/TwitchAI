@@ -39,15 +39,6 @@ public static partial class ModerationReasonNormalizer
         string? configuredPublicReason)
     {
         var value = CollapseWhitespace().Replace(reason?.Trim() ?? string.Empty, " ");
-        if (string.Equals(
-                ruleCode,
-                ModerationRuleCodes.StreamerInstruction,
-                StringComparison.Ordinal))
-        {
-            return ValidConfiguredReason(configuredPublicReason)
-                ?? ModerationRuleCodes.StreamerInstructionPublicReason;
-        }
-
         if (value.Length == 0)
         {
             return Fallback(ruleCode, policySet, configuredPublicReason);
@@ -135,8 +126,6 @@ public static partial class ModerationReasonNormalizer
                 "Unaufgeforderte Werbung oder Eigenwerbung.",
             ModerationRuleCodes.Begging =>
                 "Betteln nach Subs, Geschenken oder Giveaways.",
-            ModerationRuleCodes.StreamerInstruction =>
-                ModerationRuleCodes.StreamerInstructionPublicReason,
             "G_OTHER_ABUSE" => "Sonstiger Verstoß gegen die Chatregeln.",
             ModerationRuleCodes.Backseatgaming =>
                 "Unaufgeforderter Spielhinweis oder Spoiler.",

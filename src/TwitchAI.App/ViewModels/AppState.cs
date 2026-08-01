@@ -639,7 +639,6 @@ public sealed record ViolationCategoryOption(
             "G_DISRUPTION" => "Chatstörung",
             "G_ADVERTISING" => "Werbung",
             "G_BEGGING" => "Gebettel",
-            "G_STREAMER_INSTRUCTION" => "Anweisung",
             "G_OTHER_ABUSE" => "Sonstiger General-Verstoß",
             "BACKSEATGAMING" => "Backseatgaming",
             { Length: > 0 } value => value,

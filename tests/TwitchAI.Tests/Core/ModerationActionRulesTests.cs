@@ -67,10 +67,6 @@ public sealed class ModerationActionRulesTests
         ModerationActionKind.Timeout,
         ModerationActionRules.SevereTimeoutSeconds)]
     [InlineData(
-        ModerationRuleCodes.StreamerInstruction,
-        ModerationActionKind.Timeout,
-        ModerationActionRules.DefaultTimeoutSeconds)]
-    [InlineData(
         ModerationRuleCodes.Disruption,
         ModerationActionKind.Timeout,
         ModerationActionRules.PurgeTimeoutSeconds)]
@@ -169,7 +165,6 @@ public sealed class ModerationActionRulesTests
     [InlineData(ModerationRuleCodes.OtherAbuse, false)]
     [InlineData(ModerationRuleCodes.Advertising, true)]
     [InlineData(ModerationRuleCodes.Begging, false)]
-    [InlineData(ModerationRuleCodes.StreamerInstruction, false)]
     [InlineData(ModerationRuleCodes.Backseatgaming, false)]
     [InlineData("G_SPAM", false)]
     [InlineData("G_DISRUPTION", false)]

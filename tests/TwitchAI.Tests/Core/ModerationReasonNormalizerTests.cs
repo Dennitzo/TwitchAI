@@ -52,9 +52,6 @@ public sealed class ModerationReasonNormalizerTests
     [InlineData("G_SPAM", "Wiederholter Spam.")]
     [InlineData("G_ADVERTISING", "Unaufgeforderte Werbung oder Eigenwerbung.")]
     [InlineData("G_BEGGING", "Betteln nach Subs, Geschenken oder Giveaways.")]
-    [InlineData(
-        "G_STREAMER_INSTRUCTION",
-        "Unaufgeforderte Anweisung; der Streamer entscheidet selbst über seinen Content.")]
     [InlineData("G_OTHER_ABUSE", "Sonstiger Verstoß gegen die Chatregeln.")]
     [InlineData("BACKSEATGAMING", "Unaufgeforderter Spielhinweis oder Spoiler.")]
     public void Normalize_UsesExactRuleSpecificGermanFallback(
@@ -186,10 +183,6 @@ public sealed class ModerationReasonNormalizerTests
         "Begging.",
         ModerationRuleCodes.Begging,
         "Betteln nach Subs, Geschenken oder Giveaways.")]
-    [InlineData(
-        "Instruction.",
-        ModerationRuleCodes.StreamerInstruction,
-        "Unaufgeforderte Anweisung; der Streamer entscheidet selbst über seinen Content.")]
     public void Normalize_OneWordEnglishReasonUsesGermanRuleFallback(
         string reason,
         string ruleCode,

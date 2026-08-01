@@ -92,16 +92,16 @@ public sealed class ModerationRequestFactory
             Deviate from that baseline only when the message clearly supports a lighter or more severe tier:
             - 2-second timeout as purge for a very light disruption where that user's recent messages should be cleared
             - 120-second timeout for light spam
-            - 600-second timeout for ordinary actionable abuse, light insults, streamer instructions, or clear backseatgaming
+            - 600-second timeout for ordinary actionable abuse, light insults, or clear backseatgaming
             - 86400-second timeout for strong insults that are serious but not unambiguously ban-worthy, and for G_BEGGING
             - ban for unambiguously extreme abuse, and for confirmed G_ADVERTISING self-promotion or promotion of another channel
             - delete only for a single low-context, unnecessary nuisance message with no substantive or serious violation
             Every moderate G_ADVERTISING decision must use ban. Every moderate G_BEGGING decision must use a 86400-second timeout.
             Never choose delete merely because a message is short, unwanted, or the first scale option.
             Never choose delete for insults, harassment, hate, threats, sexualization, personal data, scams,
-            advertising, begging, streamer instructions, repeated spam, meaningful disruption, or backseatgaming.
+            advertising, begging, repeated spam, meaningful disruption, or backseatgaming.
             The active rule defaults are fallbacks, not constraints; choose the action and timeout from the message context and this scale.
-            Never ban for an unnecessary message, spam, begging, streamer instructions, or backseatgaming alone.
+            Never ban for an unnecessary message, spam, begging, or backseatgaming alone.
             For delete or ban, timeoutSeconds must be null. For timeout, timeoutSeconds must be exactly 2, 120, 600, or 86400.
             For every actionable decision, reason must be one short German sentence of at most 120 characters.
             When a person is the target, call them "Nutzer oder Streamer", never only "Nutzer".

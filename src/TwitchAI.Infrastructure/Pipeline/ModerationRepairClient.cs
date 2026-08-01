@@ -287,16 +287,16 @@ public sealed class ModerationRepairClient : IModerationRepairClient
                     Deviate only when the message clearly supports one of these lighter or more severe tiers:
                     2-second timeout as purge for a very light disruption where that user's recent messages should be cleared;
                     120-second timeout for light spam;
-                    600-second timeout for ordinary actionable abuse, light insults, streamer instructions, or clear backseatgaming;
+                    600-second timeout for ordinary actionable abuse, light insults, or clear backseatgaming;
                     86400-second timeout for strong insults that are not unambiguously ban-worthy and for G_BEGGING;
                     ban for unambiguously extreme abuse and for confirmed G_ADVERTISING self-promotion or promotion of another channel;
                     delete only for a single low-context, unnecessary nuisance message with no substantive or serious violation.
                     Every actionable G_ADVERTISING decision must use ban. Every actionable G_BEGGING decision must use a 86400-second timeout.
                     Never use delete merely because a message is short or unwanted, and never for insults, harassment,
-                    hate, threats, sexualization, personal data, scams, advertising, begging, streamer instructions, repeated spam,
+                    hate, threats, sexualization, personal data, scams, advertising, begging, repeated spam,
                     meaningful disruption, or backseatgaming.
                     Rule defaults are fallbacks, not constraints; use the message context and this scale.
-                    Never ban for an unnecessary message, spam, begging, streamer instructions, or backseatgaming alone.
+                    Never ban for an unnecessary message, spam, begging, or backseatgaming alone.
                     For delete or ban, timeoutSeconds must be null. A timeout must be exactly 2, 120, 600, or 86400 seconds.
                     For actionable decisions, use one short German reason sentence (maximum 120 characters).
                     When a person is the target, call them "Nutzer oder Streamer", never only "Nutzer".

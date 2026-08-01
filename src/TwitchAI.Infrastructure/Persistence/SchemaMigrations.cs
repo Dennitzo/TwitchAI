@@ -2759,5 +2759,192 @@ internal static class SchemaMigrations
 
             DROP TABLE twitchai_v24_affected_policy_scopes;
             """),
+        new(
+            25,
+            "Remove the streamer-instruction rule and retire its learning examples",
+            """
+            CREATE TEMP TABLE twitchai_v25_affected_policy_scopes (
+                scope_id INTEGER PRIMARY KEY
+            ) STRICT;
+
+            INSERT INTO twitchai_v25_affected_policy_scopes(scope_id)
+            SELECT DISTINCT scope_id
+            FROM blacklist_rules
+            WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+              AND enabled = 1
+              AND archived_utc IS NULL;
+
+            CREATE TEMP TABLE twitchai_v25_learning_tombstones (
+                source_kind       TEXT NOT NULL CHECK(source_kind IN (
+                                      'twitch_moderation','manual_test')),
+                source_id         INTEGER NOT NULL CHECK(source_id > 0),
+                original_text     TEXT NOT NULL,
+                lower_text        TEXT NOT NULL,
+                learning_decision TEXT NOT NULL CHECK(learning_decision IN (
+                                      'moderate','allow')),
+                policy_set        TEXT NOT NULL CHECK(policy_set IN (
+                                      'general','backseatgaming')),
+                rule_code         TEXT NOT NULL,
+                action            TEXT NOT NULL CHECK(action IN (
+                                      'none','delete','timeout','ban')),
+                timeout_seconds   INTEGER,
+                reason            TEXT NOT NULL,
+                PRIMARY KEY(source_kind, source_id)
+            ) STRICT;
+
+            INSERT INTO twitchai_v25_learning_tombstones(
+                source_kind, source_id, original_text, lower_text,
+                learning_decision, policy_set, rule_code, action,
+                timeout_seconds, reason)
+            SELECT
+                'twitch_moderation', moderation.case_id,
+                CASE WHEN edited.source_id IS NULL
+                    THEN snapshot.message_text_original ELSE edited.original_text END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN snapshot.lower_text ELSE edited.lower_text END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN CASE feedback.operator_decision
+                        WHEN 'executed' THEN 'moderate' ELSE 'allow' END
+                    ELSE edited.learning_decision END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN moderation.policy_set ELSE edited.policy_set END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN COALESCE(
+                        feedback.rule_code,
+                        moderation.violation_rule_code,
+                        CASE moderation.policy_set
+                            WHEN 'backseatgaming' THEN 'BACKSEATGAMING'
+                            ELSE 'G_OTHER_ABUSE'
+                        END)
+                    ELSE edited.rule_code END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN CASE feedback.operator_decision
+                        WHEN 'executed' THEN feedback.actual_action ELSE 'none' END
+                    ELSE edited.action END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN CASE feedback.operator_decision
+                        WHEN 'executed' THEN feedback.actual_timeout_seconds ELSE NULL END
+                    ELSE edited.timeout_seconds END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN CASE feedback.operator_decision
+                        WHEN 'executed' THEN COALESCE(
+                            feedback.actual_reason, moderation.reason, '')
+                        ELSE COALESCE(feedback.discard_reason, '')
+                    END
+                    ELSE edited.reason END
+            FROM moderation_feedback feedback
+            INNER JOIN moderation_cases moderation
+                ON moderation.case_id = feedback.case_id
+            INNER JOIN chat_message_snapshots snapshot
+                ON snapshot.twitch_message_id = moderation.twitch_message_id
+            LEFT JOIN learning_example_overrides edited
+                ON edited.source_kind = 'twitch_moderation'
+               AND edited.source_id = moderation.case_id
+            WHERE feedback.eligible_for_learning = 1
+              AND feedback.learning_accepted = 1
+              AND feedback.human_approved = 1
+              AND feedback.review_completed = 1
+              AND COALESCE(edited.is_removed, 0) = 0
+              AND CASE WHEN edited.source_id IS NULL
+                    THEN COALESCE(
+                        feedback.rule_code,
+                        moderation.violation_rule_code,
+                        CASE moderation.policy_set
+                            WHEN 'backseatgaming' THEN 'BACKSEATGAMING'
+                            ELSE 'G_OTHER_ABUSE'
+                        END)
+                    ELSE edited.rule_code END = 'G_STREAMER_INSTRUCTION';
+
+            INSERT INTO twitchai_v25_learning_tombstones(
+                source_kind, source_id, original_text, lower_text,
+                learning_decision, policy_set, rule_code, action,
+                timeout_seconds, reason)
+            SELECT
+                'manual_test', example.manual_example_id,
+                CASE WHEN edited.source_id IS NULL
+                    THEN example.message_text_original ELSE edited.original_text END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN example.lower_text ELSE edited.lower_text END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN CASE example.final_decision
+                        WHEN 'confirmed_violation' THEN 'moderate' ELSE 'allow' END
+                    ELSE edited.learning_decision END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN example.actual_policy_set ELSE edited.policy_set END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN example.actual_rule_code ELSE edited.rule_code END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN example.actual_action ELSE edited.action END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN example.actual_timeout_seconds ELSE edited.timeout_seconds END,
+                CASE WHEN edited.source_id IS NULL
+                    THEN CASE example.final_decision
+                        WHEN 'marked_allowed' THEN 'Menschlich als erlaubt markiert.'
+                        ELSE example.actual_reason
+                    END
+                    ELSE edited.reason END
+            FROM manual_learning_examples example
+            LEFT JOIN learning_example_overrides edited
+                ON edited.source_kind = 'manual_test'
+               AND edited.source_id = example.manual_example_id
+            WHERE example.eligible_for_learning = 1
+              AND COALESCE(edited.is_removed, 0) = 0
+              AND CASE WHEN edited.source_id IS NULL
+                    THEN example.actual_rule_code ELSE edited.rule_code END =
+                    'G_STREAMER_INSTRUCTION';
+
+            INSERT INTO learning_example_overrides(
+                source_kind, source_id, original_text, lower_text,
+                learning_decision, policy_set, rule_code, action,
+                timeout_seconds, reason, is_removed, row_version,
+                created_utc, updated_utc)
+            SELECT
+                source_kind, source_id, original_text, lower_text,
+                learning_decision, policy_set, rule_code, action,
+                timeout_seconds, reason, 1, 1,
+                strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            FROM twitchai_v25_learning_tombstones
+            WHERE 1 = 1
+            ON CONFLICT(source_kind, source_id) DO UPDATE SET
+                is_removed = 1,
+                row_version = learning_example_overrides.row_version + 1,
+                updated_utc = excluded.updated_utc;
+
+            UPDATE phrase_rules
+            SET enabled = 0,
+                archived_utc = COALESCE(
+                    archived_utc,
+                    strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_id IN (
+                SELECT rule_id
+                FROM blacklist_rules
+                WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+            )
+              AND archived_utc IS NULL;
+
+            UPDATE blacklist_rules
+            SET enabled = 0,
+                archived_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+              AND archived_utc IS NULL;
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                SELECT scope_id
+                FROM twitchai_v25_affected_policy_scopes
+            );
+
+            DROP TABLE twitchai_v25_learning_tombstones;
+            DROP TABLE twitchai_v25_affected_policy_scopes;
+            """,
+            RequiresBackup: true),
     ];
 }

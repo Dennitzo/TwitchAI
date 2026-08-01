@@ -23,9 +23,6 @@ public static class ModerationRuleCodes
     public const string PersonalData = "G_PERSONAL_DATA";
     public const string Advertising = "G_ADVERTISING";
     public const string Begging = "G_BEGGING";
-    public const string StreamerInstruction = "G_STREAMER_INSTRUCTION";
-    public const string StreamerInstructionPublicReason =
-        "Unaufgeforderte Anweisung; der Streamer entscheidet selbst über seinen Content.";
     public const string Spam = "G_SPAM";
     public const string Disruption = "G_DISRUPTION";
     public const string Backseatgaming = "BACKSEATGAMING";
@@ -36,8 +33,6 @@ public static class ModerationRuleCodes
         + " Trefferphrase: genau der kleinste zusammenh\u00e4ngende Lowercase-Beleg mit Zielperson und eigentlicher Herabsetzung; Username/@, Pronomen, F\u00fclltext oder Einzelwort allein nie. Ohne solchen Beleg none.";
     public const string SpamPromptInstruction =
         "G_SPAM nur bei mindestens 20 Emotes in einer Nachricht, bei deutlich wiederholtem Text-/Phrasen-Flooding oder bei massiven wiederholten Sonderzeichenfolgen. Ein bis neunzehn Emotes allein sowie normale Wiederholungen, Satzzeichen und Reaktionen sind erlaubt; wenige Emotes niemals als Textspam oder Chatstörung umdeuten. Qualifizierendes Emote-, Text- und Sonderzeichen-Flooding G_SPAM statt G_DISRUPTION zuordnen.";
-    public const string StreamerInstructionPromptInstruction =
-        "Nur klare, unaufgeforderte Forderungen an den Streamer, Content, Spiel/Kategorie, Kooperationen, Gäste oder Aktivitäten zu starten, beenden oder ändern, z. B. \"just play with <anderem Streamer> @<Zielstreamer>\". None: echte Fragen, Wünsche/Meinungen ohne Aufforderung, hypothetische Aussagen, Zitate, Verneinung, sachliche Diskussion oder Mehrdeutigkeit. Konkrete Anweisungen zur aktuellen Spielhandlung sind BACKSEATGAMING; Eigen-/Fremdkanal-, Produkt- oder Dienstwerbung ist G_ADVERTISING. Namen oder @ allein reichen nicht.";
     public const string SpamClassifierGuidance =
         """
         G_SPAM has these hard criteria:

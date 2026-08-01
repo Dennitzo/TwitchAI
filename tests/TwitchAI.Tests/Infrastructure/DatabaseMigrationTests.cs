@@ -1,4 +1,7 @@
 using Microsoft.Data.Sqlite;
+using TwitchAI.Core.Models;
+using TwitchAI.Infrastructure.Persistence;
+using TwitchAI.Infrastructure.Pipeline;
 
 namespace TwitchAI.Tests.Infrastructure;
 
@@ -66,7 +69,7 @@ public sealed class DatabaseMigrationTests
         var journalMode = await ScalarAsync<string>(connection, "PRAGMA journal_mode;");
         var foreignKeys = await ScalarAsync<long>(connection, "PRAGMA foreign_keys;");
 
-        Assert.Equal(24, migrationCount);
+        Assert.Equal(25, migrationCount);
         Assert.Equal("wal", journalMode, ignoreCase: true);
         Assert.Equal(1, foreignKeys);
     }
@@ -121,7 +124,7 @@ public sealed class DatabaseMigrationTests
         Assert.Equal(["509658|1", "509672|1"], exclusionCounts);
         Assert.Empty(foreignKeyViolations);
         Assert.Equal(
-            24L,
+            25L,
             await ScalarAsync<long>(
                 connection,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -192,7 +195,7 @@ public sealed class DatabaseMigrationTests
                   AND rule.archived_utc IS NULL;
                 """));
         Assert.Equal(
-            generalRevisionBefore + 6,
+            generalRevisionBefore + 7,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -203,7 +206,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            24L,
+            25L,
             await ScalarAsync<long>(
                 verify,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -300,7 +303,7 @@ public sealed class DatabaseMigrationTests
                   AND rule.archived_utc IS NULL;
                 """));
         Assert.Equal(
-            generalRevisionBefore + 4,
+            generalRevisionBefore + 5,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -311,7 +314,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            24L,
+            25L,
             await ScalarAsync<long>(
                 verify,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -377,7 +380,7 @@ public sealed class DatabaseMigrationTests
                 connection,
                 "SELECT COUNT(*) FROM schema_migrations WHERE version = 19;"));
         Assert.Equal(
-            24L,
+            25L,
             await ScalarAsync<long>(
                 connection,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -457,7 +460,7 @@ public sealed class DatabaseMigrationTests
                   AND rule.archived_utc IS NULL;
                 """));
         Assert.Equal(
-            generalRevisionBefore + 5,
+            generalRevisionBefore + 6,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -569,7 +572,7 @@ public sealed class DatabaseMigrationTests
                   AND rule.archived_utc IS NULL;
                 """));
         Assert.Equal(
-            generalRevisionBefore + 2,
+            generalRevisionBefore + 3,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -666,7 +669,7 @@ public sealed class DatabaseMigrationTests
                   AND rule.archived_utc IS NULL;
                 """));
         Assert.Equal(
-            generalRevisionBefore + 4,
+            generalRevisionBefore + 5,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -778,7 +781,7 @@ public sealed class DatabaseMigrationTests
                   AND rule.archived_utc IS NULL;
                 """));
         Assert.Equal(
-            generalRevisionBefore + 2,
+            generalRevisionBefore + 3,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -796,12 +799,13 @@ public sealed class DatabaseMigrationTests
     }
 
     [Fact]
-    public async Task Version22_AddsStreamerInstructionRuleExactlyOnce()
+    public async Task Version22_IntroducedStreamerInstructionBeforeVersion25RetiresIt()
     {
-        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(21);
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(22);
 
         long generalRevisionBefore;
         long policyRowVersionBefore;
+        long ruleRowVersionBefore;
         await using (var before = await database.OpenConnectionAsync())
         {
             generalRevisionBefore = await ScalarAsync<long>(
@@ -823,11 +827,14 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """);
             Assert.Equal(
-                0L,
-                await ScalarAsync<long>(
+                "Anweisung|timeout|600|77|1",
+                await ScalarAsync<string>(
                     before,
                     """
-                    SELECT COUNT(*)
+                    SELECT
+                        rule.title || '|' || rule.default_action || '|' ||
+                        rule.default_timeout_seconds || '|' || rule.priority || '|' ||
+                        rule.enabled
                     FROM blacklist_rules rule
                     INNER JOIN policy_sets policy
                         ON policy.scope_id = rule.scope_id
@@ -836,49 +843,60 @@ public sealed class DatabaseMigrationTests
                       AND rule.rule_code = 'G_STREAMER_INSTRUCTION'
                       AND rule.archived_utc IS NULL;
                     """));
+            var historicalPrompt = await ScalarAsync<string>(
+                before,
+                """
+                SELECT rule.prompt_instruction
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND rule.archived_utc IS NULL;
+                """);
+            Assert.Contains("Content", historicalPrompt, StringComparison.Ordinal);
+            Assert.Contains("BACKSEATGAMING", historicalPrompt, StringComparison.Ordinal);
+            ruleRowVersionBefore = await ScalarAsync<long>(
+                before,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND rule.archived_utc IS NULL;
+                """);
         }
 
         await database.Initializer.InitializeAsync();
         await database.Initializer.InitializeAsync();
 
         await using var verify = await database.OpenConnectionAsync();
-        await using (var ruleCommand = verify.CreateCommand())
-        {
-            ruleCommand.CommandText =
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT COUNT(*)
+                FROM blacklist_rules
+                WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND enabled = 1
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            $"Anweisung|timeout|600|77|0|{ruleRowVersionBefore + 1}",
+            await ScalarAsync<string>(
+                verify,
                 """
                 SELECT
-                    rule.rule_code, rule.title, rule.prompt_instruction,
-                    rule.default_action, rule.default_timeout_seconds,
-                    rule.public_reason, rule.priority, rule.enabled,
-                    rule.row_version
-                FROM blacklist_rules rule
-                INNER JOIN policy_sets policy
-                    ON policy.scope_id = rule.scope_id
-                WHERE policy.broadcaster_id = '*'
-                  AND policy.set_code = 'general'
-                  AND rule.rule_code = 'G_STREAMER_INSTRUCTION'
-                  AND rule.archived_utc IS NULL;
-                """;
-            await using var reader = await ruleCommand.ExecuteReaderAsync();
-            Assert.True(await reader.ReadAsync());
-            Assert.Equal(
-                TwitchAI.Core.Models.ModerationRuleCodes.StreamerInstruction,
-                reader.GetString(0));
-            Assert.Equal("Anweisung", reader.GetString(1));
-            Assert.Equal(
-                TwitchAI.Core.Models.ModerationRuleCodes
-                    .StreamerInstructionPromptInstruction,
-                reader.GetString(2));
-            Assert.Equal("timeout", reader.GetString(3));
-            Assert.Equal(600L, reader.GetInt64(4));
-            Assert.Equal(
-                "Unaufgeforderte Anweisung; der Streamer entscheidet selbst über seinen Content.",
-                reader.GetString(5));
-            Assert.Equal(77L, reader.GetInt64(6));
-            Assert.Equal(1L, reader.GetInt64(7));
-            Assert.Equal(1L, reader.GetInt64(8));
-            Assert.False(await reader.ReadAsync());
-        }
+                    title || '|' || default_action || '|' ||
+                    default_timeout_seconds || '|' || priority || '|' ||
+                    enabled || '|' || row_version
+                FROM blacklist_rules
+                WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND archived_utc IS NOT NULL;
+                """));
 
         Assert.Equal(
             generalRevisionBefore + 3,
@@ -919,6 +937,11 @@ public sealed class DatabaseMigrationTests
                 verify,
                 "SELECT COUNT(*) FROM schema_migrations WHERE version = 22;"));
         Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 25;"));
+        Assert.Equal(
             "ok",
             await ScalarAsync<string>(verify, "PRAGMA integrity_check;"),
             ignoreCase: true);
@@ -930,7 +953,7 @@ public sealed class DatabaseMigrationTests
     }
 
     [Fact]
-    public async Task Version22_PreservesExistingActiveStreamerInstructionRule()
+    public async Task Version22_PreservesCustomizedLegacyRuleUntilVersion25ArchivesIt()
     {
         await using var database = await TestDatabase.CreateAtSchemaVersionAsync(21);
         const string timestamp = "2026-08-01T12:00:00.0000000+00:00";
@@ -984,7 +1007,7 @@ public sealed class DatabaseMigrationTests
 
         await using var verify = await database.OpenConnectionAsync();
         Assert.Equal(
-            "Eigene Anweisung|Benutzerdefinierte aktive Anweisungsregel.|timeout|120|Benutzerdefinierter Grund.|321|1|7",
+            "Eigene Anweisung|Benutzerdefinierte aktive Anweisungsregel.|timeout|120|Benutzerdefinierter Grund.|321|0|8",
             await ScalarAsync<string>(
                 verify,
                 """
@@ -1000,10 +1023,10 @@ public sealed class DatabaseMigrationTests
                 WHERE policy.broadcaster_id = '*'
                   AND policy.set_code = 'general'
                   AND rule.rule_code = 'G_STREAMER_INSTRUCTION'
-                  AND rule.archived_utc IS NULL;
+                  AND rule.archived_utc IS NOT NULL;
                 """));
         Assert.Equal(
-            1L,
+            0L,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -1017,7 +1040,7 @@ public sealed class DatabaseMigrationTests
                   AND rule.archived_utc IS NULL;
                 """));
         Assert.Equal(
-            generalRevisionBefore + 2,
+            generalRevisionBefore + 3,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -1028,7 +1051,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            policyRowVersionBefore + 2,
+            policyRowVersionBefore + 3,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -1043,6 +1066,11 @@ public sealed class DatabaseMigrationTests
             await ScalarAsync<long>(
                 verify,
                 "SELECT COUNT(*) FROM schema_migrations WHERE version = 22;"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 25;"));
         Assert.Equal(
             "ok",
             await ScalarAsync<string>(verify, "PRAGMA integrity_check;"),
@@ -1148,7 +1176,7 @@ public sealed class DatabaseMigrationTests
                   AND rule.archived_utc IS NULL;
                 """));
         Assert.Equal(
-            generalRevisionBefore + 2,
+            generalRevisionBefore + 3,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -1159,7 +1187,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            policyRowVersionBefore + 2,
+            policyRowVersionBefore + 3,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -1283,7 +1311,7 @@ public sealed class DatabaseMigrationTests
                   AND rule.archived_utc IS NULL;
                 """));
         Assert.Equal(
-            generalRevisionBefore + 1,
+            generalRevisionBefore + 2,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -1294,7 +1322,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            policyRowVersionBefore + 1,
+            policyRowVersionBefore + 2,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -1410,7 +1438,7 @@ public sealed class DatabaseMigrationTests
                   AND rule.archived_utc IS NULL;
                 """));
         Assert.Equal(
-            generalRevisionBefore + 1,
+            generalRevisionBefore + 2,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -1421,7 +1449,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            policyRowVersionBefore + 1,
+            policyRowVersionBefore + 2,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -1545,7 +1573,7 @@ public sealed class DatabaseMigrationTests
                   AND rule.archived_utc IS NULL;
                 """));
         Assert.Equal(
-            generalRevisionBefore,
+            generalRevisionBefore + 1,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -1556,7 +1584,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            policyRowVersionBefore,
+            policyRowVersionBefore + 1,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -1583,6 +1611,344 @@ public sealed class DatabaseMigrationTests
     }
 
     [Fact]
+    public async Task Version25_ArchivesRuleAndPhrasesAndTombstonesEffectiveLearningOnly()
+    {
+        const string retiredRuleCode = "G_STREAMER_INSTRUCTION";
+        const string timestamp = "2026-08-01T15:00:00.0000000+00:00";
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(24);
+
+        long generalRevisionBefore;
+        long policyRowVersionBefore;
+        long ruleRowVersionBefore;
+        long phraseRowVersionBefore;
+        await using (var connection = await database.OpenConnectionAsync())
+        await using (var transaction = connection.BeginTransaction())
+        {
+            generalRevisionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            policyRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT row_version
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            ruleRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT row_version
+                FROM blacklist_rules
+                WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND enabled = 1
+                  AND archived_utc IS NULL;
+                """);
+
+            await using var fixture = connection.CreateCommand();
+            fixture.Transaction = transaction;
+            fixture.CommandText =
+                """
+                INSERT INTO phrase_rules(
+                    rule_id, phrase, normalized_phrase, enabled,
+                    manual_override, positive_confirmations,
+                    negative_confirmations, row_version,
+                    created_utc, updated_utc)
+                SELECT
+                    rule_id, 'legacy instruction phrase',
+                    'legacy instruction phrase', 1, 'active', 2, 1, 3,
+                    @timestamp, @timestamp
+                FROM blacklist_rules
+                WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND enabled = 1
+                  AND archived_utc IS NULL;
+
+                INSERT INTO chat_message_snapshots(
+                    twitch_message_id, eventsub_notification_id,
+                    broadcaster_id, chatter_user_id,
+                    chatter_login_original, chatter_name_original,
+                    message_text_original, lower_text,
+                    message_text_normalized, normalization_version,
+                    original_sha256, normalized_sha256,
+                    identity_fingerprint, channel_context_revision,
+                    category_is_verified, ingress_sequence,
+                    badges_json, received_utc)
+                VALUES
+                    ('v25-message-2501', 'v25-event-2501', 'channel', 'user-2501',
+                     'user2501', 'User2501', 'Moderate history', 'moderate history',
+                     'moderate history', 1, 'original-2501', 'normalized-2501',
+                     'fingerprint-2501', 1, 1, 2501, '{}', @timestamp),
+                    ('v25-message-2502', 'v25-event-2502', 'channel', 'user-2502',
+                     'user2502', 'User2502', 'Allowed history', 'allowed history',
+                     'allowed history', 1, 'original-2502', 'normalized-2502',
+                     'fingerprint-2502', 1, 1, 2502, '{}', @timestamp);
+
+                INSERT INTO moderation_cases(
+                    case_id, twitch_message_id, broadcaster_id, chatter_user_id,
+                    chatter_name_snapshot, message_text_original,
+                    message_text_normalized, effective_policy_hash,
+                    model_id, envelope_json, proposed_action,
+                    proposed_timeout_seconds, violation_rule_code, reason,
+                    policy_set, confidence, status, created_utc, resolved_utc)
+                VALUES
+                    (2501, 'v25-message-2501', 'channel', 'user-2501',
+                     'User2501', 'Moderate history', 'moderate history', 'policy',
+                     'model', '{}', 'timeout', 600, 'G_STREAMER_INSTRUCTION',
+                     'Historical moderate reason.', 'general', 0.9, 'executed',
+                     @timestamp, @timestamp),
+                    (2502, 'v25-message-2502', 'channel', 'user-2502',
+                     'User2502', 'Allowed history', 'allowed history', 'policy',
+                     'model', '{}', 'timeout', 600, 'G_STREAMER_INSTRUCTION',
+                     'Historical allow proposal.', 'general', 0.8, 'discarded',
+                     @timestamp, @timestamp);
+
+                INSERT INTO moderation_feedback(
+                    case_id, operator_decision, actual_action,
+                    actual_timeout_seconds, actual_reason, discard_reason,
+                    rule_code, eligible_for_learning, human_approved,
+                    twitch_executed, learning_accepted, review_completed,
+                    decided_utc)
+                VALUES
+                    (2501, 'executed', 'timeout', 600,
+                     'Historical confirmed reason.', NULL,
+                     'G_STREAMER_INSTRUCTION', 1, 1, 1, 1, 1, @timestamp),
+                    (2502, 'discarded', 'none', NULL, NULL,
+                     'Historical allowed reason.',
+                     'G_STREAMER_INSTRUCTION', 1, 1, 0, 1, 1, @timestamp);
+
+                INSERT INTO action_attempts(
+                    execution_id, case_id, broadcaster_id, twitch_message_id,
+                    target_user_id, action, timeout_seconds, reason, status,
+                    requested_utc, completed_utc, http_status, response_json,
+                    rule_code)
+                VALUES(
+                    2501, 2501, 'channel', 'v25-message-2501', 'user-2501',
+                    'timeout', 600, 'Historical confirmed reason.', 'succeeded',
+                    @timestamp, @timestamp, 204, '{}', 'G_STREAMER_INSTRUCTION');
+
+                INSERT INTO manual_learning_examples(
+                    manual_example_id, test_id, message_text_original, lower_text,
+                    ai_verdict, ai_action, ai_timeout_seconds,
+                    ai_policy_set, ai_rule_code, ai_reason,
+                    ai_trigger_phrases_json, confidence,
+                    local_match_codes_json, final_decision,
+                    actual_action, actual_timeout_seconds,
+                    actual_policy_set, actual_rule_code, actual_reason,
+                    actual_trigger_phrases_json,
+                    policy_revision_fingerprint, model_id,
+                    prompt_tokens, completion_tokens, total_tokens,
+                    ai_latency_ms, eligible_for_learning,
+                    row_version, created_utc, updated_utc)
+                VALUES(
+                    2503, 'v25-manual-2503', 'Manual history', 'manual history',
+                    'moderate', 'timeout', 600,
+                    'general', 'G_STREAMER_INSTRUCTION', 'AI reason.',
+                    '[]', 0.8, '[]', 'confirmed_violation',
+                    'timeout', 600,
+                    'general', 'G_STREAMER_INSTRUCTION', 'Manual confirmed reason.',
+                    '[]', 'policy', 'model', 10, 5, 15, 20, 1,
+                    2, @timestamp, @timestamp);
+
+                INSERT INTO learning_example_overrides(
+                    source_kind, source_id, original_text, lower_text,
+                    learning_decision, policy_set, rule_code, action,
+                    timeout_seconds, reason, is_removed, row_version,
+                    created_utc, updated_utc)
+                VALUES(
+                    'twitch_moderation', 2501,
+                    'Edited effective history', 'edited effective history',
+                    'moderate', 'general', 'G_STREAMER_INSTRUCTION', 'timeout',
+                    600, 'Edited effective reason.', 0, 4,
+                    @timestamp, @timestamp);
+                """;
+            fixture.Parameters.AddWithValue("@timestamp", timestamp);
+            await fixture.ExecuteNonQueryAsync();
+            phraseRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT phrase.row_version
+                FROM phrase_rules phrase
+                INNER JOIN blacklist_rules rule ON rule.rule_id = phrase.rule_id
+                WHERE rule.rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND phrase.normalized_phrase = 'legacy instruction phrase';
+                """);
+            await transaction.CommitAsync();
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT COUNT(*) FROM blacklist_rules
+                WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND enabled = 1 AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            $"0|{ruleRowVersionBefore + 1}",
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT enabled || '|' || row_version
+                FROM blacklist_rules
+                WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND archived_utc IS NOT NULL;
+                """));
+        Assert.Equal(
+            $"0|{phraseRowVersionBefore + 1}",
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT phrase.enabled || '|' || phrase.row_version
+                FROM phrase_rules phrase
+                INNER JOIN blacklist_rules rule ON rule.rule_id = phrase.rule_id
+                WHERE rule.rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND phrase.normalized_phrase = 'legacy instruction phrase'
+                  AND phrase.archived_utc IS NOT NULL;
+                """));
+        Assert.Equal(
+            [
+                "manual_test|2503|1|1|moderate|G_STREAMER_INSTRUCTION|timeout",
+                "twitch_moderation|2501|1|5|moderate|G_STREAMER_INSTRUCTION|timeout",
+                "twitch_moderation|2502|1|1|allow|G_STREAMER_INSTRUCTION|none",
+            ],
+            await ReadStringsAsync(
+                verify,
+                """
+                SELECT
+                    source_kind || '|' || source_id || '|' || is_removed || '|' ||
+                    row_version || '|' || learning_decision || '|' || rule_code ||
+                    '|' || action
+                FROM learning_example_overrides
+                WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+                ORDER BY source_kind, source_id;
+                """));
+        Assert.Equal(
+            "Edited effective history|edited effective history|Edited effective reason.",
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT original_text || '|' || lower_text || '|' || reason
+                FROM learning_example_overrides
+                WHERE source_kind = 'twitch_moderation' AND source_id = 2501;
+                """));
+
+        Assert.Equal(
+            2L,
+            await ScalarAsync<long>(verify, "SELECT COUNT(*) FROM moderation_cases WHERE case_id IN (2501,2502);"));
+        Assert.Equal(
+            2L,
+            await ScalarAsync<long>(verify, "SELECT COUNT(*) FROM moderation_feedback WHERE case_id IN (2501,2502);"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(verify, "SELECT COUNT(*) FROM action_attempts WHERE execution_id = 2501;"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(verify, "SELECT COUNT(*) FROM manual_learning_examples WHERE manual_example_id = 2503;"));
+        Assert.Equal(
+            2L,
+            await ScalarAsync<long>(verify, "SELECT COUNT(*) FROM chat_message_snapshots WHERE twitch_message_id LIKE 'v25-message-%';"));
+        Assert.Equal(
+            2L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM moderation_cases WHERE violation_rule_code = 'G_STREAMER_INSTRUCTION' AND case_id IN (2501,2502);"));
+        Assert.Equal(
+            2L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM moderation_feedback WHERE rule_code = 'G_STREAMER_INSTRUCTION' AND case_id IN (2501,2502);"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM action_attempts WHERE rule_code = 'G_STREAMER_INSTRUCTION' AND execution_id = 2501;"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM manual_learning_examples WHERE actual_rule_code = 'G_STREAMER_INSTRUCTION' AND manual_example_id = 2503;"));
+        Assert.Equal(
+            generalRevisionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision FROM policy_sets
+                WHERE broadcaster_id = '*' AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            policyRowVersionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT row_version FROM policy_sets
+                WHERE broadcaster_id = '*' AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(verify, "SELECT COUNT(*) FROM schema_migrations WHERE version = 25;"));
+        Assert.Equal(
+            "ok",
+            await ScalarAsync<string>(verify, "PRAGMA integrity_check;"),
+            ignoreCase: true);
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(verify, "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+
+        var dataset = new SqliteLearningDatasetService(
+            database.ConnectionFactory,
+            new LearningContextRevision(),
+            new SqliteWriteCoordinator());
+        var page = await dataset.QueryAsync(
+            new LearningDatasetQuery(
+                Decision: null,
+                PolicySet: null,
+                SearchText: null,
+                SortColumn: "OccurredAtUtc",
+                Descending: true,
+                Offset: 0,
+                PageSize: 100));
+        Assert.Empty(page.Rows);
+
+        var historicalPolicy = new TwitchAI.Core.Models.EffectivePolicySnapshot(
+            [new PolicySetRevision(PolicySetCode.General, 1)],
+            "v25-historical-policy")
+        {
+            ActiveRules =
+            [
+                new ModerationRuleDefinition(
+                    retiredRuleCode,
+                    PolicySetCode.General,
+                    "Historische Regel",
+                    "Nur für den Upgrade-Test.",
+                    ModerationActionKind.Timeout,
+                    600,
+                    "Historischer Grund."),
+            ],
+        };
+        var retrieval = await new SqliteRetrievalExampleStore(database.ConnectionFactory)
+            .GetRelevantAsync(
+                "channel",
+                categoryId: null,
+                historicalPolicy,
+                ["moderate history", "allowed history", "manual history"]);
+        Assert.Empty(retrieval);
+    }
+
+    [Fact]
     public async Task ChatReplyMigration_UpgradesVersion10AndCreatesBothTables()
     {
         await using var database = await TestDatabase.CreateAtSchemaVersionAsync(10);
@@ -1603,7 +1969,7 @@ public sealed class DatabaseMigrationTests
             ORDER BY name;
             """);
 
-        Assert.Equal(24, migrationVersion);
+        Assert.Equal(25, migrationVersion);
         Assert.Equal(
             ["chat_reply_proposals", "chat_reply_templates"],
             tables);
@@ -1777,7 +2143,7 @@ public sealed class DatabaseMigrationTests
                 ORDER BY r.rule_code;
                 """));
         Assert.Equal(
-            generalRevisionBefore + 7,
+            generalRevisionBefore + 8,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -1857,7 +2223,7 @@ public sealed class DatabaseMigrationTests
                 WHERE change_reason = 'historical reason fixture';
                 """));
         Assert.Equal(
-            24L,
+            25L,
             await ScalarAsync<long>(
                 verify,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -2015,7 +2381,7 @@ public sealed class DatabaseMigrationTests
                   AND name LIKE 'trg_manual_learning_%';
                 """));
         Assert.Equal(
-            generalRevisionBefore + 7,
+            generalRevisionBefore + 8,
             await ScalarAsync<long>(
                 verify,
                 """
@@ -3042,10 +3408,6 @@ public sealed class DatabaseMigrationTests
                 "Gebettel",
                 "Betteln nach Subs, Geschenken oder Giveaways.",
                 76),
-            ["G_STREAMER_INSTRUCTION"] = (
-                "Anweisung",
-                "Unaufgeforderte Anweisung; der Streamer entscheidet selbst über seinen Content.",
-                77),
             ["G_OTHER_ABUSE"] = (
                 "Sonstiger General-Verstoß",
                 "Sonstiger Verstoß gegen die Chatregeln.",

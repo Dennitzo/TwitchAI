@@ -106,11 +106,11 @@ public sealed class ModerationPromptCompiler : IModerationPromptCompiler
             """
             Use only listed ruleCode values. Choose the applicable rule with the smallest priority.
             localMatchCodes are evidence, not automatic punishment. excludedRuleCodes are forbidden for that message.
-            Use 600-second timeout for ordinary abuse, light insults, streamer instructions, or clear backseatgaming.
+            Use 600-second timeout for ordinary abuse, light insults, or clear backseatgaming.
             Use 2-second timeout only as purge for a very light disruption, 120 for light spam,
             86400 for strong insults not clearly ban-worthy and for G_BEGGING, and ban for extreme abuse.
             Confirmed G_ADVERTISING self-promotion or promotion of another channel always uses ban.
-            Never ban for nuisance, spam, begging, streamer instructions, or backseatgaming alone.
+            Never ban for nuisance, spam, begging, or backseatgaming alone.
             Use delete only for a single low-context nuisance without a substantive violation.
             Reasons are one short German sentence up to 120 characters and describe only the violation.
             For a targeted person say "Nutzer oder Streamer", never only "Nutzer".
