@@ -93,6 +93,44 @@ public sealed class LearningDatasetItemTests
         Assert.Equal(PolicySetCode.General, item.PolicySet);
     }
 
+    [Fact]
+    public void TimeoutSecondsInput_UpdatesPersistedDraftForTimeoutAction()
+    {
+        var item = CreateItem(
+            LearningDecision.Moderate,
+            PolicySetCode.General,
+            ModerationRuleCodes.Spam,
+            ModerationActionKind.Timeout,
+            120,
+            [Rule(ModerationRuleCodes.Spam, PolicySetCode.General, "Spam")]);
+
+        item.TimeoutSecondsInput = 900;
+
+        Assert.Equal(900, item.TimeoutSeconds);
+        Assert.Equal(900, item.CreateDraft().TimeoutSeconds);
+        Assert.True(item.HasEditableChanges);
+        Assert.True(item.IsTimeoutAction);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1209601)]
+    [InlineData(1.5)]
+    public void TimeoutSecondsInput_RejectsInvalidValues(double value)
+    {
+        var item = CreateItem(
+            LearningDecision.Moderate,
+            PolicySetCode.General,
+            ModerationRuleCodes.Spam,
+            ModerationActionKind.Timeout,
+            120,
+            [Rule(ModerationRuleCodes.Spam, PolicySetCode.General, "Spam")]);
+
+        item.TimeoutSecondsInput = value;
+
+        Assert.Equal(120, item.TimeoutSeconds);
+    }
+
     private static LearningDatasetItem CreateItem(
         LearningDecision decision,
         PolicySetCode policySet,

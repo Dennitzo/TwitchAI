@@ -22,7 +22,8 @@ public enum ModerationRuleEvaluationMode
 
 public static class ModerationRuleCodes
 {
-    public const int MinimumEmoteSpamCount = 20;
+    public const int MinimumEmoteSpamCount = 10;
+    public const int MinimumRepeatedPhraseSpamCount = 5;
 
     public const string OtherAbuse = "G_OTHER_ABUSE";
     public const string GeneralPhrase = OtherAbuse;
@@ -64,13 +65,13 @@ public static class ModerationRuleCodes
         InsultClassificationPromptInstruction
         + " Trefferphrase: genau der kleinste zusammenh\u00e4ngende Lowercase-Beleg mit Zielperson und eigentlicher Herabsetzung; Username/@, Pronomen, F\u00fclltext oder Einzelwort allein nie. Ohne solchen Beleg none.";
     public const string SpamPromptInstruction =
-        "G_SPAM nur bei lokal belegtem Flooding: mindestens 20 Emotes in einer Nachricht, mindestens vier Wiederholungen bei mindestens acht Tokens und 70 Prozent Wiederholungsanteil oder mindestens 20 Sonderzeichen bei 70 Prozent Symbolanteil. Ein bis neunzehn Emotes, normale Wiederholungen, Satzzeichen, Reaktionen, belanglose und themenfremde Kommentare sind none. Nachrichten verschiedener User niemals zusammenzählen.";
+        "G_SPAM nur bei lokal belegtem Flooding: mindestens 10 Emotes in einer Nachricht; eine direkt wiederholte Wortfolge oder kurze Textphrase mindestens fünfmal in derselben Nachricht; oder mindestens 20 Sonderzeichen bei 70 Prozent Symbolanteil. Ein bis neun Emotes, normale Wiederholungen, Satzzeichen, Reaktionen, belanglose und themenfremde Kommentare sind none. Nachrichten verschiedener User niemals zusammenzählen.";
     public const string SpamClassifierGuidance =
         """
         G_SPAM has these hard criteria:
-        - Emote spam requires at least 20 emote occurrences in one message. One through nineteen emotes alone are none.
-        - Do not relabel one through nineteen repeated emote names as text spam or disruption.
-        - Text spam means clearly excessive repetition or flooding of text, words, or short phrases.
+        - Emote spam requires at least 10 emote occurrences in one message. One through nine emotes alone are none.
+        - Do not relabel one through nine repeated emote names as text spam or disruption.
+        - Text spam includes a non-emote word sequence or short phrase repeated directly at least five times in one message. When hasRepeatedPhraseSpam is true, classify G_SPAM.
         - Special-character spam means long or dense repeated symbol/punctuation sequences that flood chat; ordinary punctuation is none.
         Classify qualifying emote, text, and special-character flooding as G_SPAM, not G_DISRUPTION.
         These criteria override local phrase matches and learning examples. When twitchEmoteCount is supplied, treat it as authoritative for native Twitch emotes.

@@ -45,7 +45,10 @@ public sealed class ModerationRequestFactoryTests
 
         Assert.Equal(ModerationRuleCodes.MinimumEmoteSpamCount, message.TwitchEmoteCount);
         Assert.True(message.IsTwitchEmoteOnly);
-        Assert.Contains("\"twitchEmoteCount\":20", prompt.UserPrompt, StringComparison.Ordinal);
+        Assert.Contains(
+            $"\"twitchEmoteCount\":{ModerationRuleCodes.MinimumEmoteSpamCount}",
+            prompt.UserPrompt,
+            StringComparison.Ordinal);
         Assert.Contains("\"isTwitchEmoteOnly\":true", prompt.UserPrompt, StringComparison.Ordinal);
     }
 
@@ -73,7 +76,7 @@ public sealed class ModerationRequestFactoryTests
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "one short German sentence up to 120 characters",
+            "violationReason names only the violation",
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -81,43 +84,23 @@ public sealed class ModerationRequestFactoryTests
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Use 600-second timeout for ordinary abuse",
+            "G_HATE and G_PERSONAL_ATTACK allow timeout 600 or 86400",
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "2-second timeout only as purge for a very light disruption",
+            "G_SPAM allows delete, timeout 2, or timeout 120",
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "120 for light spam",
+            "BACKSEATGAMING requires timeout 600",
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "600-second timeout for ordinary abuse, light insults, or clear backseatgaming",
+            "G_SELF_PROMOTION allows timeout 86400 or ban",
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "86400 for strong insults",
-            prompt.SystemPrompt,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "ban for extreme abuse",
-            prompt.SystemPrompt,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "G_ADVERTISING self-promotion or promotion of another channel always uses ban",
-            prompt.SystemPrompt,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "86400 for strong insults not clearly ban-worthy and for G_BEGGING",
-            prompt.SystemPrompt,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "delete only for a single low-context nuisance",
-            prompt.SystemPrompt,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "Never ban for nuisance, spam, begging, or backseatgaming alone",
+            "G_BEGGING requires timeout 86400",
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -125,7 +108,7 @@ public sealed class ModerationRequestFactoryTests
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Equal(
-            [ModerationRuleCodes.Backseatgaming, ModerationRuleCodes.GeneralPhrase],
+            [ModerationRuleCodes.Backseatgaming, ModerationRuleCodes.PersonalAttack],
             prompt.Envelope.ActiveRules.Select(rule => rule.RuleCode));
         Assert.Equal(
             1,

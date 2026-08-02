@@ -1,3 +1,5 @@
+using TwitchAI.Core.Models;
+
 namespace TwitchAI.Infrastructure.Persistence;
 
 /// <summary>
@@ -15,9 +17,25 @@ public static class GlobalPolicyStorage
     public const string JustChattingCategoryId = "509658";
     public const string IrlCategoryId = "509672";
 
+    private static readonly HashSet<string> CurrentRuleCodes =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ModerationRuleCodes.PersonalData,
+            ModerationRuleCodes.Harm,
+            ModerationRuleCodes.Hate,
+            ModerationRuleCodes.SexualContent,
+            ModerationRuleCodes.PersonalAttack,
+            ModerationRuleCodes.Begging,
+            ModerationRuleCodes.Spam,
+            ModerationRuleCodes.Backseatgaming,
+            ModerationRuleCodes.SelfPromotion,
+            ModerationRuleCodes.BotScam,
+        };
+
+    public static bool IsCurrentRuleCode(string? ruleCode) =>
+        !string.IsNullOrWhiteSpace(ruleCode)
+        && CurrentRuleCodes.Contains(ruleCode);
+
     public static bool IsRetiredRuleCode(string? ruleCode) =>
-        string.Equals(
-            ruleCode,
-            RetiredStreamerInstructionRuleCode,
-            StringComparison.OrdinalIgnoreCase);
+        !IsCurrentRuleCode(ruleCode);
 }

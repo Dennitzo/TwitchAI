@@ -31,7 +31,7 @@ public sealed class ModerationReasonNormalizerTests
     }
 
     [Fact]
-    public void TryNormalizeContextualAiReason_PreservesConcreteMessageReason()
+    public void TryNormalizeContextualAiReason_AcceptsConcreteNominalReason()
     {
         var rule = new ModerationRuleDefinition(
             ModerationRuleCodes.PersonalAttack,
@@ -44,13 +44,67 @@ public sealed class ModerationReasonNormalizerTests
             Priority: 50);
 
         var valid = ModerationReasonNormalizer.TryNormalizeContextualAiReason(
-            "Die Nachricht nennt den Nutzer direkt einen Idioten.",
+            "Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.",
             rule,
             out var reason);
 
         Assert.True(valid);
         Assert.Equal(
-            "Die Nachricht nennt den Nutzer oder Streamer direkt einen Idioten.",
+            "Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.",
+            reason);
+    }
+
+    [Theory]
+    [InlineData("Du hast jemanden beleidigt.")]
+    [InlineData("Die Nachricht hat jemanden beleidigt.")]
+    [InlineData("Die Nachricht beleidigt einen Nutzer oder Streamer.")]
+    [InlineData("Nutzer oder Streamer @mayvo wird beleidigt.")]
+    [InlineData("Nutzer oder Streamer @mayvo wurde mit 'your time will come nodders' bedroht.")]
+    public void TryNormalizeContextualAiReason_RejectsDirectPresentOrQuotedReason(
+        string candidate)
+    {
+        var valid = ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+            candidate,
+            PersonalAttackRule(),
+            out var reason);
+
+        Assert.False(valid);
+        Assert.Empty(reason);
+    }
+
+    [Fact]
+    public void ContainsTriggerPhraseExcerpt_DetectsUnquotedEvidenceCopy()
+    {
+        var containsEvidence =
+            ModerationReasonNormalizer.ContainsTriggerPhraseExcerpt(
+                "Nutzer oder Streamer @mayvo wurde mit your time will come nodders bedroht.",
+                ["@mayvo your time will come nodders"]);
+
+        Assert.True(containsEvidence);
+    }
+
+    [Fact]
+    public void ContainsTriggerPhraseExcerpt_DetectsSingleWordEvidenceCopy()
+    {
+        var containsEvidence =
+            ModerationReasonNormalizer.ContainsTriggerPhraseExcerpt(
+                "Nutzer oder Streamer wurde als Idiot bezeichnet.",
+                ["idiot"]);
+
+        Assert.True(containsEvidence);
+    }
+
+    [Fact]
+    public void TryNormalizeContextualAiReason_AcceptsBackseatgamingNominalReason()
+    {
+        var valid = ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+            "Unaufgefordertes Backseatgaming an den Streamer.",
+            PersonalAttackRule(),
+            out var reason);
+
+        Assert.True(valid);
+        Assert.Equal(
+            "Unaufgefordertes Backseatgaming an den Streamer.",
             reason);
     }
 
@@ -75,7 +129,7 @@ public sealed class ModerationReasonNormalizerTests
             PolicySetCode.General);
 
         Assert.Equal(
-            "Direkte Beleidigung eines Nutzers oder Streamers.",
+            "Direkte Beleidigung eines Nutzers oder des Streamers.",
             result);
     }
 
@@ -181,13 +235,13 @@ public sealed class ModerationReasonNormalizerTests
         "Beleidigung gegen einen Nutzer oder Streamer.")]
     [InlineData(
         "Beleidigung eines Nutzers.",
-        "Beleidigung eines Nutzers oder Streamers.")]
+        "Beleidigung eines Nutzers oder des Streamers.")]
     [InlineData(
         "Gezielte Belästigung eines Nutzers.",
-        "Gezielte Belästigung eines Nutzers oder Streamers.")]
+        "Gezielte Belästigung eines Nutzers oder des Streamers.")]
     [InlineData(
         "Beleidigung eines Nutzers oder Streamers.",
-        "Beleidigung eines Nutzers oder Streamers.")]
+        "Beleidigung eines Nutzers oder des Streamers.")]
     public void Normalize_AddsStreamerToGermanTargetReasons(
         string reason,
         string expected)
@@ -244,4 +298,48 @@ public sealed class ModerationReasonNormalizerTests
 
         Assert.Equal(expected, result);
     }
+
+    [Theory]
+    [InlineData(
+        "Beleidigung des Streamers.",
+        "Beleidigung eines Nutzers oder des Streamers.")]
+    [InlineData(
+        "Beleidigung eines Nutzers.",
+        "Beleidigung eines Nutzers oder des Streamers.")]
+    [InlineData(
+        "Beleidigung eines Nutzers oder Streamers.",
+        "Beleidigung eines Nutzers oder des Streamers.")]
+    public void Normalize_UsesUncertainPossessiveTargetWithoutExplicitTag(
+        string reason,
+        string expected)
+    {
+        var result = ModerationReasonNormalizer.Normalize(
+            reason,
+            ModerationRuleCodes.Insult,
+            PolicySetCode.General);
+
+        Assert.Equal(expected, result);
+    }
+
+    [Fact]
+    public void Normalize_PreservesExplicitTaggedTarget()
+    {
+        var result = ModerationReasonNormalizer.Normalize(
+            "Beleidigung von @mayvo.",
+            ModerationRuleCodes.Insult,
+            PolicySetCode.General);
+
+        Assert.Equal("Beleidigung von @mayvo.", result);
+    }
+
+    private static ModerationRuleDefinition PersonalAttackRule() =>
+        new(
+            ModerationRuleCodes.PersonalAttack,
+            PolicySetCode.General,
+            "Beleidigung und Belästigung",
+            "test",
+            ModerationActionKind.Timeout,
+            600,
+            "Allgemeiner Regelgrund.",
+            Priority: 50);
 }

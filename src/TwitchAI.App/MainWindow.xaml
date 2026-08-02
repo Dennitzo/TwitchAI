@@ -323,7 +323,8 @@
           Background="{ThemeResource LayerStrongBrush}"
           BorderBrush="{ThemeResource CardStrokeBrush}"
           BorderThickness="1"
-          CornerRadius="8">
+          CornerRadius="8"
+          Visibility="{x:Bind ViewModel.LocalAiRunSummaryVisibility, Mode=OneWay}">
           <Grid ColumnSpacing="8">
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="Auto" />
@@ -437,87 +438,173 @@
           HorizontalScrollMode="Enabled"
           VerticalScrollBarVisibility="Disabled"
           VerticalScrollMode="Disabled"
-          Visibility="{x:Bind ViewModel.LocalAiQueueVisibility, Mode=OneWay}">
-          <ItemsRepeater
-            ItemsSource="{x:Bind ViewModel.QueuedLocalAiRuns, Mode=OneWay}">
-            <ItemsRepeater.Layout>
-              <StackLayout Orientation="Horizontal" Spacing="8" />
-            </ItemsRepeater.Layout>
-            <ItemsRepeater.ItemTemplate>
-              <DataTemplate>
-                <Border
-                  MinWidth="220"
-                  MinHeight="42"
-                  Padding="8,4"
-                  Background="{ThemeResource LayerStrongBrush}"
-                  BorderBrush="{ThemeResource CardStrokeBrush}"
-                  BorderThickness="1"
-                  CornerRadius="8">
-                  <Grid ColumnSpacing="8">
-                    <Grid.ColumnDefinitions>
-                      <ColumnDefinition Width="Auto" />
-                      <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <Border
-                      Width="34"
-                      Height="34"
-                      VerticalAlignment="Center"
-                      Background="#249146FF"
-                      CornerRadius="7">
-                      <FontIcon
-                        HorizontalAlignment="Center"
+          Visibility="{x:Bind ViewModel.LocalAiRunStripVisibility, Mode=OneWay}">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <ItemsRepeater
+              ItemsSource="{x:Bind ViewModel.ActiveLocalAiRuns, Mode=OneWay}">
+              <ItemsRepeater.Layout>
+                <StackLayout Orientation="Horizontal" Spacing="8" />
+              </ItemsRepeater.Layout>
+              <ItemsRepeater.ItemTemplate>
+                <DataTemplate>
+                  <Border
+                    MinWidth="220"
+                    MinHeight="42"
+                    Padding="8,4"
+                    Background="{ThemeResource LayerStrongBrush}"
+                    BorderBrush="{ThemeResource TwitchAccentBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <Grid ColumnSpacing="8">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                      </Grid.ColumnDefinitions>
+                      <Border
+                        Width="34"
+                        Height="34"
                         VerticalAlignment="Center"
-                        FontSize="15"
-                        Foreground="{ThemeResource MutedTextBrush}"
-                        Glyph="&#xE823;" />
-                    </Border>
-                    <StackPanel
-                      Grid.Column="1"
-                      MinWidth="0"
-                      VerticalAlignment="Center"
-                      Spacing="1">
-                      <StackPanel Orientation="Horizontal" Spacing="6">
-                        <TextBlock
-                          FontSize="12"
-                          FontWeight="SemiBold"
-                          Text="Lokale AI" />
-                        <TextBlock
-                          FontSize="12"
-                          Foreground="{ThemeResource TwitchAccentBrush}"
-                          Text="{Binding StateLabel, Mode=OneWay}" />
+                        Background="#249146FF"
+                        CornerRadius="7">
+                        <ProgressRing
+                          Width="18"
+                          Height="18"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Center"
+                          AutomationProperties.Name="Lokale AI verarbeitet Nachrichten"
+                          IsActive="True"
+                          IsTabStop="False" />
+                      </Border>
+                      <StackPanel
+                        Grid.Column="1"
+                        MinWidth="0"
+                        VerticalAlignment="Center"
+                        Spacing="1">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                          <TextBlock
+                            FontSize="12"
+                            FontWeight="SemiBold"
+                            Text="Lokale AI" />
+                          <TextBlock
+                            AutomationProperties.LiveSetting="Polite"
+                            FontSize="12"
+                            Foreground="{ThemeResource TwitchAccentBrush}"
+                            Text="{Binding StateLabel, Mode=OneWay}" />
+                        </StackPanel>
+                        <Grid MinWidth="0" ColumnSpacing="3">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                          </Grid.ColumnDefinitions>
+                          <TextBlock
+                            MaxWidth="104"
+                            MaxLines="1"
+                            FontSize="11"
+                            Foreground="{ThemeResource MutedTextBrush}"
+                            Text="{Binding RunLabel, Mode=OneWay}"
+                            TextTrimming="CharacterEllipsis" />
+                          <TextBlock
+                            Grid.Column="1"
+                            FontSize="11"
+                            Foreground="{ThemeResource MutedTextBrush}"
+                            Text="·" />
+                          <TextBlock
+                            Grid.Column="2"
+                            MaxLines="1"
+                            FontSize="11"
+                            Foreground="{ThemeResource MutedTextBrush}"
+                            Text="{Binding MessageCountLabel, Mode=OneWay}"
+                            TextTrimming="CharacterEllipsis" />
+                        </Grid>
                       </StackPanel>
-                      <Grid MinWidth="0" ColumnSpacing="3">
-                        <Grid.ColumnDefinitions>
-                          <ColumnDefinition Width="Auto" />
-                          <ColumnDefinition Width="Auto" />
-                          <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <TextBlock
-                          MaxWidth="104"
-                          MaxLines="1"
-                          FontSize="11"
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsRepeater.ItemTemplate>
+            </ItemsRepeater>
+
+            <ItemsRepeater
+              ItemsSource="{x:Bind ViewModel.QueuedLocalAiRuns, Mode=OneWay}">
+              <ItemsRepeater.Layout>
+                <StackLayout Orientation="Horizontal" Spacing="8" />
+              </ItemsRepeater.Layout>
+              <ItemsRepeater.ItemTemplate>
+                <DataTemplate>
+                  <Border
+                    MinWidth="220"
+                    MinHeight="42"
+                    Padding="8,4"
+                    Background="{ThemeResource LayerStrongBrush}"
+                    BorderBrush="{ThemeResource CardStrokeBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8">
+                    <Grid ColumnSpacing="8">
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                      </Grid.ColumnDefinitions>
+                      <Border
+                        Width="34"
+                        Height="34"
+                        VerticalAlignment="Center"
+                        Background="#249146FF"
+                        CornerRadius="7">
+                        <FontIcon
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Center"
+                          FontSize="15"
                           Foreground="{ThemeResource MutedTextBrush}"
-                          Text="{Binding RunLabel, Mode=OneWay}"
-                          TextTrimming="CharacterEllipsis" />
-                        <TextBlock
-                          Grid.Column="1"
-                          FontSize="11"
-                          Foreground="{ThemeResource MutedTextBrush}"
-                          Text="·" />
-                        <TextBlock
-                          Grid.Column="2"
-                          MaxLines="1"
-                          FontSize="11"
-                          Foreground="{ThemeResource MutedTextBrush}"
-                          Text="{Binding MessageCountLabel, Mode=OneWay}"
-                          TextTrimming="CharacterEllipsis" />
-                      </Grid>
-                    </StackPanel>
-                  </Grid>
-                </Border>
-              </DataTemplate>
-            </ItemsRepeater.ItemTemplate>
-          </ItemsRepeater>
+                          Glyph="&#xE823;" />
+                      </Border>
+                      <StackPanel
+                        Grid.Column="1"
+                        MinWidth="0"
+                        VerticalAlignment="Center"
+                        Spacing="1">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                          <TextBlock
+                            FontSize="12"
+                            FontWeight="SemiBold"
+                            Text="Lokale AI" />
+                          <TextBlock
+                            FontSize="12"
+                            Foreground="{ThemeResource TwitchAccentBrush}"
+                            Text="{Binding StateLabel, Mode=OneWay}" />
+                        </StackPanel>
+                        <Grid MinWidth="0" ColumnSpacing="3">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                          </Grid.ColumnDefinitions>
+                          <TextBlock
+                            MaxWidth="104"
+                            MaxLines="1"
+                            FontSize="11"
+                            Foreground="{ThemeResource MutedTextBrush}"
+                            Text="{Binding RunLabel, Mode=OneWay}"
+                            TextTrimming="CharacterEllipsis" />
+                          <TextBlock
+                            Grid.Column="1"
+                            FontSize="11"
+                            Foreground="{ThemeResource MutedTextBrush}"
+                            Text="·" />
+                          <TextBlock
+                            Grid.Column="2"
+                            MaxLines="1"
+                            FontSize="11"
+                            Foreground="{ThemeResource MutedTextBrush}"
+                            Text="{Binding MessageCountLabel, Mode=OneWay}"
+                            TextTrimming="CharacterEllipsis" />
+                        </Grid>
+                      </StackPanel>
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsRepeater.ItemTemplate>
+            </ItemsRepeater>
+          </StackPanel>
         </ScrollViewer>
       </Grid>
     </Border>

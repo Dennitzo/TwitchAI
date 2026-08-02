@@ -51,6 +51,33 @@ public sealed class LearningReviewViewModelTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_UsesInitialAiReasonWithoutManualReasonRun()
+    {
+        var expected = Result(
+            ModerationRuleCodes.Spam,
+            PolicySetCode.General,
+            ModerationActionKind.Timeout,
+            timeoutSeconds: 600,
+            reason: "Wiederholtes Fluten des Chats mit gleichem Inhalt.");
+        var testService = new RecordingLearningTestService
+        {
+            AnalyzeResult = expected,
+        };
+        var viewModel = new LearningViewModel(
+            testService,
+            new NoOpLearningFeedbackService())
+        {
+            TestMessage = expected.OriginalText,
+        };
+
+        await viewModel.AnalyzeAsync();
+
+        Assert.Equal(expected.ProposedReason, viewModel.Review!.Reason);
+        Assert.Equal(expected.ProposedRuleCode, viewModel.Review.SelectedRuleCode);
+        Assert.Empty(testService.ReasonRequests);
+    }
+
+    [Fact]
     public async Task SelectRuleAsync_RequestsAndAppliesContextualAiReason()
     {
         var testService = new RecordingLearningTestService();
@@ -174,10 +201,13 @@ public sealed class LearningReviewViewModelTests
     {
         public List<LearningReasonRequest> ReasonRequests { get; } = [];
 
+        public LearningTestResult? AnalyzeResult { get; init; }
+
         public ValueTask<LearningTestResult> AnalyzeAsync(
             LearningTestRequest request,
             CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException();
+            ValueTask.FromResult(
+                AnalyzeResult ?? throw new NotSupportedException());
 
         public ValueTask<bool> IsPolicyCurrentAsync(
             LearningTestResult result,

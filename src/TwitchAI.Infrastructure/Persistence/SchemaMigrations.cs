@@ -3461,5 +3461,158 @@ internal static class SchemaMigrations
 
             DROP TABLE twitchai_v31_affected_policy_scopes;
             """),
+        new(
+            32,
+            "Remove obsolete and duplicate moderation categories from active policy",
+            """
+            CREATE TEMP TABLE twitchai_v32_current_rules(
+                rule_code TEXT PRIMARY KEY
+            ) STRICT;
+            INSERT INTO twitchai_v32_current_rules(rule_code) VALUES
+                ('G_PERSONAL_DATA'),
+                ('G_HARM'),
+                ('G_HATE'),
+                ('G_SEXUAL_CONTENT'),
+                ('G_PERSONAL_ATTACK'),
+                ('G_BEGGING'),
+                ('G_SPAM'),
+                ('BACKSEATGAMING'),
+                ('G_SELF_PROMOTION'),
+                ('G_BOT_SCAM');
+
+            CREATE TEMP TABLE twitchai_v32_canonical_rules(
+                scope_id INTEGER NOT NULL,
+                rule_code TEXT NOT NULL,
+                rule_id INTEGER NOT NULL,
+                PRIMARY KEY(scope_id, rule_code)
+            ) STRICT;
+            INSERT INTO twitchai_v32_canonical_rules(scope_id, rule_code, rule_id)
+            SELECT rule.scope_id, rule.rule_code, MAX(rule.rule_id)
+            FROM blacklist_rules rule
+            INNER JOIN twitchai_v32_current_rules current
+                ON current.rule_code = rule.rule_code
+            WHERE rule.enabled = 1 AND rule.archived_utc IS NULL
+            GROUP BY rule.scope_id, rule.rule_code;
+
+            CREATE TEMP TABLE twitchai_v32_duplicate_rules(
+                rule_id INTEGER PRIMARY KEY,
+                canonical_rule_id INTEGER NOT NULL
+            ) STRICT;
+            INSERT INTO twitchai_v32_duplicate_rules(rule_id, canonical_rule_id)
+            SELECT rule.rule_id, canonical.rule_id
+            FROM blacklist_rules rule
+            INNER JOIN twitchai_v32_canonical_rules canonical
+                ON canonical.scope_id = rule.scope_id
+               AND canonical.rule_code = rule.rule_code
+            WHERE rule.rule_id <> canonical.rule_id
+              AND rule.archived_utc IS NULL;
+
+            UPDATE phrase_rules AS duplicate_phrase
+            SET enabled = 0,
+                archived_utc = COALESCE(
+                    archived_utc,
+                    strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE duplicate_phrase.archived_utc IS NULL
+              AND duplicate_phrase.rule_id IN (
+                  SELECT rule_id FROM twitchai_v32_duplicate_rules)
+              AND EXISTS (
+                  SELECT 1
+                  FROM twitchai_v32_duplicate_rules duplicate
+                  INNER JOIN phrase_rules canonical_phrase
+                      ON canonical_phrase.rule_id = duplicate.canonical_rule_id
+                     AND canonical_phrase.normalized_phrase =
+                         duplicate_phrase.normalized_phrase
+                     AND canonical_phrase.archived_utc IS NULL
+                  WHERE duplicate.rule_id = duplicate_phrase.rule_id);
+
+            UPDATE phrase_rules
+            SET rule_id = (
+                    SELECT canonical_rule_id
+                    FROM twitchai_v32_duplicate_rules duplicate
+                    WHERE duplicate.rule_id = phrase_rules.rule_id),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE archived_utc IS NULL
+              AND rule_id IN (SELECT rule_id FROM twitchai_v32_duplicate_rules);
+
+            UPDATE phrase_rules
+            SET enabled = 0,
+                archived_utc = COALESCE(
+                    archived_utc,
+                    strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE archived_utc IS NULL
+              AND rule_id IN (
+                  SELECT rule.rule_id
+                  FROM blacklist_rules rule
+                  LEFT JOIN twitchai_v32_current_rules current
+                      ON current.rule_code = rule.rule_code
+                  LEFT JOIN twitchai_v32_canonical_rules canonical
+                      ON canonical.rule_id = rule.rule_id
+                  WHERE current.rule_code IS NULL
+                     OR canonical.rule_id IS NULL);
+
+            UPDATE blacklist_rules
+            SET enabled = 0,
+                archived_utc = COALESCE(
+                    archived_utc,
+                    strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE archived_utc IS NULL
+              AND rule_id NOT IN (
+                  SELECT rule_id FROM twitchai_v32_canonical_rules);
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                SELECT DISTINCT scope_id FROM blacklist_rules
+                WHERE archived_utc IS NOT NULL);
+
+            DROP TABLE twitchai_v32_duplicate_rules;
+            DROP TABLE twitchai_v32_canonical_rules;
+            DROP TABLE twitchai_v32_current_rules;
+            """,
+            RequiresBackup: true),
+        new(
+            33,
+            "Restore ten-emote spam limit and detect five repeated text phrases",
+            """
+            CREATE TEMP TABLE twitchai_v33_affected_policy_scopes (
+                scope_id INTEGER PRIMARY KEY
+            ) STRICT;
+
+            INSERT INTO twitchai_v33_affected_policy_scopes(scope_id)
+            SELECT DISTINCT scope_id
+            FROM blacklist_rules
+            WHERE rule_code = 'G_SPAM'
+              AND enabled = 1
+              AND archived_utc IS NULL
+              AND prompt_instruction = 'G_SPAM nur bei lokal belegtem Flooding: mindestens 20 Emotes in einer Nachricht, mindestens vier Wiederholungen bei mindestens acht Tokens und 70 Prozent Wiederholungsanteil oder mindestens 20 Sonderzeichen bei 70 Prozent Symbolanteil. Ein bis neunzehn Emotes, normale Wiederholungen, Satzzeichen, Reaktionen, belanglose und themenfremde Kommentare sind none. Nachrichten verschiedener User niemals zusammenzählen.';
+
+            UPDATE blacklist_rules
+            SET prompt_instruction = 'G_SPAM nur bei lokal belegtem Flooding: mindestens 10 Emotes in einer Nachricht; eine direkt wiederholte Wortfolge oder kurze Textphrase mindestens fünfmal in derselben Nachricht; oder mindestens 20 Sonderzeichen bei 70 Prozent Symbolanteil. Ein bis neun Emotes, normale Wiederholungen, Satzzeichen, Reaktionen, belanglose und themenfremde Kommentare sind none. Nachrichten verschiedener User niemals zusammenzählen.',
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_code = 'G_SPAM'
+              AND enabled = 1
+              AND archived_utc IS NULL
+              AND prompt_instruction = 'G_SPAM nur bei lokal belegtem Flooding: mindestens 20 Emotes in einer Nachricht, mindestens vier Wiederholungen bei mindestens acht Tokens und 70 Prozent Wiederholungsanteil oder mindestens 20 Sonderzeichen bei 70 Prozent Symbolanteil. Ein bis neunzehn Emotes, normale Wiederholungen, Satzzeichen, Reaktionen, belanglose und themenfremde Kommentare sind none. Nachrichten verschiedener User niemals zusammenzählen.';
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                SELECT scope_id FROM twitchai_v33_affected_policy_scopes
+            );
+
+            DROP TABLE twitchai_v33_affected_policy_scopes;
+            """),
     ];
 }

@@ -81,6 +81,40 @@ public sealed class ModerationPromptCompilerTests
         Assert.True(variants[2].GetProperty("properties").TryGetProperty(
             "timeoutSeconds",
             out _));
+        Assert.Equal(
+            string.Empty,
+            variants[1].GetProperty("properties")
+                .GetProperty("violationReason")
+                .GetProperty("const")
+                .GetString());
+        Assert.Equal(
+            string.Empty,
+            variants[1].GetProperty("properties")
+                .GetProperty("guidance")
+                .GetProperty("const")
+                .GetString());
+        Assert.Equal(
+            ModerationReasonComposer.MaximumViolationReasonLength,
+            variants[2].GetProperty("properties")
+                .GetProperty("violationReason")
+                .GetProperty("maxLength")
+                .GetInt32());
+        Assert.Equal(
+            ModerationReasonComposer.MaximumGuidanceLength,
+            variants[2].GetProperty("properties")
+                .GetProperty("guidance")
+                .GetProperty("maxLength")
+                .GetInt32());
+        Assert.Contains(
+            "violationReason",
+            variants[2].GetProperty("required")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.Contains(
+            "guidance",
+            variants[2].GetProperty("required")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
         Assert.Equal(1, variants[2].GetProperty("properties")
             .GetProperty("triggerPhrases")
             .GetProperty("maxItems")
@@ -137,7 +171,7 @@ public sealed class ModerationPromptCompilerTests
         Assert.Equal(5, message.GetProperty("twitchEmoteCount").GetInt32());
         Assert.True(message.GetProperty("isTwitchEmoteOnly").GetBoolean());
         Assert.Contains(
-            "fewer than 20 native Twitch emotes is always noAction",
+            "fewer than 10 native Twitch emotes is always noAction",
             compiled.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Equal(
@@ -185,10 +219,10 @@ public sealed class ModerationPromptCompilerTests
     }
 
     [Theory]
-    [InlineData(19, true)]
-    [InlineData(20, false)]
-    [InlineData(21, false)]
-    public void Compile_ExcludesEmoteSpamOnlyBelowTwenty(
+    [InlineData(9, true)]
+    [InlineData(10, false)]
+    [InlineData(11, false)]
+    public void Compile_ExcludesEmoteSpamOnlyBelowTen(
         int emoteCount,
         bool expectedSpamExcluded)
     {

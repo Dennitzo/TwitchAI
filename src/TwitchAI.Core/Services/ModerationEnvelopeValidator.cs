@@ -80,12 +80,13 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             "ruleCode",
             "evidenceKind",
             "sensitiveDataType",
-            "reason",
+            "violationReason",
+            "guidance",
             "triggerPhrases",
             "confidence");
 
     private static readonly HashSet<string> RequiredKeyedModerationProperties =
-        Set("action", "ruleCode", "evidenceKind", "reason", "triggerPhrases", "confidence");
+        Set("action", "ruleCode", "evidenceKind", "violationReason", "guidance", "triggerPhrases", "confidence");
 
     private static readonly HashSet<string> KeyedReplyProperties =
         Set("replyTemplateId", "confidence");
@@ -343,6 +344,19 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
 
                 if (property.Value.ValueKind == JsonValueKind.Null)
                 {
+                    if (RepeatedPhraseSpamDetector.IsSpam(
+                            sourceById[messageId].Message.Text.LowerText))
+                    {
+                        MarkMessageInvalid(
+                            messageId,
+                            "repeated_phrase_spam_missed",
+                            $"Decision '{messageId}': A phrase repeated at least {ModerationRuleCodes.MinimumRepeatedPhraseSpamCount} times requires G_SPAM.",
+                            invalidIds,
+                            validatedById,
+                            issues);
+                        continue;
+                    }
+
                     validatedById[messageId] = NoActionDecision(messageId);
                     continue;
                 }
@@ -621,6 +635,19 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                         messageId,
                         "message_id_duplicate",
                         $"Temporary message ID '{messageId}' occurs more than once.",
+                        invalidIds,
+                        validatedById,
+                        issues);
+                    continue;
+                }
+
+                if (RepeatedPhraseSpamDetector.IsSpam(
+                        sourceById[messageId].Message.Text.LowerText))
+                {
+                    MarkMessageInvalid(
+                        messageId,
+                        "repeated_phrase_spam_missed",
+                        $"Decision '{messageId}': A phrase repeated at least {ModerationRuleCodes.MinimumRepeatedPhraseSpamCount} times requires G_SPAM.",
                         invalidIds,
                         validatedById,
                         issues);
@@ -1020,36 +1047,26 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 $"Decision '{messageId}': Fewer than {ModerationRuleCodes.MinimumEmoteSpamCount} native Twitch emotes require noAction.");
         }
 
-        var reasonElement = element.GetProperty("reason");
-        var candidateReason = reasonElement.ValueKind == JsonValueKind.String
-            && reasonElement.GetString() is { } text
-            && !text.Any(char.IsControl)
-                ? text
-                : null;
-        if (string.IsNullOrWhiteSpace(candidateReason))
+        string? candidateViolationReason;
+        string? candidateGuidance;
+        if (isKeyedDecision)
         {
-            return SparseDecisionValidationResult.Invalid(
-                messageId,
-                "reason_invalid",
-                $"Decision '{messageId}': A moderation requires a non-empty contextual German reason.");
+            candidateViolationReason = ReadStringProperty(
+                element,
+                "violationReason");
+            candidateGuidance = ReadStringProperty(element, "guidance");
+        }
+        else
+        {
+            candidateViolationReason = ReadStringProperty(element, "reason");
+            candidateGuidance = null;
         }
 
-        if (ModerationReasonNormalizer.IsSelfNegating(candidateReason))
+        if (ModerationReasonNormalizer.IsSelfNegating(candidateViolationReason))
         {
             return SparseDecisionValidationResult.Valid(
                 NoActionDecision(messageId),
                 usedLocalFallback: true);
-        }
-
-        if (!ModerationReasonNormalizer.TryNormalizeContextualAiReason(
-                candidateReason,
-                rule,
-                out var reason))
-        {
-            return SparseDecisionValidationResult.Invalid(
-                messageId,
-                "reason_not_contextual",
-                $"Decision '{messageId}': reason must be a concrete, message-specific German sentence and must not copy a generic rule reason.");
         }
 
         var triggerResult = ParseTriggerPhrases(
@@ -1108,6 +1125,47 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 triggerResult = new(evidence, Error: null);
                 usedLocalFallback = true;
             }
+        }
+
+        string reason;
+        if (isKeyedDecision)
+        {
+            if (!ModerationReasonComposer.TryComposeAiReason(
+                    candidateViolationReason,
+                    candidateGuidance,
+                    action,
+                    rule,
+                    source.Message.Text.LowerText,
+                    triggerResult.TriggerPhrases,
+                    out var composition,
+                    out var reasonErrorCode))
+            {
+                return SparseDecisionValidationResult.Invalid(
+                    messageId,
+                    reasonErrorCode,
+                    $"Decision '{messageId}': violationReason or guidance is invalid.");
+            }
+
+            reason = composition.Reason;
+        }
+        else if (!ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+                     candidateViolationReason,
+                     rule,
+                     out reason))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "reason_not_contextual",
+                $"Decision '{messageId}': reason must use neutral German past tense without direct address, quotations, or a generic rule reason.");
+        }
+        else if (ModerationReasonNormalizer.ContainsTriggerPhraseExcerpt(
+                     reason,
+                     triggerResult.TriggerPhrases))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "reason_contains_trigger_phrase",
+                $"Decision '{messageId}': reason must summarize the violation and must not repeat triggerPhrases.");
         }
 
         var isBackseat = string.Equals(
@@ -1671,7 +1729,7 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             {
                 return DecisionValidationResult.Invalid(
                     "reason_not_contextual",
-                    $"Decision '{messageId}': reason must be a concrete, message-specific German sentence and must not copy a generic rule reason.");
+                    $"Decision '{messageId}': reason must use neutral German past tense without direct address, quotations, or a generic rule reason.");
             }
         }
 
@@ -1702,6 +1760,15 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                     .Where(LearningTriggerPhraseFilter.IsContextual)
                     .ToArray(),
                 Error: null);
+        }
+        if (action != ModerationActionKind.None
+            && ModerationReasonNormalizer.ContainsTriggerPhraseExcerpt(
+                reason,
+                triggerResult.TriggerPhrases))
+        {
+            return DecisionValidationResult.Invalid(
+                "reason_contains_trigger_phrase",
+                $"Decision '{messageId}': reason must summarize the violation and must not repeat triggerPhrases.");
         }
         if (string.Equals(
                 ruleResult.Rule?.RuleCode,
@@ -2071,6 +2138,21 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
 
         value = string.Empty;
         return false;
+    }
+
+    private static string? ReadStringProperty(
+        JsonElement parent,
+        string propertyName)
+    {
+        if (!parent.TryGetProperty(propertyName, out var element)
+            || element.ValueKind != JsonValueKind.String
+            || element.GetString() is not { } value
+            || value.Any(char.IsControl))
+        {
+            return null;
+        }
+
+        return value;
     }
 
     private static bool TryParseAction(

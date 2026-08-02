@@ -27,6 +27,14 @@ public sealed class DatabaseMigrationTests
         var categories = await ReadStringsAsync(
             connection,
             "SELECT category_id FROM twitch_categories ORDER BY category_id;");
+        var activeRuleCodes = await ReadStringsAsync(
+            connection,
+            """
+            SELECT rule_code
+            FROM blacklist_rules
+            WHERE enabled = 1 AND archived_utc IS NULL
+            ORDER BY rule_code;
+            """);
 
         Assert.Contains("schema_migrations", tables);
         Assert.Contains("moderation_cases", tables);
@@ -41,6 +49,20 @@ public sealed class DatabaseMigrationTests
         Assert.Contains("learning_example_overrides", tables);
         Assert.Contains("moderation_case_phrase_matches", tables);
         Assert.Equal(["32982", "509658", "509672"], categories);
+        Assert.Equal(
+            [
+                "BACKSEATGAMING",
+                "G_BEGGING",
+                "G_BOT_SCAM",
+                "G_HARM",
+                "G_HATE",
+                "G_PERSONAL_ATTACK",
+                "G_PERSONAL_DATA",
+                "G_SELF_PROMOTION",
+                "G_SEXUAL_CONTENT",
+                "G_SPAM",
+            ],
+            activeRuleCodes);
 
         await using var seedCommand = connection.CreateCommand();
         seedCommand.CommandText =
@@ -70,7 +92,7 @@ public sealed class DatabaseMigrationTests
         var journalMode = await ScalarAsync<string>(connection, "PRAGMA journal_mode;");
         var foreignKeys = await ScalarAsync<long>(connection, "PRAGMA foreign_keys;");
 
-        Assert.Equal(31, migrationCount);
+        Assert.Equal(33, migrationCount);
         Assert.Equal("wal", journalMode, ignoreCase: true);
         Assert.Equal(1, foreignKeys);
     }
@@ -350,7 +372,7 @@ public sealed class DatabaseMigrationTests
                   AND phrase.archived_utc IS NULL;
                 """));
         Assert.Equal(
-            generalRevisionBefore + 1,
+            generalRevisionBefore + 2,
             await ScalarAsync<long>(
                 migrated,
                 """
@@ -361,7 +383,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            31L,
+            32L,
             await ScalarAsync<long>(
                 migrated,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -1452,8 +1474,8 @@ public sealed class DatabaseMigrationTests
         Assert.Equal(
             TwitchAI.Core.Models.ModerationRuleCodes.SpamPromptInstruction,
             updatedPrompt);
-        Assert.Contains("mindestens 20 Emotes", updatedPrompt, StringComparison.Ordinal);
-        Assert.Contains("Ein bis neunzehn Emotes", updatedPrompt, StringComparison.Ordinal);
+        Assert.Contains("mindestens 10 Emotes", updatedPrompt, StringComparison.Ordinal);
+        Assert.Contains("Ein bis neun Emotes", updatedPrompt, StringComparison.Ordinal);
         Assert.Equal(
             spamRowVersionBefore + 1,
             await ScalarAsync<long>(

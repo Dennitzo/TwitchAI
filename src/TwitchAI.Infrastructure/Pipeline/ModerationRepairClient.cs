@@ -49,7 +49,8 @@ public sealed record ModerationRepairRequest(
     CompiledModerationPrompt OriginalPrompt,
     IReadOnlyList<string> TargetMessageIds,
     IReadOnlyList<ModerationValidationIssue> ValidationIssues,
-    bool RequiresFullBatchRepair);
+    bool RequiresFullBatchRepair,
+    string? SchedulingKey = null);
 
 public sealed record ModerationRepairResult(
     string RawResponse,
@@ -115,7 +116,7 @@ public sealed class ModerationRepairClient : IModerationRepairClient
         var subsetEnvelope = CreateRepairEnvelope(request, targetIds);
         if (!_options.LmStudio.UseCompactModerationContractV6)
         {
-            var legacyResponse = await RepairAsync(
+            var legacyResponse = await RepairLegacyAsync(
                     subsetEnvelope,
                     string.Empty,
                     request.ValidationIssues
@@ -123,6 +124,7 @@ public sealed class ModerationRepairClient : IModerationRepairClient
                             issue.Code,
                             issue.Message))
                         .ToArray(),
+                    request.SchedulingKey,
                     cancellationToken)
                 .ConfigureAwait(false);
             return new(legacyResponse, Prompt: null);
@@ -140,7 +142,7 @@ public sealed class ModerationRepairClient : IModerationRepairClient
             + "Classify them again from the trusted compact request; do not recreate omitted batch messages. "
             + "Previous local validation codes: "
             + string.Join(",", validationCodes)
-            + ". Return only the required response.v8 JSON.";
+            + ". Return only the required response.v9 JSON.";
         var repairSystemPrompt = compiled.SystemPrompt + "\n" + repairDirective;
         compiled = compiled with
         {
@@ -162,7 +164,8 @@ public sealed class ModerationRepairClient : IModerationRepairClient
                     compiled.ReplyTemplateIds,
                     LmStudioResponseSchemaKind.ModerationV6,
                     LocalAiRunKind.Moderation,
-                    compiled.ResponseFormat),
+                    compiled.ResponseFormat,
+                    SchedulingKey: request.SchedulingKey),
                 cancellationToken)
             .ConfigureAwait(false);
         return new(completion.RawEnvelope, compiled);
@@ -242,7 +245,21 @@ public sealed class ModerationRepairClient : IModerationRepairClient
         ModerationRequestEnvelopeV3 originalRequest,
         string invalidResponse,
         IReadOnlyList<EnvelopeValidationError> errors,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        await RepairLegacyAsync(
+                originalRequest,
+                invalidResponse,
+                errors,
+                schedulingKey: null,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    private async ValueTask<string> RepairLegacyAsync(
+        ModerationRequestEnvelopeV3 originalRequest,
+        string invalidResponse,
+        IReadOnlyList<EnvelopeValidationError> errors,
+        string? schedulingKey,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(originalRequest);
         ArgumentNullException.ThrowIfNull(invalidResponse);
@@ -317,7 +334,8 @@ public sealed class ModerationRepairClient : IModerationRepairClient
                     legacyRequest.ReplyTemplates
                         .Select(item => item.TemplateId)
                         .Distinct(StringComparer.Ordinal)
-                        .ToArray()),
+                        .ToArray(),
+                    SchedulingKey: schedulingKey),
                 cancellationToken)
             .ConfigureAwait(false);
         return completion.RawEnvelope;

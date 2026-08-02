@@ -27,7 +27,9 @@ public sealed record LmStudioModerationRequest(
     LmStudioResponseSchemaKind ResponseSchema =
         LmStudioResponseSchemaKind.Moderation,
     LocalAiRunKind RunKind = LocalAiRunKind.Moderation,
-    JsonElement? ResponseFormat = null);
+    JsonElement? ResponseFormat = null,
+    LocalAiRunPriority Priority = LocalAiRunPriority.Normal,
+    string? SchedulingKey = null);
 
 public sealed record LmStudioUsageMetrics(
     int? PromptTokens,
@@ -193,7 +195,7 @@ public sealed class LmStudioClient : ILmStudioClient
         }
 
         await using var executionLease = await _executionGate
-            .AcquireAsync(cancellationToken)
+            .AcquireAsync(request.Priority, request.SchedulingKey, cancellationToken)
             .ConfigureAwait(false);
         var requestedAt = DateTimeOffset.UtcNow;
         var stopwatch = Stopwatch.StartNew();
@@ -701,6 +703,8 @@ public sealed class LmStudioClient : ILmStudioClient
         int? timeoutSeconds)
     {
         var isModerate = string.Equals(verdict, "moderate", StringComparison.Ordinal);
+        var requiresReason = isModerate
+            && action is ModerationActionKind.Timeout or ModerationActionKind.Ban;
         var isPersonalData = string.Equals(
             ruleCode,
             ModerationRuleCodes.PersonalData,
@@ -757,12 +761,24 @@ public sealed class LmStudioClient : ILmStudioClient
                     },
                 }
                 : new { type = "null" },
-            ["reason"] = isModerate
+            ["violationReason"] = requiresReason
                 ? new
                 {
                     type = "string",
                     minLength = 1,
-                    maxLength = 120,
+                    maxLength = ModerationReasonComposer.MaximumViolationReasonLength,
+                }
+                : new
+                {
+                    type = "string",
+                    @const = string.Empty,
+                },
+            ["guidance"] = requiresReason
+                ? new
+                {
+                    type = "string",
+                    minLength = 1,
+                    maxLength = ModerationReasonComposer.MaximumGuidanceLength,
                 }
                 : new
                 {
@@ -807,7 +823,8 @@ public sealed class LmStudioClient : ILmStudioClient
                 "ruleCode",
                 "evidenceKind",
                 "sensitiveDataType",
-                "reason",
+                "violationReason",
+                "guidance",
                 "triggerPhrases",
                 "confidence",
             },

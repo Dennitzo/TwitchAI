@@ -30,6 +30,7 @@ public sealed record ModerationWireMessageV6(
     IReadOnlyList<string>? ExcludedRuleCodes = null,
     int? TwitchEmoteCount = null,
     bool? IsTwitchEmoteOnly = null,
+    bool? HasRepeatedPhraseSpam = null,
     IReadOnlyList<string>? ReplyCandidateIds = null);
 
 public sealed record ModerationWirePhraseMatchV1(
@@ -100,6 +101,17 @@ public sealed record ModerationWireDecisionV6(
     int? TimeoutSeconds,
     string RuleCode,
     string Reason,
+    IReadOnlyList<string> TriggerPhrases,
+    double Confidence,
+    string EvidenceKind,
+    string? SensitiveDataType = null);
+
+public sealed record ModerationWireDecisionV9(
+    string Action,
+    int? TimeoutSeconds,
+    string RuleCode,
+    string ViolationReason,
+    string Guidance,
     IReadOnlyList<string> TriggerPhrases,
     double Confidence,
     string EvidenceKind,

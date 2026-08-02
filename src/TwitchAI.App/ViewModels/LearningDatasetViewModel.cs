@@ -129,6 +129,33 @@ public sealed partial class LearningDatasetItem : ObservableObject
         _ => "Erlaubt",
     };
 
+    public bool IsTimeoutAction =>
+        Decision == LearningDecision.Moderate
+        && string.Equals(ActionCode, "timeout", StringComparison.OrdinalIgnoreCase);
+
+    public double TimeoutSecondsInput
+    {
+        get => TimeoutSeconds ?? double.NaN;
+        set
+        {
+            if (double.IsNaN(value))
+            {
+                TimeoutSeconds = null;
+                return;
+            }
+
+            if (double.IsInfinity(value)
+                || value != Math.Truncate(value)
+                || value is < 1 or > 1_209_600)
+            {
+                OnPropertyChanged();
+                return;
+            }
+
+            TimeoutSeconds = checked((int)value);
+        }
+    }
+
     public bool HasEditableChanges =>
         !string.Equals(
             OriginalText,
@@ -185,9 +212,15 @@ public sealed partial class LearningDatasetItem : ObservableObject
         }
 
         OnPropertyChanged(nameof(ActionLabel));
+        OnPropertyChanged(nameof(IsTimeoutAction));
+        OnPropertyChanged(nameof(TimeoutSecondsInput));
     }
 
-    partial void OnTimeoutSecondsChanged(int? value) => MarkEdited();
+    partial void OnTimeoutSecondsChanged(int? value)
+    {
+        MarkEdited();
+        OnPropertyChanged(nameof(TimeoutSecondsInput));
+    }
 
     partial void OnReasonChanged(string value) => MarkEdited();
 

@@ -34,7 +34,7 @@ public sealed class ModerationCoordinatorTests
             ModerationActionKind.Timeout,
             600,
             PolicySetCode.General,
-            "Die Nachricht nennt den Nutzer direkt einen Idioten.",
+            "Die Nachricht hat den Nutzer direkt als Idioten bezeichnet.",
             [text],
             0.94,
             rule.RuleCode)
@@ -59,7 +59,7 @@ public sealed class ModerationCoordinatorTests
         var decision = Assert.Single(result.Envelope!.Decisions);
         Assert.Equal("direct_insult", decision.EvidenceKind);
         Assert.Equal(
-            "Die Nachricht nennt den Nutzer direkt einen Idioten.",
+            "Die Nachricht hat den Nutzer direkt als Idioten bezeichnet.",
             decision.Reason);
     }
 
@@ -1249,6 +1249,216 @@ public sealed class ModerationCoordinatorTests
         Assert.Equal(1, repository.AddCallCount);
     }
 
+    [Fact]
+    public async Task DifferentChannelsRunConcurrentlyWithOneWorkerPerChannel()
+    {
+        var contexts = new[]
+        {
+            Context(),
+            Context() with { ChannelId = "channel-2" },
+        };
+        var bothStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = 0;
+        var active = 0;
+        var maximumActive = 0;
+        async ValueTask<string> RespondAsync(
+            ModerationRequestEnvelopeV3 request,
+            CancellationToken cancellationToken)
+        {
+            var current = Interlocked.Increment(ref active);
+            var observedMaximum = Volatile.Read(ref maximumActive);
+            while (current > observedMaximum)
+            {
+                var previous = Interlocked.CompareExchange(
+                    ref maximumActive,
+                    current,
+                    observedMaximum);
+                if (previous == observedMaximum)
+                {
+                    break;
+                }
+
+                observedMaximum = previous;
+            }
+            if (Interlocked.Increment(ref started) == 2)
+            {
+                bothStarted.TrySetResult();
+            }
+
+            await release.Task.WaitAsync(cancellationToken);
+            Interlocked.Decrement(ref active);
+            return NoActionEnvelope(request);
+        }
+
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: NoActionEnvelope,
+            asyncModelResponse: RespondAsync,
+            batcher: OneMessageBatcher(),
+            channelContexts: contexts);
+        var bothQueued = CompletionAfter(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.ChatQueued,
+            2);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(MessageEvent(1, "erste nachricht", channelId: ChannelId));
+        harness.EventSub.Publish(MessageEvent(2, "zweite nachricht", channelId: "channel-2"));
+
+        await bothQueued.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        var startedTask = await Task.WhenAny(
+            bothStarted.Task,
+            Task.Delay(TimeSpan.FromSeconds(3)));
+        Assert.True(
+            ReferenceEquals(startedTask, bothStarted.Task),
+            $"Expected two concurrent starts, observed {harness.LocalModel.CallCount}; "
+            + $"queued messages: {harness.AiRunActivities.Count(activity => activity.State == LocalAiRunState.Queued)}, "
+            + $"running activities: {harness.AiRunActivities.Count(activity => activity.State == LocalAiRunState.Running)}.");
+        Assert.Equal(2, maximumActive);
+        Assert.Equal(
+            [ChannelId, "channel-2"],
+            harness.LocalModel.SchedulingKeys.Order(StringComparer.Ordinal));
+        release.TrySetResult();
+    }
+
+    [Fact]
+    public async Task SameChannelBatchesRemainSerial()
+    {
+        var firstStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releases = Channel.CreateUnbounded<bool>();
+        var started = 0;
+        async ValueTask<string> RespondAsync(
+            ModerationRequestEnvelopeV3 request,
+            CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref started) == 1)
+            {
+                firstStarted.TrySetResult();
+            }
+            else
+            {
+                secondStarted.TrySetResult();
+            }
+
+            await releases.Reader.ReadAsync(cancellationToken);
+            return NoActionEnvelope(request);
+        }
+
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: NoActionEnvelope,
+            asyncModelResponse: RespondAsync,
+            batcher: OneMessageBatcher());
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(MessageEvent(11, "erste nachricht"));
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        harness.EventSub.Publish(MessageEvent(12, "zweite nachricht"));
+
+        await Task.Delay(150);
+        Assert.Equal(1, Volatile.Read(ref started));
+        releases.Writer.TryWrite(true);
+        await secondStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        releases.Writer.TryWrite(true);
+    }
+
+    [Fact]
+    public async Task FiveChannelsUseAtMostFourWorkersAndFifthStartsAfterRelease()
+    {
+        var contexts = Enumerable.Range(1, 5)
+            .Select(index => Context() with { ChannelId = $"channel-{index}" })
+            .ToArray();
+        var fourStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var fiveStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releases = Channel.CreateUnbounded<bool>();
+        var started = 0;
+        var active = 0;
+        var maximumActive = 0;
+        async ValueTask<string> RespondAsync(
+            ModerationRequestEnvelopeV3 request,
+            CancellationToken cancellationToken)
+        {
+            var currentActive = Interlocked.Increment(ref active);
+            UpdateMaximum(ref maximumActive, currentActive);
+            var currentStarted = Interlocked.Increment(ref started);
+            if (currentStarted == 4)
+            {
+                fourStarted.TrySetResult();
+            }
+            else if (currentStarted == 5)
+            {
+                fiveStarted.TrySetResult();
+            }
+
+            await releases.Reader.ReadAsync(cancellationToken);
+            Interlocked.Decrement(ref active);
+            return NoActionEnvelope(request);
+        }
+
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: NoActionEnvelope,
+            asyncModelResponse: RespondAsync,
+            batcher: OneMessageBatcher(),
+            channelContexts: contexts);
+
+        await harness.Coordinator.StartAsync();
+        for (var index = 1; index <= 5; index++)
+        {
+            harness.EventSub.Publish(MessageEvent(
+                20 + index,
+                $"nachricht {index}",
+                channelId: $"channel-{index}"));
+        }
+
+        await fourStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await Task.Delay(150);
+        Assert.Equal(4, Volatile.Read(ref started));
+        Assert.Equal(4, maximumActive);
+
+        releases.Writer.TryWrite(true);
+        await fiveStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal(4, maximumActive);
+        for (var index = 0; index < 4; index++)
+        {
+            releases.Writer.TryWrite(true);
+        }
+    }
+
+    private static void UpdateMaximum(ref int maximum, int candidate)
+    {
+        var observed = Volatile.Read(ref maximum);
+        while (candidate > observed)
+        {
+            var previous = Interlocked.CompareExchange(
+                ref maximum,
+                candidate,
+                observed);
+            if (previous == observed)
+            {
+                return;
+            }
+
+            observed = previous;
+        }
+    }
+
+    private static ModerationBatcher OneMessageBatcher() =>
+        new(
+            new ModerationBatcherOptions(
+                MaximumMessages: 1,
+                MaximumCollectionDelay: TimeSpan.FromSeconds(10),
+                MaximumMessageCharacters: 6_000,
+                MaximumQueuedMessages: 500));
+
     private static ModerationRuleDefinition PersonalAttackRule() =>
         new(
             ModerationRuleCodes.PersonalAttack,
@@ -1440,6 +1650,28 @@ public sealed class ModerationCoordinatorTests
             });
     }
 
+    private static string NoActionEnvelope(ModerationRequestEnvelopeV3 request) =>
+        JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["envelopeVersion"] = ModerationEnvelopeValidator.ResponseEnvelopeVersion,
+                ["batchId"] = request.BatchId,
+                ["decisions"] = request.Messages.Select(message =>
+                    new Dictionary<string, object?>
+                    {
+                        ["messageId"] = message.MessageId,
+                        ["action"] = "none",
+                        ["timeoutSeconds"] = null,
+                        ["policySet"] = null,
+                        ["ruleCode"] = null,
+                        ["reason"] = string.Empty,
+                        ["triggerPhrases"] = Array.Empty<string>(),
+                        ["confidence"] = 0.9,
+                        ["replyTemplateId"] = null,
+                        ["replyConfidence"] = null,
+                    }).ToArray(),
+            });
+
     private static string PartiallyInvalidV6Envelope(
         ModerationRequestEnvelopeV3 request)
     {
@@ -1562,7 +1794,10 @@ public sealed class ModerationCoordinatorTests
             ["action"] = "timeout",
             ["timeoutSeconds"] = 600,
             ["ruleCode"] = ModerationRuleCodes.GeneralPhrase,
-            ["reason"] = "Sonstiger Verstoß gegen die Chatregeln.",
+            ["evidenceKind"] = null,
+            ["sensitiveDataType"] = null,
+            ["violationReason"] = "Konkreter toxischer persönlicher Angriff.",
+            ["guidance"] = "Chatregeln künftig bitte beachten.",
             ["triggerPhrases"] = new[] { first.LowerText },
             ["confidence"] = 0.95,
         };
@@ -1572,7 +1807,10 @@ public sealed class ModerationCoordinatorTests
             ["action"] = "timeout",
             ["timeoutSeconds"] = 600,
             ["ruleCode"] = "UNKNOWN",
-            ["reason"] = "Ungültige Kategorie.",
+            ["evidenceKind"] = "direct_insult",
+            ["sensitiveDataType"] = null,
+            ["violationReason"] = "Konkreter toxischer persönlicher Angriff.",
+            ["guidance"] = "Chatregeln künftig bitte beachten.",
             ["triggerPhrases"] = new[] { invalid.LowerText },
             ["confidence"] = 0.9,
         };
@@ -1986,11 +2224,26 @@ public sealed class ModerationCoordinatorTests
         }
 
         private readonly ConcurrentQueue<ModerationRequestEnvelopeV3> _requests = [];
+        private readonly ConcurrentQueue<string?> _schedulingKeys = [];
         private int _callCount;
 
         public int CallCount => Volatile.Read(ref _callCount);
 
         public IReadOnlyList<ModerationRequestEnvelopeV3> Requests => _requests.ToArray();
+
+        public IReadOnlyList<string> SchedulingKeys => _schedulingKeys
+            .Where(key => key is not null)
+            .Cast<string>()
+            .ToArray();
+
+        public ValueTask<string> ModerateAsync(
+            CompiledModerationPrompt prompt,
+            string? schedulingKey,
+            CancellationToken cancellationToken = default)
+        {
+            _schedulingKeys.Enqueue(schedulingKey);
+            return ModerateAsync(prompt.Envelope, cancellationToken);
+        }
 
         public async ValueTask<string> ModerateAsync(
             ModerationRequestEnvelopeV3 request,
@@ -2063,7 +2316,7 @@ public sealed class ModerationCoordinatorTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Assert.Equal(ChannelId, channelId);
+            Assert.False(string.IsNullOrWhiteSpace(channelId));
             Assert.Equal(
                 EffectivePolicyResolver.BootstrapJustChattingCategoryId,
                 categoryId);

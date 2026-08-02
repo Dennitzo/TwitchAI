@@ -8,8 +8,13 @@ public static partial class ModerationReasonNormalizer
     public const int MaximumLength = 120;
 
     public const string ContextualAiReasonInstruction =
-        "Write a new, message-specific German reason for every moderation. Use one short sentence up to 120 characters. "
-        + "State the concrete act, wording, or target from this exact message so the reason is understandable without the category title. "
+        "Write a new, message-specific German violationReason for every timeout or ban, up to 72 characters. "
+        + "Prefer a concise neutral noun phrase that directly names the violation, for example 'Unaufgefordertes Backseatgaming an den Streamer.'. "
+        + "Never start with 'Die Nachricht' or refer to the message as the acting subject. If you use a complete sentence, use neutral third-person past tense. "
+        + "Unless the target is explicitly identified with an @username, never assume whether a user or the streamer was targeted; use 'eines Nutzers oder des Streamers'. "
+        + "Never address the chatter with du, dich, dir, dein, ihr, euch, or euer. "
+        + "State the concrete act or target so the reason is understandable without the category title. Summarize the wording semantically. "
+        + "Never quote, copy, repeat, or list triggerPhrases or any message excerpt in the reason, with or without quotation marks. Keep evidence text only in triggerPhrases. "
         + "Never copy or paraphrase a generic rule description. For example, do not write 'Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.'. "
         + "Do not mention a rule code, timeout, ban, deletion, confidence, recommendation, or uncertainty.";
 
@@ -95,7 +100,11 @@ public static partial class ModerationReasonNormalizer
 
         var value = CollapseWhitespace().Replace(reason.Trim(), " ");
         if (value.Length > MaximumLength
-            || LooksEnglish(value.ToLowerInvariant()))
+            || LooksEnglish(value.ToLowerInvariant())
+            || UsesDirectSecondPerson(value)
+            || StartsWithMessageReference(value)
+            || UsesPresentTense(value)
+            || ContainsQuotationMark(value))
         {
             return false;
         }
@@ -120,11 +129,118 @@ public static partial class ModerationReasonNormalizer
         return true;
     }
 
+    public static bool ContainsTriggerPhraseExcerpt(
+        string? reason,
+        IEnumerable<string>? triggerPhrases)
+    {
+        if (string.IsNullOrWhiteSpace(reason) || triggerPhrases is null)
+        {
+            return false;
+        }
+
+        var reasonTokens = Tokenize(reason);
+        if (reasonTokens.Count < 2)
+        {
+            return false;
+        }
+
+        foreach (var triggerPhrase in triggerPhrases)
+        {
+            var triggerTokens = Tokenize(triggerPhrase);
+            var sequenceLength = triggerTokens.Count switch
+            {
+                0 => 0,
+                1 => 1,
+                _ => 2,
+            };
+            if (sequenceLength == 0)
+            {
+                continue;
+            }
+
+            for (var triggerStart = 0;
+                 triggerStart <= triggerTokens.Count - sequenceLength;
+                 triggerStart++)
+            {
+                for (var reasonStart = 0;
+                     reasonStart <= reasonTokens.Count - sequenceLength;
+                     reasonStart++)
+                {
+                    var matches = true;
+                    for (var offset = 0; offset < sequenceLength; offset++)
+                    {
+                        if (!string.Equals(
+                                reasonTokens[reasonStart + offset],
+                                triggerTokens[triggerStart + offset],
+                                StringComparison.Ordinal))
+                        {
+                            matches = false;
+                            break;
+                        }
+                    }
+
+                    if (matches)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
     private static bool SameReason(string left, string right) =>
         string.Equals(
             left.Trim().TrimEnd('.', '!', '?'),
             right.Trim().TrimEnd('.', '!', '?'),
             StringComparison.OrdinalIgnoreCase);
+
+    private static bool UsesDirectSecondPerson(string value) =>
+        DirectSecondPerson().IsMatch(value);
+
+    private static bool StartsWithMessageReference(string value) =>
+        value.StartsWith("Die Nachricht", StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith("Diese Nachricht", StringComparison.OrdinalIgnoreCase);
+
+    private static bool UsesPresentTense(string value) =>
+        PresentTense().IsMatch(value);
+
+    private static bool UsesRequiredPastTense(string value) =>
+        RequiredPastTense().IsMatch(value);
+
+    private static bool ContainsQuotationMark(string value) =>
+        value.IndexOfAny(['\'', '"', '`', '„', '“', '‚', '‘', '«', '»']) >= 0;
+
+    private static List<string> Tokenize(string? value)
+    {
+        var result = new List<string>();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return result;
+        }
+
+        var token = new System.Text.StringBuilder();
+        foreach (var character in value)
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                token.Append(char.ToLowerInvariant(character));
+            }
+            else if (token.Length > 0)
+            {
+                result.Add(token.ToString());
+                token.Clear();
+            }
+        }
+
+        if (token.Length > 0)
+        {
+            result.Add(token.ToString());
+        }
+
+        return result;
+    }
 
     private static string NormalizeCore(
         string? reason,
@@ -266,11 +382,17 @@ public static partial class ModerationReasonNormalizer
 
     private static string IncludeStreamerAsPossibleTarget(string value)
     {
+        if (value.Contains('@', StringComparison.Ordinal))
+        {
+            return value;
+        }
+
+        value = StreamerPossessiveTarget().Replace(
+            value,
+            "eines Nutzers oder des Streamers");
         value = UserPossessiveTarget().Replace(
             value,
-            match => char.IsLower(match.Value[0])
-                ? "nutzers oder streamers"
-                : "Nutzers oder Streamers");
+            "eines Nutzers oder des Streamers");
         return UserTarget().Replace(
             value,
             match => char.IsLower(match.Value[0])
@@ -282,9 +404,27 @@ public static partial class ModerationReasonNormalizer
     private static partial Regex CollapseWhitespace();
 
     [GeneratedRegex(
-        @"\bNutzers\b(?!\s+oder\s+Streamers\b)",
+        @"\b(du|dich|dir|dein|deine|deiner|deines|deinem|deinen|deins|euch|euer|eure|eurer|eures|eurem|euren|euers)\b",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex DirectSecondPerson();
+
+    [GeneratedRegex(
+        @"\b(wird|werden)\b|\b(die\s+nachricht|die\s+aussage|der\s+beitrag|der\s+kommentar)\s+(beleidigt|belästigt|bedroht|enthält|fordert|veröffentlicht|bewirbt|bettelt|spammt|verwendet|äußert|richtet|nennt|macht|drängt|kündigt)\b",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex PresentTense();
+
+    [GeneratedRegex(@"\b(hat|haben|wurde|wurden)\b", RegexOptions.IgnoreCase)]
+    private static partial Regex RequiredPastTense();
+
+    [GeneratedRegex(
+        @"\b(?:eines|des)\s+Nutzers(?:\s+oder\s+(?:des\s+)?Streamers)?\b",
         RegexOptions.IgnoreCase)]
     private static partial Regex UserPossessiveTarget();
+
+    [GeneratedRegex(
+        @"(?<!oder\s)\bdes\s+Streamers\b",
+        RegexOptions.IgnoreCase)]
+    private static partial Regex StreamerPossessiveTarget();
 
     [GeneratedRegex(
         @"\bNutzer\b(?!\s+oder\s+Streamer\b)",

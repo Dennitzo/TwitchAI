@@ -45,12 +45,14 @@ public sealed class ModerationRepairClientTests
                     "rule_inactive",
                     "human-readable detail must not be sent",
                     "m2")],
-                RequiresFullBatchRepair: false));
+                RequiresFullBatchRepair: false,
+                SchedulingKey: "channel-1"));
 
         var sent = Assert.IsType<LmStudioModerationRequest>(client.Request);
         Assert.Equal(1, sent.MessageCount);
         Assert.Equal(LmStudioResponseSchemaKind.ModerationV6, sent.ResponseSchema);
         Assert.NotNull(sent.ResponseFormat);
+        Assert.Equal("channel-1", sent.SchedulingKey);
         Assert.Contains("\"messageId\":\"m2\"", sent.UserPrompt, StringComparison.Ordinal);
         Assert.DoesNotContain("\"messageId\":\"m1\"", sent.UserPrompt, StringComparison.Ordinal);
         Assert.Contains("rule_inactive", sent.SystemPrompt, StringComparison.Ordinal);
@@ -250,19 +252,19 @@ public sealed class ModerationRepairClientTests
             sent.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "at least 20 emote occurrences in one message",
+            "at least 10 emote occurrences in one message",
             sent.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "One through nineteen emotes alone are none",
+            "One through nine emotes alone are none",
             sent.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Do not relabel one through nineteen repeated emote names as text spam or disruption",
+            "Do not relabel one through nine repeated emote names as text spam or disruption",
             sent.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Text spam means clearly excessive repetition or flooding of text, words, or short phrases",
+            "Text spam includes a non-emote word sequence or short phrase repeated directly at least five times",
             sent.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(

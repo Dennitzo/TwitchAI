@@ -5,6 +5,8 @@ namespace TwitchAI.Core.Services;
 
 public sealed class ModerationBatcher : IModerationBatcher
 {
+    private static readonly IReadOnlySet<string> NoExcludedChannels =
+        new HashSet<string>(StringComparer.Ordinal);
     private readonly object _gate = new();
     private readonly ModerationBatcherOptions _options;
     private readonly IModerationQueueRuntimeSettings _runtimeSettings;
@@ -280,21 +282,36 @@ public sealed class ModerationBatcher : IModerationBatcher
     }
 
     public bool TryDequeue(out ModerationBatch? batch)
+        => TryDequeue(NoExcludedChannels, out batch);
+
+    public bool TryDequeue(
+        IReadOnlySet<string> excludedChannelIds,
+        out ModerationBatch? batch)
     {
+        ArgumentNullException.ThrowIfNull(excludedChannelIds);
         lock (_gate)
         {
-            if (_ready.First is null)
+            var node = _ready.First;
+            while (node is not null
+                && excludedChannelIds.Contains(
+                    node.Value.Context.Channel.ChannelId))
+            {
+                node = node.Next;
+            }
+
+            if (node is null)
             {
                 batch = null;
                 return false;
             }
 
-            batch = _ready.First.Value;
-            _ready.RemoveFirst();
+            batch = node.Value;
+            _ready.Remove(node);
             _waitingMessageCount -= batch.Messages.Count;
             return true;
         }
     }
+
 
     private ModerationBatch SealOpenBatch(
         string channelId,

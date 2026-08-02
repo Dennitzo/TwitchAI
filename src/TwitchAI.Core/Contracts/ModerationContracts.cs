@@ -111,6 +111,10 @@ public interface IModerationBatcher
     }
 
     bool TryDequeue(out ModerationBatch? batch);
+
+    bool TryDequeue(
+        IReadOnlySet<string> excludedChannelIds,
+        out ModerationBatch? batch) => TryDequeue(out batch);
 }
 
 public interface IModerationQueueRuntimeSettings
@@ -177,6 +181,12 @@ public interface ILocalModerationClient
         CompiledModerationPrompt prompt,
         CancellationToken cancellationToken = default) =>
         ModerateAsync(prompt.Envelope, cancellationToken);
+
+    ValueTask<string> ModerateAsync(
+        CompiledModerationPrompt prompt,
+        string? schedulingKey,
+        CancellationToken cancellationToken = default) =>
+        ModerateAsync(prompt, cancellationToken);
 }
 
 public interface ILearningTestService
@@ -191,6 +201,13 @@ public interface ILearningTestService
 
     ValueTask<LearningReasonResult> GenerateReasonAsync(
         LearningReasonRequest request,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IContextualModerationReasonService
+{
+    ValueTask<ContextualModerationReasonResult> GenerateAsync(
+        ContextualModerationReasonRequest request,
         CancellationToken cancellationToken = default);
 }
 

@@ -64,11 +64,13 @@ public sealed class LearningTestPromptFactoryTests
             result.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "say \"Nutzer oder Streamer\", never only \"Nutzer\"",
+            "Unless the target is explicitly identified with an @username",
             result.SystemPrompt,
             StringComparison.Ordinal);
+        Assert.Contains("violationReason", result.SystemPrompt, StringComparison.Ordinal);
+        Assert.Contains("guidance", result.SystemPrompt, StringComparison.Ordinal);
         Assert.DoesNotContain(
-            "One through nineteen emotes alone are none",
+            "One through nine emotes alone are none",
             result.SystemPrompt,
             StringComparison.Ordinal);
         Assert.True(result.PromptCharacters.System > 0);

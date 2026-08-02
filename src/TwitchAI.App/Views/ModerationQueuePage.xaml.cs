@@ -106,6 +106,9 @@ public sealed partial class ModerationQueuePage : Page
         var reasonEditor = FindNamedChild<TextBox>(
             reviewGrid,
             "ReasonEditor");
+        var reasonGenerationStatus = FindNamedChild<TextBlock>(
+            reviewGrid,
+            "ReasonStatusText");
         var chatReplyEditor = FindNamedChild<TextBox>(
             reviewGrid,
             "ChatReplyEditor");
@@ -116,6 +119,7 @@ public sealed partial class ModerationQueuePage : Page
             || timeoutEditor is null
             || violationEditor is null
             || reasonEditor is null
+            || reasonGenerationStatus is null
             || chatReplyEditor is null
             || actionButtons is null)
         {
@@ -164,8 +168,9 @@ public sealed partial class ModerationQueuePage : Page
             PlaceReviewElement(actionEditor, row: 1, column: 0);
             PlaceReviewElement(timeoutEditor, row: 1, column: 1);
             PlaceReviewElement(violationEditor, row: 1, column: 2);
-            PlaceReviewElement(reasonEditor, row: 1, column: 3);
-            PlaceReviewElement(actionButtons, row: 1, column: 4);
+            PlaceReviewElement(reasonEditor, row: 2, column: 0, columnSpan: 5);
+            PlaceReviewElement(reasonGenerationStatus, row: 3, column: 0, columnSpan: 5);
+            PlaceReviewElement(actionButtons, row: 4, column: 4);
             return;
         }
 
@@ -181,8 +186,9 @@ public sealed partial class ModerationQueuePage : Page
             PlaceReviewElement(actionEditor, row: 1, column: 0);
             PlaceReviewElement(timeoutEditor, row: 1, column: 1);
             PlaceReviewElement(violationEditor, row: 1, column: 2);
-            PlaceReviewElement(reasonEditor, row: 2, column: 0, columnSpan: 2);
-            PlaceReviewElement(actionButtons, row: 2, column: 2);
+            PlaceReviewElement(reasonEditor, row: 2, column: 0, columnSpan: 3);
+            PlaceReviewElement(reasonGenerationStatus, row: 3, column: 0, columnSpan: 3);
+            PlaceReviewElement(actionButtons, row: 4, column: 2);
             return;
         }
 
@@ -197,10 +203,11 @@ public sealed partial class ModerationQueuePage : Page
         PlaceReviewElement(timeoutEditor, row: 2, column: 0);
         PlaceReviewElement(violationEditor, row: 3, column: 0);
         PlaceReviewElement(reasonEditor, row: 4, column: 0);
-        PlaceReviewElement(actionButtons, row: 5, column: 0);
+        PlaceReviewElement(reasonGenerationStatus, row: 5, column: 0);
+        PlaceReviewElement(actionButtons, row: 6, column: 0);
     }
 
-    private void OnViolationCategorySelectionChanged(
+    private async void OnViolationCategorySelectionChanged(
         object sender,
         SelectionChangedEventArgs e)
     {
@@ -216,9 +223,14 @@ public sealed partial class ModerationQueuePage : Page
             return;
         }
 
-        if (!item.TrySelectViolationRule(selectedRuleCode))
+        var previousRuleCode = item.RuleCode;
+        await ViewModel.SelectViolationRuleAsync(item, selectedRuleCode);
+        if (!string.Equals(
+                item.RuleCode,
+                selectedRuleCode,
+                StringComparison.OrdinalIgnoreCase))
         {
-            ((ComboBox)sender).SelectedValue = item.RuleCode;
+            ((ComboBox)sender).SelectedValue = previousRuleCode;
         }
     }
 

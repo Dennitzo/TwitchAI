@@ -15,6 +15,7 @@ public enum LocalAiRunKind
 {
     Moderation,
     LearningTest,
+    ReviewReason,
 }
 
 public sealed record LocalAiRunActivity(

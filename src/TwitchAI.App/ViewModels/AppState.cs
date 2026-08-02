@@ -8,9 +8,14 @@ namespace TwitchAI.App.ViewModels;
 
 public sealed partial class AppState : ObservableObject
 {
+    private readonly Dictionary<string, string> _channelNames =
+        new(StringComparer.Ordinal);
+
     public ObservableCollection<ModerationCaseItem> ModerationCases { get; } = [];
 
     public LocalAiRunItem CurrentLocalAiRun { get; } = new();
+
+    public ObservableCollection<LocalAiRunItem> ActiveLocalAiRuns { get; } = [];
 
     public ObservableCollection<LocalAiRunItem> QueuedLocalAiRuns { get; } = [];
 
@@ -57,10 +62,36 @@ public sealed partial class AppState : ObservableObject
     public partial int SkippedWhitelistCount { get; set; }
 
     [ObservableProperty]
+    public partial int ActiveLocalAiRunCount { get; set; }
+
+    [ObservableProperty]
+    public partial int ActiveLocalAiMessageCount { get; set; }
+
+    [ObservableProperty]
     public partial int QueuedLocalAiRunCount { get; set; }
 
     [ObservableProperty]
     public partial int QueuedLocalAiMessageCount { get; set; }
+
+    public void ReplaceChannelNames(
+        IEnumerable<(string ChannelId, string DisplayName)> channels)
+    {
+        ArgumentNullException.ThrowIfNull(channels);
+        _channelNames.Clear();
+        foreach (var channel in channels)
+        {
+            if (!string.IsNullOrWhiteSpace(channel.ChannelId)
+                && !string.IsNullOrWhiteSpace(channel.DisplayName))
+            {
+                _channelNames[channel.ChannelId] = channel.DisplayName.Trim();
+            }
+        }
+    }
+
+    public string ResolveChannelName(string channelId) =>
+        _channelNames.TryGetValue(channelId, out var displayName)
+            ? displayName
+            : string.Empty;
 }
 
 public sealed partial class ModerationCaseItem : ObservableObject
@@ -93,6 +124,13 @@ public sealed partial class ModerationCaseItem : ObservableObject
         IsChatReply ? Visibility.Visible : Visibility.Collapsed;
 
     public required string ChannelId { get; init; }
+
+    public string ChannelName { get; init; } = string.Empty;
+
+    public string ChannelDisplayLabel =>
+        string.IsNullOrWhiteSpace(ChannelName)
+            ? $"Channel: {ChannelId}"
+            : $"Channel: {ChannelName} ({ChannelId})";
 
     public required string UserName { get; init; }
 
@@ -136,6 +174,17 @@ public sealed partial class ModerationCaseItem : ObservableObject
 
     [ObservableProperty]
     public partial string Reason { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    public partial bool IsReasonGenerating { get; set; }
+
+    [ObservableProperty]
+    public partial string ReasonGenerationStatus { get; set; } = string.Empty;
+
+    public Visibility ReasonGenerationStatusVisibility =>
+        string.IsNullOrWhiteSpace(ReasonGenerationStatus)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
 
     [ObservableProperty]
     public partial string PolicySet { get; set; } = "General";
@@ -226,7 +275,17 @@ public sealed partial class ModerationCaseItem : ObservableObject
     {
         OnPropertyChanged(nameof(TimeoutEditorVisibility));
         OnPropertyChanged(nameof(ReasonEditorVisibility));
+        OnPropertyChanged(nameof(CanExecute));
     }
+
+    partial void OnReasonChanged(string value) =>
+        OnPropertyChanged(nameof(CanExecute));
+
+    partial void OnIsReasonGeneratingChanged(bool value) =>
+        OnPropertyChanged(nameof(CanExecute));
+
+    partial void OnReasonGenerationStatusChanged(string value) =>
+        OnPropertyChanged(nameof(ReasonGenerationStatusVisibility));
 
     [ObservableProperty]
     public partial string AvailabilityLabel { get; set; } = "Nachricht verfügbar";
@@ -239,7 +298,11 @@ public sealed partial class ModerationCaseItem : ObservableObject
 
     public bool CanExecute =>
         !IsBusy
+        && !IsReasonGenerating
         && (IsChatReply || HasUsableViolationRule)
+        && (IsChatReply
+            || Action is not ("timeout" or "ban")
+            || Reason.Trim().Length is >= 1 and <= ModerationReasonNormalizer.MaximumLength)
         && Status is "Pending" or "Extern erledigt · Lernentscheidung offen";
 
     public bool CanAllow =>

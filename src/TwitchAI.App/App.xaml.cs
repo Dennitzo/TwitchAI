@@ -127,6 +127,9 @@ public partial class App : Application
                 services.AddSingleton<IModerationCaseRepository, CoreModerationCaseRepository>();
                 services.AddSingleton<IModerationCoordinator, ModerationCoordinator>();
                 services.AddSingleton<ILearningTestService, LearningTestService>();
+                services.AddSingleton<
+                    IContextualModerationReasonService,
+                    ContextualModerationReasonService>();
                 services.AddSingleton<ModerationUiBridge>();
                 services.AddSingleton(
                     provider => new AppState

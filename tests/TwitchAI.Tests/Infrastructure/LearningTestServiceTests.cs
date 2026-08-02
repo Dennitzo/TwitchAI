@@ -65,7 +65,7 @@ public sealed class LearningTestServiceTests
                     120,
                     "G",
                     "G_SPAM",
-                    "Die Nachricht wiederholt 'spam' mehrfach und flutet damit den Chat.",
+                    "Der Chat wurde durch mehrfache Wiederholungen überflutet.",
                     ["spam spam"],
                     0.91));
         });
@@ -79,7 +79,7 @@ public sealed class LearningTestServiceTests
         Assert.Equal(120, result.ProposedTimeoutSeconds);
         Assert.Equal("G_SPAM", result.ProposedRuleCode);
         Assert.Equal(
-            "Die Nachricht wiederholt 'spam' mehrfach und flutet damit den Chat.",
+            "Der Chat wurde durch mehrfache Wiederholungen überflutet. Chatregeln künftig bitte beachten.",
             result.ProposedReason);
         Assert.Equal(["spam spam"], result.ProposedTriggerPhrases);
         Assert.False(result.UsedRuleFallback);
@@ -97,7 +97,7 @@ public sealed class LearningTestServiceTests
                     600,
                     "G",
                     ModerationRuleCodes.PersonalAttack,
-                    "Direkte Beleidigung gegen einen Nutzer.",
+                    "Nutzer oder Streamer wurde direkt persönlich beleidigt.",
                     ["du idiot"],
                     0.94)));
         var sut = CreateService(lmStudio);
@@ -110,7 +110,7 @@ public sealed class LearningTestServiceTests
         Assert.Equal(600, result.ProposedTimeoutSeconds);
         Assert.Equal(ModerationRuleCodes.PersonalAttack, result.ProposedRuleCode);
         Assert.Equal(
-            "Direkte Beleidigung gegen einen Nutzer oder Streamer.",
+            "Nutzer oder Streamer wurde direkt persönlich beleidigt. Chatregeln künftig bitte beachten.",
             result.ProposedReason);
     }
 
@@ -126,7 +126,7 @@ public sealed class LearningTestServiceTests
                     null,
                     "G",
                     ModerationRuleCodes.Spam,
-                    "Die Nachricht wiederholt 'spam' mehrfach und flutet den Chat.",
+                    "Der Chat wurde durch mehrfache Wiederholungen überflutet.",
                     ["spam spam"],
                     0.91)));
         var sut = CreateService(lmStudio);
@@ -151,7 +151,7 @@ public sealed class LearningTestServiceTests
                     600,
                     "B",
                     ModerationRuleCodes.Backseatgaming,
-                    "Die Nachricht weist den Streamer ungefragt an, nach links zu gehen.",
+                    "Der Streamer wurde ungefragt zu einer Spielhandlung angewiesen.",
                     ["geh nach links"],
                     0.93)));
         var sut = CreateService(lmStudio);
@@ -178,7 +178,7 @@ public sealed class LearningTestServiceTests
                     null,
                     "G",
                     ModerationRuleCodes.BotScam,
-                    "Die Nachricht wirbt ausdrücklich für den eigenen Kanal.",
+                    "Der eigene Kanal wurde ausdrücklich beworben.",
                     ["meinen kanal"],
                     0.97)));
         var sut = CreateService(lmStudio);
@@ -205,7 +205,7 @@ public sealed class LearningTestServiceTests
                     86_400,
                     "G",
                     ModerationRuleCodes.Begging,
-                    "Die Nachricht fordert ausdrücklich einen kostenlosen Sub für den Absender.",
+                    "Ausdrückliches Betteln um einen kostenlosen Sub.",
                     ["schenk mir bitte einen sub"],
                     0.95)));
         var sut = CreateService(lmStudio);
@@ -232,7 +232,7 @@ public sealed class LearningTestServiceTests
                     86_400,
                     "G",
                     ModerationRuleCodes.Harm,
-                    "Unnötige Störnachricht.",
+                    "Eine Person wurde mit einer konkreten Drohung eingeschüchtert.",
                     ["unnötiger lärm"],
                     0.83)));
         var sut = CreateService(lmStudio);
@@ -365,7 +365,7 @@ public sealed class LearningTestServiceTests
                     600,
                     "B",
                     ModerationRuleCodes.Backseatgaming,
-                    "Die Nachricht weist den Streamer ungefragt an, nach links zu gehen.",
+                    "Der Streamer wurde ungefragt zu einer Spielhandlung angewiesen.",
                     ["geh nach links"],
                     0.9)));
         var sut = CreateService(lmStudio);
@@ -421,7 +421,7 @@ public sealed class LearningTestServiceTests
                     600,
                     "B",
                     null,
-                    "Die Nachricht weist den Streamer ungefragt an, nach links zu gehen.",
+                    "Der Streamer wurde ungefragt zu einer Spielhandlung angewiesen.",
                     ["geh nach links"],
                     0.9,
                     evidenceKind: "instruction")));
@@ -464,7 +464,7 @@ public sealed class LearningTestServiceTests
                     600,
                     "G",
                     ModerationRuleCodes.PersonalAttack,
-                    "Unangebrachte persoenliche Annaeherung.",
+                    "Der Streamer wurde unangebracht persönlich angesprochen.",
                     [message],
                     0.91,
                     evidenceKind: "sexualization")));
@@ -518,7 +518,7 @@ public sealed class LearningTestServiceTests
                     600,
                     "G",
                     ModerationRuleCodes.PersonalAttack,
-                    "Unangebrachte persoenliche Annaeherung.",
+                    "Der Streamer wurde unangebracht persönlich angesprochen.",
                     [message],
                     0.91,
                     evidenceKind: "unwanted_intimate_approach")));
@@ -559,7 +559,7 @@ public sealed class LearningTestServiceTests
                     86_400,
                     "G",
                     ModerationRuleCodes.PersonalData,
-                    "Private Daten veroeffentlicht.",
+                    "Private Daten wurden veröffentlicht.",
                     [],
                     0.91,
                     evidenceKind: "disclosure",
@@ -636,7 +636,7 @@ public sealed class LearningTestServiceTests
                     "G",
                     ModerationRuleCodes.PersonalAttack,
                     isRepair
-                        ? "Direkte Beleidigung."
+                        ? "Nutzer oder Streamer wurde direkt persönlich beleidigt."
                         : "RAW-REASON-MUST-NOT-BE-COPIED",
                     ["du idiot"],
                     0.91,
@@ -692,8 +692,8 @@ public sealed class LearningTestServiceTests
                         ? ModerationRuleCodes.Hate
                         : ModerationRuleCodes.PersonalAttack,
                     isRepair
-                        ? "Hassrede gegen eine geschuetzte Gruppe."
-                        : "Direkte Beleidigung.",
+                        ? "Eine geschützte Gruppe wurde mit Hassrede abgewertet."
+                        : "Nutzer oder Streamer wurde direkt persönlich beleidigt.",
                     ["du idiot"],
                     0.91,
                     evidenceKind: isRepair ? "racist" : "sexualization"));
@@ -906,7 +906,7 @@ public sealed class LearningTestServiceTests
         var policy = Policy("policy-reason");
         var lmStudio = new FakeLmStudioClient(
             _ => Completion(
-                "{\"reason\":\"Die Nachricht gibt ungefragt vor, dass der Streamer nachladen muss.\"}"));
+                    "{\"violationReason\":\"Der Streamer wurde ungefragt zum Nachladen angewiesen.\",\"guidance\":\"Spielhinweise künftig bitte vermeiden.\"}"));
         var sut = CreateService(lmStudio, new FakePolicyStore(policy));
         var testResult = Result(
             LearningPolicyRevisionFingerprint.Create(policy)) with
@@ -924,8 +924,14 @@ public sealed class LearningTestServiceTests
 
         Assert.Equal(ModerationRuleCodes.Backseatgaming, result.RuleCode);
         Assert.Equal(
-            "Die Nachricht gibt ungefragt vor, dass der Streamer nachladen muss.",
+            "Der Streamer wurde ungefragt zum Nachladen angewiesen. Spielhinweise künftig bitte vermeiden.",
             result.Reason);
+        Assert.Equal(
+            "Der Streamer wurde ungefragt zum Nachladen angewiesen.",
+            result.ViolationReason);
+        Assert.Equal(
+            "Spielhinweise künftig bitte vermeiden.",
+            result.Guidance);
         var request = Assert.Single(lmStudio.Requests);
         Assert.Equal(LocalAiRunKind.LearningTest, request.RunKind);
         Assert.NotNull(request.ResponseFormat);
@@ -939,6 +945,89 @@ public sealed class LearningTestServiceTests
             ModerationRuleCodes.PersonalAttack,
             request.UserPrompt,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GenerateReasonAsync_RepairsInvalidGuidanceOnce()
+    {
+        var policy = Policy("policy-reason-repair");
+        var responseNumber = 0;
+        var lmStudio = new FakeLmStudioClient(
+            _ => Completion(
+                Interlocked.Increment(ref responseNumber) == 1
+                    ? "{\"violationReason\":\"Der Streamer wurde ungefragt zum Nachladen angewiesen.\",\"guidance\":\"Du solltest Spielhinweise vermeiden.\"}"
+                    : "{\"violationReason\":\"Der Streamer wurde ungefragt zum Nachladen angewiesen.\",\"guidance\":\"Spielhinweise künftig bitte vermeiden.\"}"));
+        var sut = CreateService(lmStudio, new FakePolicyStore(policy));
+
+        var result = await sut.GenerateReasonAsync(
+            new LearningReasonRequest(
+                Result(LearningPolicyRevisionFingerprint.Create(policy)) with
+                {
+                    OriginalText = "DU MUSST NACHLADEN",
+                    LowerText = "du musst nachladen",
+                },
+                ModerationRuleCodes.Backseatgaming,
+                ModerationActionKind.Timeout,
+                600));
+
+        Assert.Equal(
+            "Der Streamer wurde ungefragt zum Nachladen angewiesen. Spielhinweise künftig bitte vermeiden.",
+            result.Reason);
+        Assert.Equal(2, lmStudio.Requests.Count);
+        Assert.EndsWith("-repair", lmStudio.Requests[1].CorrelationId, StringComparison.Ordinal);
+        Assert.Contains(
+            "invalidOutput",
+            lmStudio.Requests[1].UserPrompt,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GenerateReasonAsync_SecondInvalidResponseUsesNoFallback()
+    {
+        var policy = Policy("policy-reason-invalid");
+        var lmStudio = new FakeLmStudioClient(
+            _ => Completion(
+                "{\"violationReason\":\"Allgemeiner Verstoß.\",\"guidance\":\"Du solltest das künftig vermeiden.\"}"));
+        var sut = CreateService(lmStudio, new FakePolicyStore(policy));
+
+        await Assert.ThrowsAsync<InvalidDataException>(
+            () => sut.GenerateReasonAsync(
+                    new LearningReasonRequest(
+                        Result(LearningPolicyRevisionFingerprint.Create(policy)),
+                        ModerationRuleCodes.Backseatgaming,
+                        ModerationActionKind.Timeout,
+                        600))
+                .AsTask());
+
+        Assert.Equal(2, lmStudio.Requests.Count);
+    }
+
+    [Fact]
+    public async Task GenerateReasonAsync_DeleteUsesEmptyStructuredParts()
+    {
+        var policy = Policy("policy-reason-delete");
+        var lmStudio = new FakeLmStudioClient(
+            _ => Completion("{\"violationReason\":\"\",\"guidance\":\"\"}"));
+        var sut = CreateService(lmStudio, new FakePolicyStore(policy));
+
+        var result = await sut.GenerateReasonAsync(
+            new LearningReasonRequest(
+                Result(LearningPolicyRevisionFingerprint.Create(policy)),
+                ModerationRuleCodes.Backseatgaming,
+                ModerationActionKind.Delete,
+                null));
+
+        Assert.Empty(result.Reason);
+        var properties = Assert.Single(lmStudio.Requests).ResponseFormat!.Value
+            .GetProperty("json_schema")
+            .GetProperty("schema")
+            .GetProperty("properties");
+        Assert.Equal(
+            string.Empty,
+            properties.GetProperty("violationReason").GetProperty("const").GetString());
+        Assert.Equal(
+            string.Empty,
+            properties.GetProperty("guidance").GetProperty("const").GetString());
     }
 
     private static LearningTestService CreateService(
@@ -1123,7 +1212,7 @@ public sealed class LearningTestServiceTests
         System.Text.Json.JsonSerializer.Serialize(
             new
             {
-                envelopeVersion = "twitchai.learning-test.response.v1",
+                envelopeVersion = LearningTestPromptFactory.ResponseEnvelopeVersion,
                 testId = id,
                 decision = new
                 {
@@ -1134,7 +1223,20 @@ public sealed class LearningTestServiceTests
                     ruleCode,
                     evidenceKind = resolvedEvidenceKind,
                     sensitiveDataType,
-                    reason,
+                    violationReason = string.Equals(
+                            verdict,
+                            "moderate",
+                            StringComparison.Ordinal)
+                        && action is "timeout" or "ban"
+                            ? reason
+                            : string.Empty,
+                    guidance = string.Equals(
+                            verdict,
+                            "moderate",
+                            StringComparison.Ordinal)
+                        && action is "timeout" or "ban"
+                            ? "Chatregeln künftig bitte beachten."
+                            : string.Empty,
                     triggerPhrases,
                     confidence,
                 },

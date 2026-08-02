@@ -63,6 +63,9 @@ public sealed partial class ShellViewModel : ObservableObject
 
     public int PendingCount => _state.ModerationCases.Count(item => item.Status == "Pending");
 
+    public ObservableCollection<LocalAiRunItem> ActiveLocalAiRuns =>
+        _state.ActiveLocalAiRuns;
+
     public ObservableCollection<LocalAiRunItem> QueuedLocalAiRuns =>
         _state.QueuedLocalAiRuns;
 
@@ -144,6 +147,17 @@ public sealed partial class ShellViewModel : ObservableObject
             ? Visibility.Visible
             : Visibility.Collapsed;
 
+    public Visibility LocalAiRunSummaryVisibility =>
+        _state.ActiveLocalAiRunCount == 0
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+    public Visibility LocalAiRunStripVisibility =>
+        _state.ActiveLocalAiRunCount > 0
+        || _state.QueuedLocalAiRunCount > 0
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
     public string LocalAiQueueCompactLabel =>
         $"{_state.QueuedLocalAiRunCount:N0} wartet";
 
@@ -210,6 +224,8 @@ public sealed partial class ShellViewModel : ObservableObject
         OnPropertyChanged(nameof(LocalAiQueueLabel));
         OnPropertyChanged(nameof(LocalAiQueueCompactLabel));
         OnPropertyChanged(nameof(LocalAiQueueVisibility));
+        OnPropertyChanged(nameof(LocalAiRunSummaryVisibility));
+        OnPropertyChanged(nameof(LocalAiRunStripVisibility));
     }
 
     private Visibility VisibilityForCurrentState(LocalAiRunState state) =>

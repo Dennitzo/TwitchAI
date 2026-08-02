@@ -36,17 +36,27 @@ public sealed class CoreLocalModerationClient : ILocalModerationClient
                 .ConfigureAwait(false);
         }
 
-        return await ModerateLegacyAsync(request, cancellationToken).ConfigureAwait(false);
+        return await ModerateLegacyAsync(request, null, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public async ValueTask<string> ModerateAsync(
         CompiledModerationPrompt prompt,
         CancellationToken cancellationToken = default)
+        => await ModerateAsync(prompt, null, cancellationToken).ConfigureAwait(false);
+
+    public async ValueTask<string> ModerateAsync(
+        CompiledModerationPrompt prompt,
+        string? schedulingKey,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(prompt);
         if (!_options.UseCompactModerationContractV6)
         {
-            return await ModerateLegacyAsync(prompt.Envelope, cancellationToken)
+            return await ModerateLegacyAsync(
+                    prompt.Envelope,
+                    schedulingKey,
+                    cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -61,13 +71,15 @@ public sealed class CoreLocalModerationClient : ILocalModerationClient
                 prompt.ReplyTemplateIds,
                 LmStudioResponseSchemaKind.ModerationV6,
                 LocalAiRunKind.Moderation,
-                prompt.ResponseFormat),
+                prompt.ResponseFormat,
+                SchedulingKey: schedulingKey),
             cancellationToken).ConfigureAwait(false);
         return completion.RawEnvelope;
     }
 
     private async ValueTask<string> ModerateLegacyAsync(
         ModerationRequestEnvelopeV3 request,
+        string? schedulingKey,
         CancellationToken cancellationToken)
     {
         var legacyRequest = request with
@@ -92,7 +104,8 @@ public sealed class CoreLocalModerationClient : ILocalModerationClient
                 legacyRequest.ReplyTemplates
                     .Select(item => item.TemplateId)
                     .Distinct(StringComparer.Ordinal)
-                    .ToArray()),
+                    .ToArray(),
+                SchedulingKey: schedulingKey),
             cancellationToken).ConfigureAwait(false);
         return completion.RawEnvelope;
     }

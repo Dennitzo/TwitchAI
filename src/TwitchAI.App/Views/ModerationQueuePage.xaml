@@ -135,6 +135,13 @@
                         Text="{x:Bind ReceivedAtDisplay}"
                         TextTrimming="CharacterEllipsis" />
                       <TextBlock
+                        MaxLines="1"
+                        FontSize="10"
+                        Foreground="{ThemeResource MutedTextBrush}"
+                        Text="{x:Bind ChannelDisplayLabel}"
+                        TextTrimming="CharacterEllipsis"
+                        ToolTipService.ToolTip="{x:Bind ChannelDisplayLabel}" />
+                      <TextBlock
                         FontSize="10"
                         FontWeight="SemiBold"
                         Foreground="{ThemeResource WarningBrush}"
@@ -230,6 +237,7 @@
                       <RowDefinition Height="Auto" />
                       <RowDefinition Height="Auto" />
                       <RowDefinition Height="Auto" />
+                      <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                       <ColumnDefinition Width="160" />
@@ -295,15 +303,31 @@
 
                     <TextBox
                       x:Name="ReasonEditor"
-                      Grid.Row="1"
-                      Grid.Column="3"
-                      Header="Kurze Begründung"
+                      Grid.Row="2"
+                      Grid.Column="0"
+                      Grid.ColumnSpan="5"
+                      Header="Begründung und Hinweis"
                       HorizontalAlignment="Stretch"
                       AcceptsReturn="False"
                       MaxLength="120"
+                      MinHeight="136"
+                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                      ScrollViewer.VerticalScrollBarVisibility="Disabled"
                       Text="{x:Bind Reason, Mode=TwoWay}"
-                      TextWrapping="NoWrap"
+                      TextWrapping="Wrap"
+                      VerticalContentAlignment="Top"
                       Visibility="{x:Bind ReasonEditorVisibility, Mode=OneWay}" />
+
+                    <TextBlock
+                      x:Name="ReasonStatusText"
+                      Grid.Row="3"
+                      Grid.Column="0"
+                      Grid.ColumnSpan="5"
+                      FontSize="11"
+                      Foreground="{ThemeResource MutedTextBrush}"
+                      Text="{x:Bind ReasonGenerationStatus, Mode=OneWay}"
+                      TextWrapping="Wrap"
+                      Visibility="{x:Bind ReasonGenerationStatusVisibility, Mode=OneWay}" />
 
                     <TextBox
                       x:Name="ChatReplyEditor"

@@ -179,16 +179,36 @@
                 </DataTemplate>
               </tv:TableViewTemplateColumn.EditingTemplate>
             </tv:TableViewTemplateColumn>
-            <tv:TableViewNumberColumn
+            <tv:TableViewTemplateColumn
               x:Name="TimeoutColumn"
-              Binding="{Binding TimeoutSeconds, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
               CanResize="True"
               CanSort="True"
               Header="Sekunden"
               IsReadOnly="False"
               SortMemberPath="TimeoutSeconds"
               Tag="TimeoutSeconds"
-              Width="110" />
+              Width="125">
+              <tv:TableViewTemplateColumn.CellTemplate>
+                <DataTemplate x:DataType="vm:LearningDatasetItem">
+                  <TextBlock
+                    VerticalAlignment="Center"
+                    Text="{x:Bind TimeoutSeconds, Mode=OneWay}" />
+                </DataTemplate>
+              </tv:TableViewTemplateColumn.CellTemplate>
+              <tv:TableViewTemplateColumn.EditingTemplate>
+                <DataTemplate x:DataType="vm:LearningDatasetItem">
+                  <NumberBox
+                    MinWidth="105"
+                    AutomationProperties.Name="Timeout-Dauer in Sekunden"
+                    IsEnabled="{x:Bind IsTimeoutAction, Mode=OneWay}"
+                    Maximum="1209600"
+                    Minimum="1"
+                    SmallChange="1"
+                    SpinButtonPlacementMode="Compact"
+                    Value="{x:Bind TimeoutSecondsInput, Mode=TwoWay}" />
+                </DataTemplate>
+              </tv:TableViewTemplateColumn.EditingTemplate>
+            </tv:TableViewTemplateColumn>
             <tv:TableViewTextColumn
               Binding="{Binding Reason, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
               CanResize="True"

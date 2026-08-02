@@ -238,6 +238,7 @@ public sealed class ModerationUiBridge : IDisposable
         {
             CaseId = caseId,
             ChannelId = message.Identity.ChannelId,
+            ChannelName = _state.ResolveChannelName(message.Identity.ChannelId),
             UserName = message.Identity.DisplayName,
             UserId = message.Identity.TwitchUserId,
             MessageId = message.Identity.TwitchMessageId,
@@ -336,6 +337,7 @@ public sealed class ModerationUiBridge : IDisposable
             IsChatReply = true,
             ReplyMessage = proposal.RenderedResponse,
             ChannelId = proposal.BroadcasterId,
+            ChannelName = _state.ResolveChannelName(proposal.BroadcasterId),
             UserName = proposal.ChatterDisplayName,
             UserId = proposal.ChatterUserId,
             MessageId = proposal.SourceMessageId,
@@ -481,19 +483,26 @@ public sealed class ModerationUiBridge : IDisposable
     private void ApplyAiRunSnapshot(
         LocalAiRunActivity[] activities)
     {
-        // _aiRunOrder is newest-first. Reverse the queued projection so the
-        // footer presents the batches in their actual FIFO execution order.
+        // _aiRunOrder is newest-first. Reverse both projections so active
+        // runs remain in start order and queued runs retain FIFO order.
+        var activeActivities = activities
+            .Where(activity => activity.State == LocalAiRunState.Running)
+            .Reverse()
+            .ToArray();
         var queuedActivities = activities
             .Where(activity => activity.State == LocalAiRunState.Queued)
             .Reverse()
             .ToArray();
-        SynchronizeQueuedAiRuns(queuedActivities);
+        SynchronizeAiRuns(_state.ActiveLocalAiRuns, activeActivities);
+        SynchronizeAiRuns(_state.QueuedLocalAiRuns, queuedActivities);
+        _state.ActiveLocalAiRunCount = activeActivities.Length;
+        _state.ActiveLocalAiMessageCount = activeActivities
+            .Sum(activity => activity.MessageCount);
         _state.QueuedLocalAiRunCount = queuedActivities.Length;
         _state.QueuedLocalAiMessageCount = queuedActivities
             .Sum(activity => activity.MessageCount);
 
-        var activity = activities.FirstOrDefault(
-                candidate => candidate.State == LocalAiRunState.Running)
+        var activity = activeActivities.FirstOrDefault()
             ?? activities.FirstOrDefault(
                 candidate => candidate.State is LocalAiRunState.Succeeded
                     or LocalAiRunState.Failed);
@@ -511,6 +520,20 @@ public sealed class ModerationUiBridge : IDisposable
 
         _state.CurrentLocalAiRun.Apply(activity);
 
+        if (activeActivities.Length > 0)
+        {
+            var runLabel = activeActivities.Length == 1
+                ? "1 Lauf"
+                : $"{activeActivities.Length:N0} Läufe";
+            var messageCount = _state.ActiveLocalAiMessageCount;
+            var messageLabel = messageCount == 1
+                ? "1 Nachricht"
+                : $"{messageCount:N0} Nachrichten";
+            _state.LmStudioStatus =
+                $"AI arbeitet · {runLabel} · {messageLabel}";
+            return;
+        }
+
         _state.LmStudioStatus = activity.State switch
         {
             LocalAiRunState.Queued =>
@@ -526,32 +549,33 @@ public sealed class ModerationUiBridge : IDisposable
         };
     }
 
-    private void SynchronizeQueuedAiRuns(
-        LocalAiRunActivity[] queuedActivities)
+    private static void SynchronizeAiRuns(
+        System.Collections.ObjectModel.ObservableCollection<LocalAiRunItem> items,
+        LocalAiRunActivity[] activities)
     {
-        var desiredIds = queuedActivities
+        var desiredIds = activities
             .Select(activity => activity.CorrelationId)
             .ToHashSet(StringComparer.Ordinal);
 
-        for (var index = _state.QueuedLocalAiRuns.Count - 1; index >= 0; index--)
+        for (var index = items.Count - 1; index >= 0; index--)
         {
             if (!desiredIds.Contains(
-                    _state.QueuedLocalAiRuns[index].CorrelationId))
+                    items[index].CorrelationId))
             {
-                _state.QueuedLocalAiRuns.RemoveAt(index);
+                items.RemoveAt(index);
             }
         }
 
         for (var desiredIndex = 0;
-             desiredIndex < queuedActivities.Length;
+             desiredIndex < activities.Length;
              desiredIndex++)
         {
-            var activity = queuedActivities[desiredIndex];
+            var activity = activities[desiredIndex];
             var existingIndex = -1;
-            for (var index = 0; index < _state.QueuedLocalAiRuns.Count; index++)
+            for (var index = 0; index < items.Count; index++)
             {
                 if (string.Equals(
-                        _state.QueuedLocalAiRuns[index].CorrelationId,
+                        items[index].CorrelationId,
                         activity.CorrelationId,
                         StringComparison.Ordinal))
                 {
@@ -562,17 +586,17 @@ public sealed class ModerationUiBridge : IDisposable
 
             if (existingIndex < 0)
             {
-                _state.QueuedLocalAiRuns.Insert(
+                items.Insert(
                     desiredIndex,
                     new LocalAiRunItem(activity));
                 continue;
             }
 
-            var item = _state.QueuedLocalAiRuns[existingIndex];
+            var item = items[existingIndex];
             item.Apply(activity);
             if (existingIndex != desiredIndex)
             {
-                _state.QueuedLocalAiRuns.Move(existingIndex, desiredIndex);
+                items.Move(existingIndex, desiredIndex);
             }
         }
     }

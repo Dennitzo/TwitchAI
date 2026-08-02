@@ -73,6 +73,11 @@ public sealed partial class LocalAiRunItem : ObservableObject
                 return "Lerntest";
             }
 
+            if (RunKind == LocalAiRunKind.ReviewReason)
+            {
+                return "Review-Begründung";
+            }
+
             var repairSuffix = CorrelationId.EndsWith(
                 "-repair",
                 StringComparison.Ordinal)

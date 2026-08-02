@@ -22,7 +22,7 @@ public sealed class CoreLocalModerationClientTests
                 },
             });
 
-        var result = await sut.ModerateAsync(prompt);
+        var result = await sut.ModerateAsync(prompt, "channel-1");
 
         Assert.Equal("{}", result);
         var request = Assert.IsType<LmStudioModerationRequest>(lmStudio.Request);
@@ -36,6 +36,7 @@ public sealed class CoreLocalModerationClientTests
         Assert.Equal(prompt.MessageIds.Count, request.MessageCount);
         Assert.Equal(prompt.ActiveRuleCodes, request.ActiveRuleCodes);
         Assert.Equal(prompt.ReplyTemplateIds, request.ReplyTemplateIds);
+        Assert.Equal("channel-1", request.SchedulingKey);
     }
 
     [Fact]

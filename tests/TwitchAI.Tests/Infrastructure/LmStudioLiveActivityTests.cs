@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using TwitchAI.Core.Services;
 using TwitchAI.Infrastructure;
 using TwitchAI.Infrastructure.AI;
 
@@ -391,7 +392,7 @@ public sealed class LmStudioLiveActivityTests
                         message = new
                         {
                             content =
-                                """{"envelopeVersion":"twitchai.learning-test.response.v1","testId":"11111111-1111-1111-1111-111111111111","decision":{"verdict":"allow","action":"none","timeoutSeconds":null,"policySet":"G","ruleCode":"G_PERSONAL_ATTACK","evidenceKind":null,"sensitiveDataType":null,"reason":"","triggerPhrases":[],"confidence":0.8}}""",
+                                """{"envelopeVersion":"twitchai.learning-test.response.v2","testId":"11111111-1111-1111-1111-111111111111","decision":{"verdict":"allow","action":"none","timeoutSeconds":null,"policySet":"G","ruleCode":"G_PERSONAL_ATTACK","evidenceKind":null,"sensitiveDataType":null,"violationReason":"","guidance":"","triggerPhrases":[],"confidence":0.8}}""",
                         },
                         finish_reason = "stop",
                     },
@@ -429,7 +430,7 @@ public sealed class LmStudioLiveActivityTests
             .GetProperty("json_schema")
             .GetProperty("schema");
         Assert.Equal(
-            "twitchai.learning-test.response.v1",
+            LearningTestPromptFactory.ResponseEnvelopeVersion,
             schema
                 .GetProperty("properties")
                 .GetProperty("envelopeVersion")
@@ -460,7 +461,13 @@ public sealed class LmStudioLiveActivityTests
             allowProperties.GetProperty("timeoutSeconds").GetProperty("type").GetString());
         Assert.Equal(
             string.Empty,
-            allowProperties.GetProperty("reason").GetProperty("const").GetString());
+            allowProperties
+                .GetProperty("violationReason")
+                .GetProperty("const")
+                .GetString());
+        Assert.Equal(
+            string.Empty,
+            allowProperties.GetProperty("guidance").GetProperty("const").GetString());
         Assert.Equal(
             0,
             allowProperties.GetProperty("triggerPhrases").GetProperty("maxItems").GetInt32());
@@ -489,6 +496,18 @@ public sealed class LmStudioLiveActivityTests
                 .GetProperty("policySet")
                 .GetProperty("const")
                 .GetString());
+        Assert.Equal(
+            ModerationReasonComposer.MaximumViolationReasonLength,
+            personalAttackProperties
+                .GetProperty("violationReason")
+                .GetProperty("maxLength")
+                .GetInt32());
+        Assert.Equal(
+            ModerationReasonComposer.MaximumGuidanceLength,
+            personalAttackProperties
+                .GetProperty("guidance")
+                .GetProperty("maxLength")
+                .GetInt32());
 
         var moderatePersonalData = FindLearningDecisionAlternative(
             alternatives,
@@ -769,6 +788,8 @@ public sealed class LmStudioLiveActivityTests
         public int AcquireCount { get; private set; }
 
         public ValueTask<IAsyncDisposable> AcquireAsync(
+            LocalAiRunPriority priority = LocalAiRunPriority.Normal,
+            string? schedulingKey = null,
             CancellationToken cancellationToken = default)
         {
             AcquireCount++;

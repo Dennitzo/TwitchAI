@@ -758,7 +758,7 @@ public sealed class ModerationEnvelopeValidatorTests
                     "timeout",
                     120,
                     ModerationRuleCodes.Spam,
-                    "Wiederholter Spam.",
+                    "Der Chat wurde durch eine große Emotemenge überflutet.",
                     ["kappa"],
                     0.96),
             });
@@ -1307,7 +1307,115 @@ public sealed class ModerationEnvelopeValidatorTests
         Assert.Equal(["m1"], result.RepairMessageIds);
         Assert.Contains(
             result.Issues,
-            issue => issue.Code == "reason_not_contextual"
+            issue => issue.Code == "violation_reason_invalid"
+                && issue.MessageId == "m1");
+    }
+
+    [Fact]
+    public void ValidateV7_DirectSecondPersonReasonRequiresTargetedAiRepair()
+    {
+        var batch = PersonalAttackBatch("du bist ein idiot");
+        var moderation = V7Moderation(
+            "timeout",
+            600,
+            ModerationRuleCodes.PersonalAttack,
+            "Du hast @mayvo persönlich beleidigt.",
+            ["du bist ein idiot"],
+            0.95);
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(
+                batch,
+                new Dictionary<string, object?> { ["m1"] = moderation }),
+            batch);
+
+        Assert.False(result.IsValid);
+        Assert.Equal(["m1"], result.RepairMessageIds);
+        Assert.Contains(
+            result.Issues,
+            issue => issue.Code == "violation_reason_invalid"
+                && issue.MessageId == "m1");
+    }
+
+    [Theory]
+    [InlineData("timeout", 600)]
+    [InlineData("ban", null)]
+    public void ValidateV7_ComposesStructuredReasonForTimeoutAndBan(
+        string action,
+        int? timeoutSeconds)
+    {
+        var batch = PersonalAttackBatch("@mayvo du bist völlig unfähig");
+        var moderation = V7Moderation(
+            action,
+            timeoutSeconds,
+            ModerationRuleCodes.PersonalAttack,
+            "Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.",
+            ["du bist völlig unfähig"],
+            0.95);
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(
+                batch,
+                new Dictionary<string, object?> { ["m1"] = moderation }),
+            batch);
+
+        Assert.True(result.IsValid);
+        Assert.Equal(
+            "Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers. Chatregeln künftig bitte beachten.",
+            Assert.Single(result.Envelope!.Decisions).Reason);
+    }
+
+    [Fact]
+    public void ValidateV7_InvalidGuidanceRequiresTargetedAiRepair()
+    {
+        var batch = PersonalAttackBatch("@mayvo du bist völlig unfähig");
+        var moderation = V7Moderation(
+            "timeout",
+            600,
+            ModerationRuleCodes.PersonalAttack,
+            "Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.",
+            ["du bist völlig unfähig"],
+            0.95);
+        moderation["guidance"] = "Du solltest Beleidigungen künftig vermeiden.";
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(
+                batch,
+                new Dictionary<string, object?> { ["m1"] = moderation }),
+            batch);
+
+        Assert.False(result.IsValid);
+        Assert.Equal(["m1"], result.RepairMessageIds);
+        Assert.Contains(
+            result.Issues,
+            issue => issue.Code == "guidance_invalid"
+                && issue.MessageId == "m1");
+    }
+
+    [Fact]
+    public void ValidateV7_UnquotedTriggerPhraseInReasonRequiresTargetedAiRepair()
+    {
+        var batch = PersonalAttackBatch(
+            "@mayvo persönliche vergeltung erwartet dich");
+        var moderation = V7Moderation(
+            "timeout",
+            600,
+            ModerationRuleCodes.PersonalAttack,
+            "Persönliche Vergeltung gegen @mayvo wurde angekündigt.",
+            ["@mayvo persönliche vergeltung"],
+            0.95);
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(
+                batch,
+                new Dictionary<string, object?> { ["m1"] = moderation }),
+            batch);
+
+        Assert.False(result.IsValid);
+        Assert.Equal(["m1"], result.RepairMessageIds);
+        Assert.Contains(
+            result.Issues,
+            issue => issue.Code == "reason_contains_trigger_phrase"
                 && issue.MessageId == "m1");
     }
 
@@ -1372,7 +1480,7 @@ public sealed class ModerationEnvelopeValidatorTests
                 "timeout",
                 600,
                 ModerationRuleCodes.PersonalData,
-                "Veröffentlichung persönlicher Daten.",
+                "Private Adressdaten wurden veröffentlicht.",
                 ["musterstraße 1"],
                 0.95),
         };
@@ -1401,7 +1509,7 @@ public sealed class ModerationEnvelopeValidatorTests
                 "timeout",
                 600,
                 ModerationRuleCodes.Insult,
-                "Direkte Beleidigung eines Nutzers oder Streamers.",
+                "Nutzer oder Streamer wurde direkt persönlich beleidigt.",
                 ["IDIOT", "nicht im text", "du bist idiot", "idiot"],
                 0.9),
         };
@@ -1431,7 +1539,7 @@ public sealed class ModerationEnvelopeValidatorTests
                 "timeout",
                 600,
                 ModerationRuleCodes.Insult,
-                "Direkte Beleidigung eines Nutzers oder Streamers.",
+                "Nutzer oder Streamer wurde direkt persönlich beleidigt.",
                 ["idiot"],
                 0.9),
         };
@@ -1459,7 +1567,7 @@ public sealed class ModerationEnvelopeValidatorTests
                 "timeout",
                 600,
                 ModerationRuleCodes.Insult,
-                "Direkte Beleidigung eines Nutzers oder Streamers.",
+                "Nutzer oder Streamer wurde direkt persönlich beleidigt.",
                 ["dann halt", "sie fest", "@shlorox", "du bist ein idiot"],
                 0.9),
         };
@@ -1490,7 +1598,7 @@ public sealed class ModerationEnvelopeValidatorTests
                 "timeout",
                 600,
                 ModerationRuleCodes.Insult,
-                "Direkte Beleidigung eines Nutzers oder Streamers.",
+                "Nutzer oder Streamer wurde direkt persönlich beleidigt.",
                 ["dann halt", "sie fest"],
                 0.9),
         };
@@ -1524,7 +1632,7 @@ public sealed class ModerationEnvelopeValidatorTests
                 "timeout",
                 600,
                 ModerationRuleCodes.Backseatgaming,
-                "Unaufgeforderter Spielhinweis.",
+                "Der Streamer wurde ungefragt zu einer Spielhandlung angewiesen.",
                 ["links"],
                 0.9),
         };
@@ -1607,7 +1715,12 @@ public sealed class ModerationEnvelopeValidatorTests
                 StringComparison.Ordinal)
                     ? "address"
                     : null,
-            ["reason"] = reason,
+            ["violationReason"] = action is "timeout" or "ban"
+                ? reason
+                : string.Empty,
+            ["guidance"] = action is "timeout" or "ban"
+                ? "Chatregeln künftig bitte beachten."
+                : string.Empty,
             ["triggerPhrases"] = triggerPhrases,
             ["confidence"] = confidence,
         };
@@ -1912,6 +2025,13 @@ public sealed class ModerationEnvelopeValidatorTests
                 policy),
         };
     }
+
+    private static ModerationBatch PersonalAttackBatch(string original) =>
+        GeneralRuleBatch(
+            ModerationRuleCodes.PersonalAttack,
+            "Beleidigung und Belästigung",
+            "Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.",
+            original);
 
     private static ModerationRuleDefinition Rule(
         string code,

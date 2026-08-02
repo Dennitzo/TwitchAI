@@ -29,7 +29,9 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
     private readonly IConfigurationDataService _configuration;
     private readonly IPolicyStore _policyStore;
     private readonly ITwitchChatReplyExecutor _chatReplyExecutor;
+    private readonly IContextualModerationReasonService _reasonService;
     private readonly HashSet<ModerationCaseItem> _observedCases = [];
+    private readonly Dictionary<long, CancellationTokenSource> _reasonRuns = [];
 
     public ModerationQueueViewModel(
         AppState state,
@@ -38,7 +40,8 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         IModerationCoordinator coordinator,
         IConfigurationDataService configuration,
         IPolicyStore policyStore,
-        ITwitchChatReplyExecutor chatReplyExecutor)
+        ITwitchChatReplyExecutor chatReplyExecutor,
+        IContextualModerationReasonService reasonService)
     {
         _state = state;
         _executor = executor;
@@ -47,6 +50,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         _configuration = configuration;
         _policyStore = policyStore;
         _chatReplyExecutor = chatReplyExecutor;
+        _reasonService = reasonService;
         Cases = state.ModerationCases;
         Cases.CollectionChanged += OnCasesCollectionChanged;
         foreach (var item in Cases)
@@ -130,6 +134,108 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         {
             item.PropertyChanged -= OnCasePropertyChanged;
         }
+
+        if (_reasonRuns.Remove(item.CaseId, out var cancellation))
+        {
+            cancellation.Cancel();
+            cancellation.Dispose();
+        }
+    }
+
+    public async Task SelectViolationRuleAsync(
+        ModerationCaseItem item,
+        string selectedRuleCode,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        var previousRuleCode = item.RuleCode;
+        if (!item.TrySelectViolationRule(selectedRuleCode)
+            || string.Equals(
+                previousRuleCode,
+                item.RuleCode,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (_reasonRuns.Remove(item.CaseId, out var previousRun))
+        {
+            previousRun.Cancel();
+            previousRun.Dispose();
+        }
+
+        item.Reason = string.Empty;
+        item.ReasonGenerationStatus = string.Empty;
+        if (item.Action is not ("timeout" or "ban"))
+        {
+            return;
+        }
+
+        var selectedCode = item.RuleCode!;
+        var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken);
+        _reasonRuns[item.CaseId] = linkedCancellation;
+        item.IsReasonGenerating = true;
+        item.ReasonGenerationStatus = "AI erstellt eine neue Begründung …";
+        try
+        {
+            var action = item.Action == "ban"
+                ? ModerationActionKind.Ban
+                : ModerationActionKind.Timeout;
+            var generated = await _reasonService.GenerateAsync(
+                new ContextualModerationReasonRequest(
+                    item.OriginalMessage,
+                    item.ChannelId,
+                    item.CategoryId,
+                    selectedCode,
+                    action,
+                    action == ModerationActionKind.Timeout
+                        ? checked((int)item.TimeoutSeconds)
+                        : null,
+                    item.TriggerPhrases
+                        .Where(phrase => phrase.IsSelected)
+                        .Select(phrase => phrase.Phrase)
+                        .Distinct(StringComparer.Ordinal)
+                        .ToArray(),
+                    $"review-reason:{item.CaseId}:{Guid.NewGuid():N}"),
+                linkedCancellation.Token);
+            if (!linkedCancellation.IsCancellationRequested
+                && Cases.Contains(item)
+                && string.Equals(
+                    item.RuleCode,
+                    generated.RuleCode,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                item.Reason = generated.Reason;
+                item.ReasonGenerationStatus = "AI-Begründung wurde aktualisiert.";
+            }
+        }
+        catch (OperationCanceledException)
+            when (linkedCancellation.IsCancellationRequested)
+        {
+            // A newer category selection owns the visible state.
+        }
+        catch (Exception exception)
+        {
+            if (string.Equals(
+                    item.RuleCode,
+                    selectedCode,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                item.ReasonGenerationStatus =
+                    $"AI-Begründung fehlgeschlagen: {exception.Message} Manuelle Eingabe ist möglich.";
+            }
+        }
+        finally
+        {
+            if (_reasonRuns.TryGetValue(item.CaseId, out var current)
+                && ReferenceEquals(current, linkedCancellation))
+            {
+                _reasonRuns.Remove(item.CaseId);
+                item.IsReasonGenerating = false;
+                linkedCancellation.Dispose();
+            }
+        }
     }
 
     private void OnCasePropertyChanged(object? sender, PropertyChangedEventArgs args)
@@ -173,7 +279,11 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         }
 
         var reason = action is ModerationActionKind.Timeout or ModerationActionKind.Ban
-            ? item.Reason.Trim()
+            ? string.Join(
+                ' ',
+                item.Reason.Split(
+                    [' ', '\t', '\r', '\n'],
+                    StringSplitOptions.RemoveEmptyEntries))
             : string.Empty;
         if (action is ModerationActionKind.Timeout or ModerationActionKind.Ban
             && reason.Length is < 1 or > 120)
@@ -3268,6 +3378,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 : "Client-ID lokal gespeichert.";
 
         _state.ChannelDisplayName = prepared.ChannelDisplayName;
+        _state.ReplaceChannelNames(
+            prepared.Targets.Select(target => (
+                target.BroadcasterId,
+                target.BroadcasterName)));
         _state.CategoryName = prepared.CategoryName;
         _state.ActivePolicies = prepared.ActivePolicies;
         _state.TwitchStatus = prepared.Targets.Count == 1

@@ -134,6 +134,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
 
     private readonly object _lifecycleGate = new();
     private readonly object _contextGate = new();
+    private readonly object _inferenceSchedulingGate = new();
     private readonly SemaphoreSlim _lifecycleOperationGate = new(1, 1);
     private readonly ITwitchEventSubClient _eventSubClient;
     private readonly IChannelContextService _channelContextService;
@@ -162,6 +163,9 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
     private readonly ConcurrentDictionary<string, IReadOnlyList<PhraseRule>> _ruleCache =
         new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _inferenceSignal = new(0);
+    private readonly HashSet<string> _activeInferenceChannels =
+        new(StringComparer.Ordinal);
+    private string? _lastReleasedInferenceChannel;
     private CancellationTokenSource? _runSource;
     private Task[] _runTasks = [];
     private readonly Dictionary<string, ChannelContextSnapshot> _currentContexts =
@@ -279,6 +283,11 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             var broadcasterIds = _options.TwitchApi.GetBroadcasterIds();
             DiscardQueuedBatches("analysis_restart");
             ClearCurrentContexts();
+            lock (_inferenceSchedulingGate)
+            {
+                _activeInferenceChannels.Clear();
+                _lastReleasedInferenceChannel = null;
+            }
             ChannelContextSnapshot? initialContext = null;
             CoreEffectivePolicySnapshot? initialPolicy = null;
             foreach (var broadcasterId in broadcasterIds)
@@ -310,11 +319,15 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     + "Bitte Twitch erneut verbinden.");
             }
 
+            var inferenceWorkerCount = Math.Min(
+                LocalAiExecutionGate.MaximumConcurrency,
+                broadcasterIds.Count);
             _runTasks =
             [
                 ConsumeEventSubAsync(source),
                 SealDeadlinesAsync(source),
-                RunInferenceAsync(source),
+                .. Enumerable.Range(0, inferenceWorkerCount)
+                    .Select(_ => RunInferenceAsync(source)),
             ];
             if (_connectionReadiness is not null)
             {
@@ -853,28 +866,34 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             while (!source.IsCancellationRequested)
             {
                 await _inferenceSignal.WaitAsync(source.Token).ConfigureAwait(false);
-                while (_batcher.TryDequeue(out var batch) && batch is not null)
+                if (!TryClaimInferenceBatch(out var batch) || batch is null)
                 {
-                    PublishRunningAiRun(batch);
-                    try
-                    {
-                        await AnalyzeBatchAsync(batch, source.Token).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (source.IsCancellationRequested)
-                    {
-                        PublishFailedAiRun(batch, "cancelled");
-                        throw;
-                    }
-                    catch (Exception exception)
-                    {
-                        PublishFailedAiRun(batch, exception.GetType().Name);
-                        Publish(
-                            new(
-                                ModerationPipelineEventKind.BatchRejected,
-                                "ai_batch_failed",
-                                "The local AI batch failed; live analysis continues with the next batch.",
-                                exception: exception));
-                    }
+                    continue;
+                }
+
+                PublishRunningAiRun(batch);
+                try
+                {
+                    await AnalyzeBatchAsync(batch, source.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (source.IsCancellationRequested)
+                {
+                    PublishFailedAiRun(batch, "cancelled");
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    PublishFailedAiRun(batch, exception.GetType().Name);
+                    Publish(
+                        new(
+                            ModerationPipelineEventKind.BatchRejected,
+                            "ai_batch_failed",
+                            "The local AI batch failed; live analysis continues with the next batch.",
+                            exception: exception));
+                }
+                finally
+                {
+                    ReleaseInferenceChannel(batch.Context.Channel.ChannelId);
                 }
             }
         }
@@ -886,6 +905,52 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         {
             PublishFault("inference_failed", "Local moderation inference stopped.", exception);
             await source.CancelAsync().ConfigureAwait(false);
+        }
+    }
+
+    private bool TryClaimInferenceBatch(out ModerationBatch? batch)
+    {
+        lock (_inferenceSchedulingGate)
+        {
+            if (_lastReleasedInferenceChannel is not null)
+            {
+                var temporarilyExcluded = new HashSet<string>(
+                    _activeInferenceChannels,
+                    StringComparer.Ordinal)
+                {
+                    _lastReleasedInferenceChannel,
+                };
+                if (_batcher.TryDequeue(temporarilyExcluded, out batch)
+                    && batch is not null)
+                {
+                    _activeInferenceChannels.Add(
+                        batch.Context.Channel.ChannelId);
+                    return true;
+                }
+            }
+
+            if (!_batcher.TryDequeue(_activeInferenceChannels, out batch)
+                || batch is null)
+            {
+                return false;
+            }
+
+            _activeInferenceChannels.Add(batch.Context.Channel.ChannelId);
+            return true;
+        }
+    }
+
+    private void ReleaseInferenceChannel(string channelId)
+    {
+        lock (_inferenceSchedulingGate)
+        {
+            _activeInferenceChannels.Remove(channelId);
+            _lastReleasedInferenceChannel = channelId;
+        }
+
+        if (_batcher.WaitingMessageCount > 0)
+        {
+            _inferenceSignal.Release();
         }
     }
 
@@ -941,7 +1006,10 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             _promptCompiler);
         var inferenceStarted = Stopwatch.GetTimestamp();
         var rawResponse = await _localModerationClient
-            .ModerateAsync(prompt.CompiledPrompt, cancellationToken)
+            .ModerateAsync(
+                prompt.CompiledPrompt,
+                batch.Context.Channel.ChannelId,
+                cancellationToken)
             .ConfigureAwait(false);
         var validation = ValidateRuntimeResponse(rawResponse, analysisBatch);
         await RecordValidationAttemptAsync(
@@ -978,7 +1046,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                         prompt.CompiledPrompt,
                         validation.RepairMessageIds,
                         validation.Issues,
-                        validation.RequiresFullRepair),
+                        validation.RequiresFullRepair,
+                        batch.Context.Channel.ChannelId),
                     cancellationToken)
                 .ConfigureAwait(false);
             var repairedResponse = repairResult.RawResponse;
@@ -1379,7 +1448,10 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             allowBoundary,
             _promptCompiler);
         var verifyResponse = await _localModerationClient
-            .ModerateAsync(verifyPrompt.CompiledPrompt, cancellationToken)
+            .ModerateAsync(
+                verifyPrompt.CompiledPrompt,
+                batch.Context.Channel.ChannelId,
+                cancellationToken)
             .ConfigureAwait(false);
         var verified = ValidateRuntimeResponse(verifyResponse, verifyBatch);
         var verifiedById = verified.IsValid
@@ -2061,9 +2133,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         foreach (var batch in batches)
         {
             PublishQueuedAiRun(batch);
+            _inferenceSignal.Release();
         }
-
-        _inferenceSignal.Release();
     }
 
     private void PublishBatchIngressUpdates(BatchIngressResult ingress)
