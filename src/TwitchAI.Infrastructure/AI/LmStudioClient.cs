@@ -213,7 +213,7 @@ public sealed class LmStudioClient : ILmStudioClient
                     request.ResponseSchema);
             using var httpRequest = new HttpRequestMessage(
                 HttpMethod.Post,
-                "v1/chat/completions")
+                BuildRequestUri("v1/chat/completions"))
             {
                 Content = JsonContent.Create(
                     new
@@ -352,7 +352,9 @@ public sealed class LmStudioClient : ILmStudioClient
     public async Task<IReadOnlyList<string>> GetLoadedModelsAsync(
         CancellationToken cancellationToken = default)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, "api/v1/models");
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            BuildRequestUri("v1/models"));
         await ApplyOptionalAuthorizationAsync(request, cancellationToken)
             .ConfigureAwait(false);
         using var response = await _httpClient.SendAsync(request, cancellationToken)
@@ -401,6 +403,9 @@ public sealed class LmStudioClient : ILmStudioClient
                 token);
         }
     }
+
+    private Uri BuildRequestUri(string relativePath) =>
+        new(_options.BaseAddress, relativePath);
 
     private static LmStudioUsageMetrics ParseUsage(
         JsonElement root,

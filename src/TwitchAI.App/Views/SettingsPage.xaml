@@ -181,11 +181,20 @@
             <TextBox
               Header="Basis-URL"
               Text="{x:Bind ViewModel.LmStudioBaseUrl, Mode=TwoWay}" />
-            <TextBox
+            <ComboBox
               x:Name="LmStudioModelInput"
               Grid.Column="1"
               Header="Modell"
-              Text="{x:Bind ViewModel.LmStudioModel, Mode=TwoWay}" />
+              ItemsSource="{x:Bind ViewModel.AvailableLmStudioModels, Mode=OneWay}"
+              PlaceholderText="Verfügbares Modell auswählen"
+              SelectedItem="{x:Bind ViewModel.LmStudioModel, Mode=TwoWay}" />
+            <Button
+              Grid.Row="1"
+              Grid.ColumnSpan="2"
+              HorizontalAlignment="Left"
+              Click="OnSaveAndCheckLmStudioBaseUrlClicked"
+              Content="Basis-URL speichern &amp; prüfen"
+              Style="{StaticResource SubtleButtonStyle}" />
           </Grid>
           <Grid
             x:Name="LmStudioTokenFields"

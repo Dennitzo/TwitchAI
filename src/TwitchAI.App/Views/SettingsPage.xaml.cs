@@ -503,12 +503,34 @@ public sealed partial class SettingsPage : Page
             await ShowMessageAsync(
                 "LM-Studio-Verbindung",
                 models.Count == 0
-                    ? "LM Studio antwortet, meldet aber kein geladenes Modell."
-                    : $"Geladene Modelle:\n{string.Join("\n", models)}");
+                    ? "LM Studio antwortet, meldet aber kein verfügbares Modell."
+                    : $"Verfügbare Modelle:\n{string.Join("\n", models)}");
         }
         catch (Exception exception)
         {
             await ShowMessageAsync("LM Studio nicht erreichbar", exception.Message);
+        }
+    }
+
+    private async void OnSaveAndCheckLmStudioBaseUrlClicked(
+        object sender,
+        RoutedEventArgs e)
+    {
+        try
+        {
+            ViewModel.Save();
+            var models = await ViewModel.CheckLmStudioAsync();
+            await ShowMessageAsync(
+                "LM-Studio-Basis-URL gespeichert",
+                models.Count == 0
+                    ? "Die URL wurde gespeichert. LM Studio antwortet, meldet aber kein verfügbares Modell."
+                    : $"Die URL wurde gespeichert und erfolgreich geprüft. Verfügbare Modelle:\n{string.Join("\n", models)}");
+        }
+        catch (Exception exception)
+        {
+            await ShowMessageAsync(
+                "LM-Studio-Basis-URL konnte nicht geprüft werden",
+                exception.Message);
         }
     }
 

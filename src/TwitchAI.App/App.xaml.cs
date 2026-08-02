@@ -85,7 +85,7 @@ public partial class App : Application
                             _localStorage.GetString("LmStudioBaseUrl"),
                             UriKind.Absolute,
                             out var baseAddress)
-                        && baseAddress.IsLoopback)
+                        && baseAddress.Scheme is "http" or "https")
                     {
                         options.LmStudio.BaseAddress = baseAddress;
                     }

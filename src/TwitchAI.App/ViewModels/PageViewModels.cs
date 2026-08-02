@@ -2436,6 +2436,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly IModerationCoordinator _coordinator;
     private readonly IDatabaseTransferService _databaseTransferService;
     private readonly SemaphoreSlim _twitchSessionGate = new(1, 1);
+    private bool _isInitializing = true;
 
     public SettingsViewModel(
         AppState state,
@@ -2480,6 +2481,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             ?? options.LmStudio.BaseAddress.ToString().TrimEnd('/');
         LmStudioModel = _localStorage.GetString("LmStudioModel")
             ?? options.LmStudio.Model;
+        AvailableLmStudioModels.Add(LmStudioModel);
         SelectedTheme = _localStorage.GetString("Theme") ?? "System";
         _removeIdenticalAiQueueMessages = _localStorage.GetBooleanOrDefault(
             LocalAppSettingKeys.RemoveIdenticalAiQueueMessages,
@@ -2488,6 +2490,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             _removeIdenticalAiQueueMessages;
         _readOnlyMode = _twitchRuntimeModeSettings.IsReadOnly;
         _state.IsReadOnlyMode = _readOnlyMode;
+        _isInitializing = false;
     }
 
     [ObservableProperty]
@@ -2505,6 +2508,31 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     public partial string LmStudioModel { get; set; } = "openai/gpt-oss-20b";
+
+    public ObservableCollection<string> AvailableLmStudioModels { get; } = [];
+
+    partial void OnLmStudioModelChanged(string value)
+    {
+        if (_isInitializing || string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        var model = value.Trim();
+        _options.LmStudio.Model = model;
+        try
+        {
+            _localStorage.SetString("LmStudioModel", model);
+            SaveStatus = "LM-Studio-Modell automatisch gespeichert";
+        }
+        catch (Exception exception)
+            when (exception is IOException or UnauthorizedAccessException)
+        {
+            SaveStatus =
+                "Das LM-Studio-Modell ist sofort aktiv, konnte aber nicht "
+                + $"gespeichert werden: {exception.Message}";
+        }
+    }
 
     [ObservableProperty]
     public partial string SelectedTheme { get; set; } = "System";
@@ -2589,10 +2617,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public void Save()
     {
         if (!Uri.TryCreate(LmStudioBaseUrl, UriKind.Absolute, out var baseAddress)
-            || !baseAddress.IsLoopback)
+            || !IsAllowedLmStudioAddress(baseAddress))
         {
             throw new InvalidOperationException(
-                "LM Studio muss über eine lokale Loopback-Adresse erreichbar sein.");
+                "LM Studio muss über localhost oder eine private lokale Netzwerkadresse erreichbar sein.");
         }
 
         if (string.IsNullOrWhiteSpace(LmStudioModel))
@@ -2619,6 +2647,26 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             LocalAppSettingKeys.ReadOnlyMode,
             ReadOnlyMode.ToString());
         SaveStatus = "Lokal gespeichert · Verbindungsänderungen gelten nach App-Neustart";
+    }
+
+    private static bool IsAllowedLmStudioAddress(Uri address)
+    {
+        if (address.IsLoopback)
+        {
+            return true;
+        }
+
+        if (address.Scheme is not ("http" or "https")
+            || !IPAddress.TryParse(address.Host, out var ip)
+            || ip.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            return false;
+        }
+
+        var bytes = ip.GetAddressBytes();
+        return bytes[0] == 10
+            || (bytes[0] == 172 && bytes[1] is >= 16 and <= 31)
+            || (bytes[0] == 192 && bytes[1] == 168);
     }
 
     public async Task ExportDatabaseAsync(string destinationPath, CancellationToken cancellationToken = default)
@@ -2929,16 +2977,39 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         CancellationToken cancellationToken = default)
     {
         IsBusy = true;
-        LmStudioConnectionStatus = "Prüfe lokale Modelle";
+        LmStudioConnectionStatus = "Prüfe verfügbare Modelle";
         try
         {
             var models = await _lmStudioClient.GetLoadedModelsAsync(cancellationToken);
-            var isConfiguredModelLoaded = models.Contains(
+            var availableModels = models
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            for (var index = AvailableLmStudioModels.Count - 1; index >= 0; index--)
+            {
+                var existingModel = AvailableLmStudioModels[index];
+                if (!string.Equals(existingModel, LmStudioModel, StringComparison.Ordinal)
+                    && !availableModels.Contains(existingModel, StringComparer.Ordinal))
+                {
+                    AvailableLmStudioModels.RemoveAt(index);
+                }
+            }
+
+            foreach (var availableModel in availableModels)
+            {
+                if (!AvailableLmStudioModels.Contains(
+                        availableModel,
+                        StringComparer.Ordinal))
+                {
+                    AvailableLmStudioModels.Add(availableModel);
+                }
+            }
+            var isConfiguredModelAvailable = models.Contains(
                 _options.LmStudio.Model,
                 StringComparer.Ordinal);
-            LmStudioConnectionStatus = isConfiguredModelLoaded
-                ? "Modell geladen"
-                : "Verbunden · Modell nicht geladen";
+            LmStudioConnectionStatus = isConfiguredModelAvailable
+                ? "Modell verfügbar"
+                : "Verbunden · Modell nicht verfügbar";
             _state.LmStudioStatus = LmStudioConnectionStatus;
             return models;
         }

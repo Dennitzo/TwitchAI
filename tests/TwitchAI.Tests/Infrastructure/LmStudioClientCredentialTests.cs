@@ -55,6 +55,52 @@ public sealed class LmStudioClientCredentialTests
         Assert.Empty(metrics.Records);
     }
 
+    [Fact]
+    public async Task GetLoadedModels_WhenBaseAddressChanges_UsesCurrentAddress()
+    {
+        var handler = new CapturingHttpMessageHandler();
+        using var httpClient = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://127.0.0.1:1234/"),
+        };
+        var options = CreateOptions();
+        var sut = new LmStudioClient(
+            httpClient,
+            new FakeLlmRunMetricsStore(),
+            new FakeLmStudioCredentialVault(token: null),
+            options);
+        options.LmStudio.BaseAddress = new Uri("http://192.168.0.67:1234/");
+
+        await sut.GetLoadedModelsAsync();
+
+        Assert.Equal(
+            new Uri("http://192.168.0.67:1234/v1/models"),
+            handler.RequestUri);
+    }
+
+    [Fact]
+    public async Task GetLoadedModels_UsesOpenAiCompatibleModelsEndpointAndSchema()
+    {
+        var handler = new CapturingHttpMessageHandler(
+            """{"object":"list","data":[{"id":"openai/gpt-oss-20b","object":"model"}]}""");
+        using var httpClient = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://127.0.0.1:1234/"),
+        };
+        var sut = new LmStudioClient(
+            httpClient,
+            new FakeLlmRunMetricsStore(),
+            new FakeLmStudioCredentialVault(token: null),
+            CreateOptions());
+
+        var models = await sut.GetLoadedModelsAsync();
+
+        Assert.Equal(["openai/gpt-oss-20b"], models);
+        Assert.Equal(
+            new Uri("http://127.0.0.1:1234/v1/models"),
+            handler.RequestUri);
+    }
+
     private static InfrastructureOptions CreateOptions()
     {
         return new InfrastructureOptions
@@ -66,14 +112,18 @@ public sealed class LmStudioClientCredentialTests
         };
     }
 
-    private sealed class CapturingHttpMessageHandler : HttpMessageHandler
+    private sealed class CapturingHttpMessageHandler(
+        string responseBody = """{"models":[]}""") : HttpMessageHandler
     {
         public AuthenticationHeaderValue? Authorization { get; private set; }
+
+        public Uri? RequestUri { get; private set; }
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            RequestUri = request.RequestUri;
             Authorization = request.Headers.Authorization is { } authorization
                 ? new AuthenticationHeaderValue(
                     authorization.Scheme,
@@ -83,7 +133,7 @@ public sealed class LmStudioClientCredentialTests
             return Task.FromResult(
                 new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent("""{"models":[]}"""),
+                    Content = new StringContent(responseBody),
                 });
         }
     }

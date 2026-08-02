@@ -38,6 +38,7 @@ public sealed class SettingsViewModelTwitchRestoreTests
             storage,
             new ModerationQueueRuntimeSettings(),
             new TwitchRuntimeModeSettings(),
+            null!,
             null!);
 
         Assert.Equal("channelone, channeltwo", viewModel.ChannelLogin);
@@ -49,6 +50,43 @@ public sealed class SettingsViewModelTwitchRestoreTests
         Assert.Equal(
             "channelthree, channelfour",
             storage.GetString("ChannelLogin"));
+    }
+
+    [Fact]
+    public void LmStudioModel_WhenSelected_IsAppliedAndPersistedImmediately()
+    {
+        var options = new InfrastructureOptions();
+        var storage = new MemoryLocalAppStorage(new Dictionary<string, string>
+        {
+            ["LmStudioModel"] = "openai/gpt-oss-20b",
+        });
+        using var viewModel = new SettingsViewModel(
+            new AppState(),
+            options,
+            null!,
+            null!,
+            null!,
+            new TwitchConnectionReadiness(),
+            null!,
+            null!,
+            null!,
+            null!,
+            null!,
+            storage,
+            new ModerationQueueRuntimeSettings(),
+            new TwitchRuntimeModeSettings(),
+            null!,
+            null!);
+
+        viewModel.LmStudioModel = "openai/gpt-oss-120b";
+
+        Assert.Equal("openai/gpt-oss-120b", options.LmStudio.Model);
+        Assert.Equal(
+            "openai/gpt-oss-120b",
+            storage.GetString("LmStudioModel"));
+        Assert.Equal(
+            "LM-Studio-Modell automatisch gespeichert",
+            viewModel.SaveStatus);
     }
 
     [Fact]
@@ -102,7 +140,8 @@ public sealed class SettingsViewModelTwitchRestoreTests
                         storage,
                         new ModerationQueueRuntimeSettings(),
                         new TwitchRuntimeModeSettings(),
-                        new TrackingCoordinator(isRunning: false));
+                        new TrackingCoordinator(isRunning: false),
+                        null!);
 
                     var wrongThreadNotifications = new ConcurrentQueue<string>();
                     var viewModelNotifications = 0;
@@ -175,6 +214,7 @@ public sealed class SettingsViewModelTwitchRestoreTests
             storage,
             new ModerationQueueRuntimeSettings(),
             new TwitchRuntimeModeSettings(),
+            null!,
             null!);
 
         var first = await viewModel.RestoreTwitchSessionAsync();
@@ -241,7 +281,8 @@ public sealed class SettingsViewModelTwitchRestoreTests
             storage,
             new ModerationQueueRuntimeSettings(),
             new TwitchRuntimeModeSettings(),
-            coordinator)
+            coordinator,
+            null!)
         {
             ChannelLogin = "newone, newtwo",
         };
