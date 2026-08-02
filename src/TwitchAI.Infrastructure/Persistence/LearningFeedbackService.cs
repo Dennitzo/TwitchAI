@@ -328,12 +328,17 @@ public sealed class SqliteLearningFeedbackService : ILearningFeedbackService
         command.Parameters.AddWithValue("@actual_reason", review.Reason);
         command.Parameters.AddWithValue(
             "@violation_subtype",
-            SqliteData.DbValue(string.Equals(
-                review.RuleCode,
-                result.ProposedRuleCode,
-                StringComparison.Ordinal)
-                ? result.EvidenceKind
-                : null));
+            SqliteData.DbValue(
+                !isAllowed
+                && string.Equals(
+                    review.RuleCode,
+                    result.ProposedRuleCode,
+                    StringComparison.Ordinal)
+                && ModerationEvidenceKinds.IsValid(
+                    review.RuleCode,
+                    result.EvidenceKind)
+                    ? result.EvidenceKind
+                    : null));
         command.Parameters.AddWithValue(
             "@actual_triggers_json",
             JsonSerializer.Serialize(normalizedTriggers, JsonOptions));

@@ -11,7 +11,24 @@ namespace TwitchAI.Infrastructure.Twitch;
 
 public sealed record TwitchEventSubChannel(
     string BroadcasterId,
-    string ReaderUserId);
+    string ReaderUserId)
+{
+    public IReadOnlyList<string> BroadcasterIds { get; init; } = [];
+
+    public IReadOnlyList<string> GetBroadcasterIds()
+    {
+        var configured = BroadcasterIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return configured.Length > 0
+            ? configured
+            : string.IsNullOrWhiteSpace(BroadcasterId)
+                ? []
+                : [BroadcasterId.Trim()];
+    }
+}
 
 public abstract record TwitchEventSubEvent(
     string EventMessageId,
@@ -141,7 +158,17 @@ public sealed class TwitchEventSubWebSocketClient :
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(channel);
-        ArgumentException.ThrowIfNullOrWhiteSpace(channel.BroadcasterId);
+        if (channel.GetBroadcasterIds().Count == 0)
+        {
+            throw new ArgumentException(
+                "At least one EventSub broadcaster must be configured.",
+                nameof(channel));
+        }
+
+        TwitchChannelSelection.EnsureWithinEventSubLimit(
+            channel.GetBroadcasterIds().Count,
+            _runtimeMode.IsReadOnly);
+
         ArgumentException.ThrowIfNullOrWhiteSpace(channel.ReaderUserId);
         return ReadBufferedAsync(channel, cancellationToken);
     }
@@ -193,7 +220,7 @@ public sealed class TwitchEventSubWebSocketClient :
             }
 
             _activeWriter = buffer.Writer;
-            _activeBroadcasterId = eventSubChannel.BroadcasterId;
+            _activeBroadcasterId = eventSubChannel.GetBroadcasterIds()[0];
         }
         using var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var producer = ProduceAsync(eventSubChannel, buffer.Writer, linkedSource.Token);
@@ -266,26 +293,27 @@ public sealed class TwitchEventSubWebSocketClient :
         ChannelWriter<TwitchEventSubEvent> writer,
         CancellationToken cancellationToken)
     {
-
         await _dedupeStore.DeleteOlderThanAsync(
             DateTimeOffset.UtcNow - _options.ProcessedEventRetention,
             cancellationToken).ConfigureAwait(false);
 
-        TwitchCategoryChangedEvent? currentCategory;
-        try
+        var broadcasterIds = channel.GetBroadcasterIds();
+        var currentCategories = broadcasterIds.ToDictionary(
+            broadcasterId => broadcasterId,
+            _ => (TwitchCategoryChangedEvent?)null,
+            StringComparer.Ordinal);
+        foreach (var broadcasterId in broadcasterIds)
         {
-            currentCategory = await ReconcileCategoryAsync(
-                    channel.BroadcasterId,
+            var currentCategory = await TryReconcileCategoryAsync(
+                    broadcasterId,
                     cancellationToken)
                 .ConfigureAwait(false);
-        }
-        catch (HttpRequestException)
-        {
-            currentCategory = null;
-        }
-        if (currentCategory is not null)
-        {
-            await writer.WriteAsync(currentCategory, cancellationToken).ConfigureAwait(false);
+            currentCategories[broadcasterId] = currentCategory;
+            if (currentCategory is not null)
+            {
+                await writer.WriteAsync(currentCategory, cancellationToken)
+                    .ConfigureAwait(false);
+            }
         }
 
         var socketUri = _options.EventSubWebSocketUri;
@@ -301,23 +329,23 @@ public sealed class TwitchEventSubWebSocketClient :
                     : "EventSub wird verbunden.");
             if (reconnectAttempt > 0 && !reconnectHandoff)
             {
-                TwitchCategoryChangedEvent? reconciledAfterGap;
-                try
+                foreach (var broadcasterId in broadcasterIds)
                 {
-                    reconciledAfterGap = await ReconcileCategoryAsync(
-                        channel.BroadcasterId,
-                        cancellationToken).ConfigureAwait(false);
-                }
-                catch (HttpRequestException)
-                {
-                    reconciledAfterGap = null;
-                }
-                if (reconciledAfterGap is not null
-                    && !SameCategory(currentCategory, reconciledAfterGap))
-                {
-                    currentCategory = reconciledAfterGap;
-                    await writer.WriteAsync(reconciledAfterGap, cancellationToken)
+                    var reconciledAfterGap = await TryReconcileCategoryAsync(
+                            broadcasterId,
+                            cancellationToken)
                         .ConfigureAwait(false);
+                    if (reconciledAfterGap is not null
+                        && !SameCategory(
+                            currentCategories[broadcasterId],
+                            reconciledAfterGap))
+                    {
+                        currentCategories[broadcasterId] = reconciledAfterGap;
+                        await writer.WriteAsync(
+                                reconciledAfterGap,
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                    }
                 }
             }
 
@@ -376,25 +404,25 @@ public sealed class TwitchEventSubWebSocketClient :
                                 "EventSub keepalive deadline expired.");
                         }
 
-                        TwitchCategoryChangedEvent? reconciled;
-                        try
+                        foreach (var broadcasterId in broadcasterIds)
                         {
-                            reconciled = await ReconcileCategoryAsync(
-                                channel.BroadcasterId,
-                                cancellationToken).ConfigureAwait(false);
+                            var reconciled = await TryReconcileCategoryAsync(
+                                    broadcasterId,
+                                    cancellationToken)
+                                .ConfigureAwait(false);
+                            if (reconciled is not null
+                                && !SameCategory(
+                                    currentCategories[broadcasterId],
+                                    reconciled))
+                            {
+                                currentCategories[broadcasterId] = reconciled;
+                                await writer.WriteAsync(reconciled, cancellationToken)
+                                    .ConfigureAwait(false);
+                            }
                         }
-                        catch (HttpRequestException)
-                        {
-                            reconciled = null;
-                        }
+
                         nextReconciliationAt =
                             DateTimeOffset.UtcNow + NextCategoryReconciliationDelay();
-                        if (reconciled is not null &&
-                            !SameCategory(currentCategory, reconciled))
-                        {
-                            currentCategory = reconciled;
-                            await writer.WriteAsync(reconciled, cancellationToken).ConfigureAwait(false);
-                        }
 
                         continue;
                     }
@@ -429,7 +457,8 @@ public sealed class TwitchEventSubWebSocketClient :
                                 cancellationToken).ConfigureAwait(false);
                             if (parsed is TwitchCategoryChangedEvent categoryChanged)
                             {
-                                currentCategory = categoryChanged;
+                                currentCategories[categoryChanged.BroadcasterId] =
+                                    categoryChanged;
                             }
 
                             if (parsed is not null)
@@ -454,7 +483,6 @@ public sealed class TwitchEventSubWebSocketClient :
                         {
                             var revoked = await ParseRevocationAsync(
                                 document.RootElement,
-                                channel.BroadcasterId,
                                 cancellationToken).ConfigureAwait(false);
                             if (revoked is not null)
                             {
@@ -529,15 +557,18 @@ public sealed class TwitchEventSubWebSocketClient :
                 // Force the next successful Helix reconciliation to be emitted
                 // even when Twitch kept the same category. The coordinator has
                 // invalidated the old verified snapshot after this gap.
-                currentCategory = null;
-                await writer.WriteAsync(
-                    new TwitchEventSubGapEvent(
-                        $"local-eventsub-gap-{Guid.NewGuid():N}",
-                        channel.BroadcasterId,
-                        gapAt,
-                        gapAt,
-                        unexpectedDisconnectReason),
-                    cancellationToken).ConfigureAwait(false);
+                foreach (var broadcasterId in broadcasterIds)
+                {
+                    currentCategories[broadcasterId] = null;
+                    await writer.WriteAsync(
+                        new TwitchEventSubGapEvent(
+                            $"local-eventsub-gap-{Guid.NewGuid():N}",
+                            broadcasterId,
+                            gapAt,
+                            gapAt,
+                            unexpectedDisconnectReason),
+                        cancellationToken).ConfigureAwait(false);
+                }
             }
 
             reconnectAttempt++;
@@ -551,35 +582,89 @@ public sealed class TwitchEventSubWebSocketClient :
         string sessionId,
         CancellationToken cancellationToken)
     {
-        var chatCondition = new Dictionary<string, string>(StringComparer.Ordinal)
+        foreach (var subscription in BuildSubscriptionRequests(
+                     channel,
+                     sessionId,
+                     _runtimeMode.IsReadOnly))
         {
-            ["broadcaster_user_id"] = channel.BroadcasterId,
-            ["user_id"] = channel.ReaderUserId,
-        };
-        var channelCondition = new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            ["broadcaster_user_id"] = channel.BroadcasterId,
-        };
+            await _helixClient
+                .CreateEventSubSubscriptionAsync(subscription, cancellationToken)
+                .ConfigureAwait(false);
+        }
+    }
 
-        var subscriptions = new List<TwitchEventSubSubscriptionRequest>
+    internal static IReadOnlyList<TwitchEventSubSubscriptionRequest>
+        BuildSubscriptionRequests(
+            TwitchEventSubChannel channel,
+            string sessionId,
+            bool isReadOnly)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        var requests = new List<TwitchEventSubSubscriptionRequest>();
+        foreach (var broadcasterId in channel.GetBroadcasterIds())
         {
-            new("channel.update", "2", channelCondition, sessionId),
-            new("channel.chat.message", "1", chatCondition, sessionId),
-        };
-        if (!_runtimeMode.IsReadOnly)
-        {
-            subscriptions.AddRange(
-            [
-                new("channel.chat.message_delete", "1", chatCondition, sessionId),
-                new("channel.chat.clear_user_messages", "1", chatCondition, sessionId),
-                new("channel.chat.clear", "1", chatCondition, sessionId),
-            ]);
+            var chatCondition = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["broadcaster_user_id"] = broadcasterId,
+                ["user_id"] = channel.ReaderUserId,
+            };
+            var channelCondition = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["broadcaster_user_id"] = broadcasterId,
+            };
+            requests.Add(
+                new TwitchEventSubSubscriptionRequest(
+                    "channel.update",
+                    "2",
+                    channelCondition,
+                    sessionId));
+            requests.Add(
+                new TwitchEventSubSubscriptionRequest(
+                    "channel.chat.message",
+                    "1",
+                    chatCondition,
+                    sessionId));
+            if (isReadOnly)
+            {
+                continue;
+            }
+
+            requests.Add(
+                new TwitchEventSubSubscriptionRequest(
+                    "channel.chat.message_delete",
+                    "1",
+                    chatCondition,
+                    sessionId));
+            requests.Add(
+                new TwitchEventSubSubscriptionRequest(
+                    "channel.chat.clear_user_messages",
+                    "1",
+                    chatCondition,
+                    sessionId));
+            requests.Add(
+                new TwitchEventSubSubscriptionRequest(
+                    "channel.chat.clear",
+                    "1",
+                    chatCondition,
+                    sessionId));
         }
 
-        foreach (var subscription in subscriptions)
+        return requests;
+    }
+
+    private async Task<TwitchCategoryChangedEvent?> TryReconcileCategoryAsync(
+        string broadcasterId,
+        CancellationToken cancellationToken)
+    {
+        try
         {
-            await _helixClient.CreateEventSubSubscriptionAsync(subscription, cancellationToken)
+            return await ReconcileCategoryAsync(broadcasterId, cancellationToken)
                 .ConfigureAwait(false);
+        }
+        catch (HttpRequestException)
+        {
+            return null;
         }
     }
 
@@ -596,7 +681,7 @@ public sealed class TwitchEventSubWebSocketClient :
 
         var observedAt = DateTimeOffset.UtcNow;
         return new TwitchCategoryChangedEvent(
-            $"helix-category-{observedAt.ToUnixTimeMilliseconds()}",
+            $"helix-category-{broadcasterId}-{observedAt.ToUnixTimeMilliseconds()}",
             broadcasterId,
             observedAt,
             channel.CategoryId,
@@ -668,7 +753,6 @@ public sealed class TwitchEventSubWebSocketClient :
 
     private async Task<TwitchEventSubRevokedEvent?> ParseRevocationAsync(
         JsonElement root,
-        string broadcasterId,
         CancellationToken cancellationToken)
     {
         var metadata = root.GetProperty("metadata");
@@ -677,6 +761,9 @@ public sealed class TwitchEventSubWebSocketClient :
         var payload = root.GetProperty("payload");
         var subscription = payload.GetProperty("subscription");
         var type = RequiredString(subscription, "type");
+        var broadcasterId = RequiredString(
+            subscription.GetProperty("condition"),
+            "broadcaster_user_id");
         if (!await _dedupeStore.TryMarkProcessedAsync(
                 eventMessageId,
                 type,

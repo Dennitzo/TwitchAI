@@ -104,7 +104,10 @@ public sealed record RetrievalExample(
     PolicySetCode PolicySet,
     string Reason,
     bool IsPositive,
-    string? RuleCode = null);
+    string? RuleCode = null)
+{
+    public bool IsExactHumanDecision { get; init; }
+}
 
 public sealed record ChatReplyTemplatePrompt(
     string TemplateId,
@@ -177,7 +180,10 @@ public static class ModerationEvidenceKinds
     private static readonly Dictionary<string, IReadOnlySet<string>> Allowed =
         new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
         {
-            [ModerationRuleCodes.PersonalAttack] = Set("direct_insult", "verified_harassment"),
+            [ModerationRuleCodes.PersonalAttack] = Set(
+                "direct_insult",
+                "verified_harassment",
+                "unwanted_intimate_approach"),
             [ModerationRuleCodes.SexualContent] = Set("sexualization", "sexual_solicitation", "explicit_sexual", "sexist_degradation"),
             [ModerationRuleCodes.Hate] = Set("racist", "lgbtq_hostility", "ableist", "religious_or_other"),
             [ModerationRuleCodes.Harm] = Set("direct_threat", "violence_incitation", "self_harm_incitation"),

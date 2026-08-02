@@ -8,6 +8,20 @@ public enum LearningVerdict
 
 public sealed record LearningTestRequest(string OriginalText);
 
+public sealed record LearningReasonRequest(
+    LearningTestResult TestResult,
+    string RuleCode,
+    ModerationActionKind Action,
+    int? TimeoutSeconds);
+
+public sealed record LearningReasonResult(
+    string RuleCode,
+    string Reason,
+    long AiLatencyMilliseconds,
+    int? PromptTokens,
+    int? CompletionTokens,
+    int? TotalTokens);
+
 public sealed record LearningTestRequestEnvelopeV1(
     string EnvelopeVersion,
     Guid TestId,
@@ -63,6 +77,8 @@ public sealed record LearningTestResult(
     public string? EvidenceKind { get; init; }
 
     public string? SensitiveDataType { get; init; }
+
+    public string? HumanPrioritySource { get; init; }
 }
 
 public sealed record LearningReviewItem(

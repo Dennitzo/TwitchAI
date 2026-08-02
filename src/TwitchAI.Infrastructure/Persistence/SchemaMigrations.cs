@@ -1301,6 +1301,7 @@ internal static class SchemaMigrations
             WHERE broadcaster_id = '*'
               AND set_code = 'backseatgaming'
               AND archived_utc IS NULL;
+
             """),
         new(
             10,
@@ -3349,5 +3350,67 @@ internal static class SchemaMigrations
             DROP TABLE twitchai_v27_scope;
             """,
             RequiresBackup: true),
+        new(
+            28,
+            "Prioritize human blacklist and learning decisions for personal harassment",
+            """
+            UPDATE blacklist_rules
+            SET prompt_instruction = 'Nur bei identifizierbarer Zielperson und direkter, unmissverständlicher persönlicher Beschimpfung, Herabsetzung, Einschüchterung oder unerwünschter intimer/persönlicher Annäherung. Eine manuell aktive G_PERSONAL_ATTACK-Phrase für eine direkte intime Ansprache, etwa ''ich liebe dich'', ist ein menschlich gesetzter Belästigungsbeleg und kein bloßes Stichwort. Kritik an Handlung, Spiel, Inhalt, Entscheidung oder Leistung, zielloser Fluch, neutrale Anweisung, freundschaftliche Neckerei, Selbstbezug sowie Zitat/Bericht über Liebe ohne direkte Annäherung sind none. Wiederholte Belästigung ohne manuellen Phrasenbeleg nur annehmen, wenn lokale Verlaufsdaten die Wiederholung belegen.',
+                public_reason = 'Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.',
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_code = 'G_PERSONAL_ATTACK'
+              AND enabled = 1
+              AND archived_utc IS NULL;
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE broadcaster_id = '*'
+              AND set_code = 'general'
+              AND archived_utc IS NULL;
+
+            UPDATE manual_learning_examples
+            SET violation_subtype = NULL,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE ai_verdict = 'allow'
+              AND violation_subtype IS NOT NULL;
+            """),
+        new(
+            29,
+            "Remove obsolete local-blacklist feedback trigger",
+            """
+            -- Migration v14 deliberately restored phrase_feedback to the
+            -- Twitch-case schema and removed manual_example_id. Migration v26
+            -- nevertheless left behind a trigger that still referenced that
+            -- removed column. Local blacklist cases are no longer created;
+            -- remove the obsolete trigger so completing historical cases cannot
+            -- fail with 'no column named manual_example_id'.
+            DROP TRIGGER IF EXISTS trg_v26_local_blacklist_feedback;
+            """),
+        new(
+            30,
+            "Clarify actionable Backseatgaming instructions and state hints",
+            """
+            UPDATE blacklist_rules
+            SET prompt_instruction = 'BACKSEATGAMING nur bei klarer, unaufgeforderter Spielinformation: konkrete Handlungsanweisung, Missions-/Rätsellösung, Spoiler zu kommendem Ereignis/versteckter Gefahr oder taktische Zustandsinformation, die dem Streamer unmittelbar vorgibt, was er tun oder beachten soll. Dazu gehören zum Beispiel ''geh nach hinten'', ''du hast noch eine Waffe'' und ''du musst nachladen''. Handlungsrelevante Inventar-, Ressourcen- und Spielzustandshinweise verwenden evidenceKind instruction. Sonst none: einzelne Wörter/Fragmente (z. B. zorro, nichts), allgemeine Reaktionen, Fragen, Scherze, Meinungen, Zustimmung/Ablehnung, Streamer-/Chat-Meta oder Text ohne klaren spielbezogenen Handlungs-/Informationsgehalt; Zitat, Verneinung und Kontext beachten.',
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_code = 'BACKSEATGAMING'
+              AND enabled = 1
+              AND archived_utc IS NULL
+              AND prompt_instruction = 'BACKSEATGAMING nur bei klarer, unaufgeforderter Spielinformation: konkrete Handlungsanweisung, Missions-/Rätsellösung oder Spoiler zu kommendem Ereignis/versteckter Gefahr. Sonst none: einzelne Wörter/Fragmente (z. B. zorro, nichts), allgemeine Reaktionen, Fragen, Scherze, Meinungen, Zustimmung/Ablehnung, Streamer-/Chat-Meta oder Text ohne klaren spielbezogenen Handlungs-/Informationsgehalt; Zitat, Verneinung und Kontext beachten.';
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE broadcaster_id = '*'
+              AND set_code = 'backseatgaming'
+              AND archived_utc IS NULL
+              AND changes() > 0;
+            """),
     ];
 }

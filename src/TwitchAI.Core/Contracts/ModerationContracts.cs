@@ -102,6 +102,14 @@ public interface IModerationBatcher
 
     ModerationBatch? Flush(DateTimeOffset nowUtc);
 
+    ModerationBatch? FlushChannel(
+        string channelId,
+        DateTimeOffset nowUtc) => Flush(nowUtc);
+
+    void Clear()
+    {
+    }
+
     bool TryDequeue(out ModerationBatch? batch);
 }
 
@@ -179,6 +187,10 @@ public interface ILearningTestService
 
     ValueTask<bool> IsPolicyCurrentAsync(
         LearningTestResult result,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<LearningReasonResult> GenerateReasonAsync(
+        LearningReasonRequest request,
         CancellationToken cancellationToken = default);
 }
 

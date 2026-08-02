@@ -269,20 +269,51 @@ public sealed class TwitchHelixClient : ITwitchHelixClient
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(userId);
-        using var response = await SendAuthenticatedAsync(
-            () => new HttpRequestMessage(
-                HttpMethod.Get,
-                $"moderation/channels?user_id={Escape(userId)}&first=100"),
-            cancellationToken).ConfigureAwait(false);
-        using var document = await ReadSuccessJsonAsync(response, cancellationToken)
-            .ConfigureAwait(false);
+        var channels = new List<TwitchModeratedChannel>();
+        var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+        string? cursor = null;
+        while (true)
+        {
+            var path = $"moderation/channels?user_id={Escape(userId)}&first=100";
+            if (!string.IsNullOrWhiteSpace(cursor))
+            {
+                path += $"&after={Escape(cursor)}";
+            }
 
-        return EnumerateData(document.RootElement)
-            .Select(item => new TwitchModeratedChannel(
-                RequiredString(item, "broadcaster_id"),
-                RequiredString(item, "broadcaster_login"),
-                RequiredString(item, "broadcaster_name")))
-            .ToArray();
+            using var response = await SendAuthenticatedAsync(
+                () => new HttpRequestMessage(HttpMethod.Get, path),
+                cancellationToken).ConfigureAwait(false);
+            using var document = await ReadSuccessJsonAsync(
+                    response,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            channels.AddRange(
+                EnumerateData(document.RootElement)
+                    .Select(item => new TwitchModeratedChannel(
+                        RequiredString(item, "broadcaster_id"),
+                        RequiredString(item, "broadcaster_login"),
+                        RequiredString(item, "broadcaster_name"))));
+
+            var nextCursor = document.RootElement.TryGetProperty(
+                    "pagination",
+                    out var pagination)
+                ? NullIfEmpty(OptionalString(pagination, "cursor"))
+                : null;
+            if (nextCursor is null)
+            {
+                break;
+            }
+
+            if (!seenCursors.Add(nextCursor))
+            {
+                throw new InvalidDataException(
+                    "Twitch returned a repeated moderation-channel pagination cursor.");
+            }
+
+            cursor = nextCursor;
+        }
+
+        return channels;
     }
 
     public async Task<TwitchBannedUserInfo?> GetBannedUserAsync(
@@ -593,9 +624,9 @@ public sealed class TwitchHelixClient : ITwitchHelixClient
         }
 
         var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        var message = TryGetApiMessage(body)
-            ?? response.ReasonPhrase
-            ?? "Twitch Helix request failed.";
+        var message = NullIfEmpty(TryGetApiMessage(body))
+            ?? NullIfEmpty(response.ReasonPhrase)
+            ?? $"Twitch Helix request failed (HTTP {(int)response.StatusCode}).";
         throw new TwitchHelixException(message, response.StatusCode, body);
     }
 
@@ -643,7 +674,7 @@ public sealed class TwitchHelixClient : ITwitchHelixClient
 
     private static string? NullIfEmpty(string? value)
     {
-        return string.IsNullOrEmpty(value) ? null : value;
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
     private static string Escape(string value)

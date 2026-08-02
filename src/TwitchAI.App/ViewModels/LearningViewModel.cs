@@ -182,6 +182,56 @@ public sealed partial class LearningViewModel : ObservableObject
         }
     }
 
+    public async Task<bool> SelectRuleAsync(
+        string? ruleCode,
+        CancellationToken cancellationToken = default)
+    {
+        if (IsBusy || Review is not { } review)
+        {
+            return false;
+        }
+
+        var previousRuleCode = review.SelectedRuleCode;
+        if (!review.TrySelectRule(ruleCode))
+        {
+            return false;
+        }
+
+        if (string.Equals(
+                previousRuleCode,
+                review.SelectedRuleCode,
+                StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        IsBusy = true;
+        StatusMessage = "Die lokale AI formuliert eine passende Begründung …";
+        try
+        {
+            var generated = await _testService
+                .GenerateReasonAsync(
+                    review.CreateReasonRequest(),
+                    cancellationToken);
+            if (ReferenceEquals(Review, review)
+                && string.Equals(
+                    review.SelectedRuleCode,
+                    generated.RuleCode,
+                    StringComparison.Ordinal))
+            {
+                review.ApplyGeneratedReason(generated);
+                StatusMessage =
+                    "Begründung für die ausgewählte Verstoßkategorie aktualisiert.";
+            }
+
+            return true;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
     public void Abort()
     {
         if (IsBusy || Review is null)
@@ -313,9 +363,14 @@ public sealed partial class LearningReviewViewModel : ObservableObject
         }
     }
 
-    public string FallbackLabel => Result.UsedRuleFallback
-        ? "Kategorie lokal ergänzt"
-        : "Kategorie von der AI";
+    public string FallbackLabel => Result.HumanPrioritySource switch
+    {
+        "exact_allow_learning" => "Exaktes Erlaubt-Learning angewendet",
+        "exact_moderate_learning" => "Exaktes Moderations-Learning angewendet",
+        "manual_blacklist_phrase" => "Manuelle Blacklist hat Priorität",
+        _ when Result.UsedRuleFallback => "Kategorie lokal ergänzt",
+        _ => "Kategorie von der AI",
+    };
 
     public IReadOnlyList<ViolationCategoryOption> RuleOptions { get; }
 
@@ -351,6 +406,10 @@ public sealed partial class LearningReviewViewModel : ObservableObject
         if (!_suppressRuleDefaults)
         {
             ApplyRuleDefaults(selectedRule);
+            foreach (var triggerPhrase in TriggerPhrases)
+            {
+                triggerPhrase.IsSelected = false;
+            }
         }
 
         return true;
@@ -455,6 +514,32 @@ public sealed partial class LearningReviewViewModel : ObservableObject
                 .Where(phrase => phrase.IsSelected)
                 .Select(phrase => phrase.Phrase)
                 .ToArray());
+    }
+
+    public LearningReasonRequest CreateReasonRequest()
+    {
+        var action = ParseActionValue(Action);
+        return new LearningReasonRequest(
+            Result,
+            SelectedRuleCode,
+            action,
+            action == ModerationActionKind.Timeout
+                ? checked((int)Math.Round(TimeoutSeconds))
+                : null);
+    }
+
+    public void ApplyGeneratedReason(LearningReasonResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        if (!string.Equals(
+                result.RuleCode,
+                SelectedRuleCode,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        Reason = result.Reason;
     }
 
     private ViolationCategoryOption? ResolveSelectedRule() =>

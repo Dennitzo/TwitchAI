@@ -9,10 +9,8 @@ public sealed class ModerationBatcher : IModerationBatcher
     private readonly ModerationBatcherOptions _options;
     private readonly IModerationQueueRuntimeSettings _runtimeSettings;
     private readonly LinkedList<ModerationBatch> _ready = [];
-    private readonly List<ModerationBatchMessage> _current = [];
-    private ModerationBatchContext? _currentContext;
-    private DateTimeOffset? _openedAtUtc;
-    private int _currentCharacters;
+    private readonly Dictionary<string, OpenBatch> _openByChannel =
+        new(StringComparer.Ordinal);
     private int _waitingMessageCount;
 
     public ModerationBatcher()
@@ -68,7 +66,7 @@ public sealed class ModerationBatcher : IModerationBatcher
         {
             lock (_gate)
             {
-                return _openedAtUtc + _options.MaximumCollectionDelay;
+                return EarliestOpenBatch()?.DeadlineUtc;
             }
         }
     }
@@ -92,13 +90,16 @@ public sealed class ModerationBatcher : IModerationBatcher
         {
             var now = nowUtc.ToUniversalTime();
             var sealedBatches = new List<ModerationBatch>(2);
+            var channelId = context.Channel.ChannelId;
 
-            if (_current.Count > 0 && !HasSameContext(_currentContext!, context))
+            if (_openByChannel.TryGetValue(channelId, out var open)
+                && !HasSameContext(open.Context, context))
             {
-                var reason = HasSameCategory(_currentContext!.Channel, context.Channel)
+                var reason = HasSameCategory(open.Context.Channel, context.Channel)
                     ? BatchSealReason.PolicyRevisionChanged
                     : BatchSealReason.CategoryChanged;
-                sealedBatches.Add(SealCurrent(now, reason));
+                sealedBatches.Add(SealOpenBatch(channelId, open, now, reason));
+                open = null;
             }
 
             if (TryFindQueuedDuplicate(
@@ -110,7 +111,7 @@ public sealed class ModerationBatcher : IModerationBatcher
                     BatchIngressDisposition.DuplicateSuppressed,
                     sealedBatches,
                     DroppedOldestMessages: 0,
-                    NextDeadlineUtc: NextDeadlineUtc)
+                    NextDeadlineUtc: EarliestOpenBatch()?.DeadlineUtc)
                 {
                     DuplicateOfTemporaryMessageId =
                         duplicateTemporaryMessageId,
@@ -118,18 +119,26 @@ public sealed class ModerationBatcher : IModerationBatcher
             }
 
             var eviction = MakeRoomForOneMessage();
+            _openByChannel.TryGetValue(channelId, out open);
 
-            if (_current.Count > 0
-                && _currentCharacters + message.PromptCharacterCount >
+            if (open is not null
+                && open.CharacterCount + message.PromptCharacterCount >
                     _options.MaximumMessageCharacters)
             {
-                sealedBatches.Add(SealCurrent(now, BatchSealReason.CharacterLimit));
+                sealedBatches.Add(
+                    SealOpenBatch(
+                        channelId,
+                        open,
+                        now,
+                        BatchSealReason.CharacterLimit));
+                open = null;
             }
 
-            // A sealed tail is still waiting and therefore safe to extend.
-            // Keeping its batch ID prevents one slow inference from producing
-            // a long queue of tiny, separately displayed AI runs.
-            if (_current.Count == 0
+            // A sealed batch is still waiting and therefore safe to extend.
+            // Find the newest matching batch even when other channels were
+            // queued afterwards. Keeping its batch ID prevents interleaved
+            // channels from producing many tiny AI runs.
+            if (open is null
                 && TryAppendToReadyTail(
                     message,
                     context,
@@ -142,7 +151,7 @@ public sealed class ModerationBatcher : IModerationBatcher
                         : BatchIngressDisposition.AcceptedAndSealed,
                     sealedBatches,
                     eviction.DroppedMessages.Count,
-                    NextDeadlineUtc: null)
+                    NextDeadlineUtc: EarliestOpenBatch()?.DeadlineUtc)
                 {
                     DroppedMessages = eviction.DroppedMessages,
                     UpdatedQueuedBatches = MergeUpdatedQueuedBatches(
@@ -152,13 +161,16 @@ public sealed class ModerationBatcher : IModerationBatcher
                 };
             }
 
-            if (_current.Count == 0)
+            if (open is null)
             {
-                _currentContext = context;
-                _openedAtUtc = now;
+                open = new OpenBatch(
+                    context,
+                    now,
+                    _options.MaximumCollectionDelay);
+                _openByChannel.Add(channelId, open);
             }
 
-            if (_current.Any(item =>
+            if (open.Messages.Any(item =>
                     string.Equals(
                         item.TemporaryMessageId,
                         message.TemporaryMessageId,
@@ -168,17 +180,27 @@ public sealed class ModerationBatcher : IModerationBatcher
                     $"Temporary message ID '{message.TemporaryMessageId}' is duplicated in a batch.");
             }
 
-            _current.Add(message);
-            _currentCharacters += message.PromptCharacterCount;
+            open.Messages.Add(message);
+            open.CharacterCount += message.PromptCharacterCount;
             _waitingMessageCount++;
 
-            if (_current.Count == _options.MaximumMessages)
+            if (open.Messages.Count == _options.MaximumMessages)
             {
-                sealedBatches.Add(SealCurrent(now, BatchSealReason.MessageLimit));
+                sealedBatches.Add(
+                    SealOpenBatch(
+                        channelId,
+                        open,
+                        now,
+                        BatchSealReason.MessageLimit));
             }
-            else if (_currentCharacters == _options.MaximumMessageCharacters)
+            else if (open.CharacterCount == _options.MaximumMessageCharacters)
             {
-                sealedBatches.Add(SealCurrent(now, BatchSealReason.CharacterLimit));
+                sealedBatches.Add(
+                    SealOpenBatch(
+                        channelId,
+                        open,
+                        now,
+                        BatchSealReason.CharacterLimit));
             }
 
             return new BatchIngressResult(
@@ -187,7 +209,7 @@ public sealed class ModerationBatcher : IModerationBatcher
                     : BatchIngressDisposition.AcceptedAndSealed,
                 sealedBatches,
                 eviction.DroppedMessages.Count,
-                _openedAtUtc + _options.MaximumCollectionDelay)
+                EarliestOpenBatch()?.DeadlineUtc)
             {
                 DroppedMessages = eviction.DroppedMessages,
                 UpdatedQueuedBatches = eviction.UpdatedQueuedBatches,
@@ -200,14 +222,18 @@ public sealed class ModerationBatcher : IModerationBatcher
     {
         lock (_gate)
         {
-            if (_current.Count == 0
-                || nowUtc.ToUniversalTime() <
-                    _openedAtUtc + _options.MaximumCollectionDelay)
+            var earliest = EarliestOpenBatch();
+            var now = nowUtc.ToUniversalTime();
+            if (earliest is null || now < earliest.DeadlineUtc)
             {
                 return null;
             }
 
-            return SealCurrent(nowUtc.ToUniversalTime(), BatchSealReason.Deadline);
+            return SealOpenBatch(
+                earliest.Context.Channel.ChannelId,
+                earliest,
+                now,
+                BatchSealReason.Deadline);
         }
     }
 
@@ -215,9 +241,41 @@ public sealed class ModerationBatcher : IModerationBatcher
     {
         lock (_gate)
         {
-            return _current.Count == 0
+            var earliest = EarliestOpenBatch();
+            return earliest is null
                 ? null
-                : SealCurrent(nowUtc.ToUniversalTime(), BatchSealReason.ManualFlush);
+                : SealOpenBatch(
+                    earliest.Context.Channel.ChannelId,
+                    earliest,
+                    nowUtc.ToUniversalTime(),
+                    BatchSealReason.ManualFlush);
+        }
+    }
+
+    public ModerationBatch? FlushChannel(
+        string channelId,
+        DateTimeOffset nowUtc)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
+        lock (_gate)
+        {
+            return !_openByChannel.TryGetValue(channelId, out var open)
+                ? null
+                : SealOpenBatch(
+                    channelId,
+                    open,
+                    nowUtc.ToUniversalTime(),
+                    BatchSealReason.ManualFlush);
+        }
+    }
+
+    public void Clear()
+    {
+        lock (_gate)
+        {
+            _ready.Clear();
+            _openByChannel.Clear();
+            _waitingMessageCount = 0;
         }
     }
 
@@ -238,27 +296,28 @@ public sealed class ModerationBatcher : IModerationBatcher
         }
     }
 
-    private ModerationBatch SealCurrent(
+    private ModerationBatch SealOpenBatch(
+        string channelId,
+        OpenBatch open,
         DateTimeOffset sealedAtUtc,
         BatchSealReason reason)
     {
-        if (_currentContext is null || _openedAtUtc is null || _current.Count == 0)
+        if (open.Messages.Count == 0
+            || !_openByChannel.TryGetValue(channelId, out var current)
+            || !ReferenceEquals(open, current))
         {
             throw new InvalidOperationException("An empty moderation batch cannot be sealed.");
         }
 
         var batch = new ModerationBatch(
             Guid.NewGuid(),
-            _currentContext,
-            _current.ToArray(),
-            _openedAtUtc.Value,
+            open.Context,
+            open.Messages.ToArray(),
+            open.OpenedAtUtc,
             sealedAtUtc,
             reason);
         _ready.AddLast(batch);
-        _current.Clear();
-        _currentContext = null;
-        _openedAtUtc = null;
-        _currentCharacters = 0;
+        _openByChannel.Remove(channelId);
         return batch;
     }
 
@@ -268,23 +327,45 @@ public sealed class ModerationBatcher : IModerationBatcher
         DateTimeOffset nowUtc,
         out ModerationBatch updatedBatch)
     {
-        var tailNode = _ready.Last;
-        if (tailNode is null
-            || !HasSameContext(tailNode.Value.Context, context)
-            || tailNode.Value.Messages.Count >= _options.MaximumMessages)
+        LinkedListNode<ModerationBatch>? targetNode = null;
+        for (var candidate = _ready.Last;
+             candidate is not null;
+             candidate = candidate.Previous)
+        {
+            if (!string.Equals(
+                    candidate.Value.Context.Channel.ChannelId,
+                    context.Channel.ChannelId,
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // A newer batch for this channel is a hard ordering barrier even
+            // when an older batch happens to have the same category again.
+            if (!HasSameContext(candidate.Value.Context, context)
+                || candidate.Value.Messages.Count >= _options.MaximumMessages
+                || candidate.Value.Messages.Sum(
+                    item => item.PromptCharacterCount)
+                    + message.PromptCharacterCount
+                    > _options.MaximumMessageCharacters)
+            {
+                updatedBatch = null!;
+                return false;
+            }
+
+            targetNode = candidate;
+            break;
+        }
+
+        if (targetNode is null)
         {
             updatedBatch = null!;
             return false;
         }
 
-        var tail = tailNode.Value;
+        var tail = targetNode.Value;
         var tailCharacters = tail.Messages.Sum(item => item.PromptCharacterCount);
         var updatedCharacters = tailCharacters + message.PromptCharacterCount;
-        if (updatedCharacters > _options.MaximumMessageCharacters)
-        {
-            updatedBatch = null!;
-            return false;
-        }
 
         if (tail.Messages.Any(item =>
                 string.Equals(
@@ -308,7 +389,7 @@ public sealed class ModerationBatcher : IModerationBatcher
             SealedAtUtc = nowUtc,
             SealReason = sealReason,
         };
-        tailNode.Value = updatedBatch;
+        targetNode.Value = updatedBatch;
         _waitingMessageCount++;
         return true;
     }
@@ -343,10 +424,14 @@ public sealed class ModerationBatcher : IModerationBatcher
             }
         }
 
-        if (_currentContext is not null
-            && HasSameContext(_currentContext, context))
+        foreach (var open in _openByChannel.Values)
         {
-            foreach (var candidate in _current)
+            if (!HasSameContext(open.Context, context))
+            {
+                continue;
+            }
+
+            foreach (var candidate in open.Messages)
             {
                 if (IsDuplicateCandidate(candidate, message))
                 {
@@ -379,28 +464,44 @@ public sealed class ModerationBatcher : IModerationBatcher
         var updatedBatches = new Dictionary<Guid, ModerationBatch>();
         while (_waitingMessageCount >= _options.MaximumQueuedMessages)
         {
-            if (_ready.First is null)
+            if (_ready.First is not null)
             {
-                throw new InvalidOperationException(
-                    "The moderation queue reached its limit without an evictable sealed batch.");
-            }
-
-            var oldest = _ready.First.Value;
-            dropped.Add(oldest.Messages[0]);
-            if (oldest.Messages.Count == 1)
-            {
-                _ready.RemoveFirst();
-                updatedBatches.Remove(oldest.BatchId);
-                removedBatchIds.Add(oldest.BatchId);
+                var oldest = _ready.First.Value;
+                dropped.Add(oldest.Messages[0]);
+                if (oldest.Messages.Count == 1)
+                {
+                    _ready.RemoveFirst();
+                    updatedBatches.Remove(oldest.BatchId);
+                    removedBatchIds.Add(oldest.BatchId);
+                }
+                else
+                {
+                    var updated = oldest with
+                    {
+                        Messages = oldest.Messages.Skip(1).ToArray(),
+                    };
+                    _ready.First.Value = updated;
+                    updatedBatches[updated.BatchId] = updated;
+                }
             }
             else
             {
-                var updated = oldest with
+                var oldestOpen = _openByChannel.Values
+                    .Where(candidate => candidate.Messages.Count > 0)
+                    .OrderBy(candidate => candidate.Messages[0].Message.IngressSequence)
+                    .ThenBy(candidate => candidate.OpenedAtUtc)
+                    .FirstOrDefault()
+                    ?? throw new InvalidOperationException(
+                        "The moderation queue reached its limit without an evictable message.");
+                dropped.Add(oldestOpen.Messages[0]);
+                oldestOpen.CharacterCount -=
+                    oldestOpen.Messages[0].PromptCharacterCount;
+                oldestOpen.Messages.RemoveAt(0);
+                if (oldestOpen.Messages.Count == 0)
                 {
-                    Messages = oldest.Messages.Skip(1).ToArray(),
-                };
-                _ready.First.Value = updated;
-                updatedBatches[updated.BatchId] = updated;
+                    _openByChannel.Remove(
+                        oldestOpen.Context.Channel.ChannelId);
+                }
             }
 
             _waitingMessageCount--;
@@ -451,5 +552,31 @@ public sealed class ModerationBatcher : IModerationBatcher
         return string.Equals(left.ChannelId, right.ChannelId, StringComparison.Ordinal)
             && string.Equals(left.CategoryId, right.CategoryId, StringComparison.Ordinal)
             && left.IsVerified == right.IsVerified;
+    }
+
+    private OpenBatch? EarliestOpenBatch()
+    {
+        return _openByChannel.Values
+            .OrderBy(open => open.DeadlineUtc)
+            .ThenBy(open => open.OpenedAtUtc)
+            .ThenBy(open => open.Context.Channel.ChannelId, StringComparer.Ordinal)
+            .FirstOrDefault();
+    }
+
+    private sealed class OpenBatch(
+        ModerationBatchContext context,
+        DateTimeOffset openedAtUtc,
+        TimeSpan maximumCollectionDelay)
+    {
+        public ModerationBatchContext Context { get; } = context;
+
+        public DateTimeOffset OpenedAtUtc { get; } = openedAtUtc;
+
+        public DateTimeOffset DeadlineUtc { get; } =
+            openedAtUtc + maximumCollectionDelay;
+
+        public List<ModerationBatchMessage> Messages { get; } = [];
+
+        public int CharacterCount { get; set; }
     }
 }

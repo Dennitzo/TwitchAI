@@ -162,7 +162,7 @@
               <TextBlock
                 FontSize="12"
                 Foreground="{ThemeResource MutedTextBrush}"
-                Text="AKTUELLER KANAL" />
+                Text="AKTUELLE KANÄLE" />
               <TextBlock
                 MaxLines="1"
                 FontSize="16"

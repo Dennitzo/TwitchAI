@@ -7,6 +7,11 @@ public static partial class ModerationReasonNormalizer
 {
     public const int MaximumLength = 120;
 
+    public const string ContextualAiReasonInstruction =
+        "Write one short German sentence up to 120 characters that explains the concrete violation in this exact message under the selected rule. "
+        + "Refer to the message context instead of merely repeating the category title or a generic policy reason. "
+        + "Do not mention a rule code, timeout, ban, deletion, confidence, recommendation, or uncertainty.";
+
     public static bool IsSelfNegating(string? reason)
     {
         var value = CollapseWhitespace().Replace(reason?.Trim() ?? string.Empty, " ")
@@ -120,7 +125,7 @@ public static partial class ModerationReasonNormalizer
             ModerationRuleCodes.SexualContent =>
                 "Sexueller oder sexistischer Inhalt gegen einen Nutzer oder Streamer.",
             ModerationRuleCodes.PersonalAttack =>
-                "Beleidigung oder Belästigung eines Nutzers oder Streamers.",
+                "Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.",
             ModerationRuleCodes.Hate => "Hassrede oder diskriminierende Aussage.",
             ModerationRuleCodes.Harm =>
                 "Drohung oder Aufforderung zu Gewalt oder Selbstverletzung.",

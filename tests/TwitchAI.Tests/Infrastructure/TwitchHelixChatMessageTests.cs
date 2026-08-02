@@ -9,6 +9,29 @@ namespace TwitchAI.Tests.Infrastructure;
 
 public sealed class TwitchHelixChatMessageTests
 {
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task GetCurrentUserAsync_WhenErrorMessageIsBlank_UsesHttpFallback(
+        string apiMessage)
+    {
+        var handler = new CapturingHandler
+        {
+            ResponseStatusCode = HttpStatusCode.BadRequest,
+            ReasonPhrase = " ",
+            ResponseBody = JsonSerializer.Serialize(new { message = apiMessage }),
+        };
+        using var httpClient = CreateHttpClient(handler);
+        var client = CreateClient(httpClient, new StubTokenProvider());
+
+        var exception = await Assert.ThrowsAsync<TwitchHelixException>(
+            () => client.GetCurrentUserAsync());
+
+        Assert.False(string.IsNullOrWhiteSpace(exception.Message));
+        Assert.Contains("HTTP 400", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(HttpStatusCode.BadRequest, exception.StatusCode);
+    }
+
     [Fact]
     public async Task SendChatMessageAsync_PostsExactIdentifiersAndMessageAndParsesSuccess()
     {
@@ -219,6 +242,10 @@ public sealed class TwitchHelixChatMessageTests
     {
         public string ResponseBody { get; init; } = """{"data":[]}""";
 
+        public HttpStatusCode ResponseStatusCode { get; init; } = HttpStatusCode.OK;
+
+        public string? ReasonPhrase { get; init; }
+
         public Exception? Exception { get; init; }
 
         public int CallCount { get; private set; }
@@ -257,9 +284,10 @@ public sealed class TwitchHelixChatMessageTests
                 throw Exception;
             }
 
-            return new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(ResponseStatusCode)
             {
                 Content = new StringContent(ResponseBody),
+                ReasonPhrase = ReasonPhrase,
             };
         }
     }

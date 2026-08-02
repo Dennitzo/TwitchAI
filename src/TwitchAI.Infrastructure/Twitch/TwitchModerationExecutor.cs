@@ -87,6 +87,15 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                 "Der Moderationsfall wurde bereits geändert oder verarbeitet.");
         }
 
+        if (!_options.ContainsBroadcaster(
+                moderationCase.Message.Identity.ChannelId))
+        {
+            return Rejected(
+                "channel_not_connected",
+                "Der Twitch-Kanal dieses Vorschlags ist nicht mehr verbunden. "
+                + "Die Aktion wurde nicht ausgeführt.");
+        }
+
         if (!ChatMessageIdentityFingerprint.IsValid(moderationCase.Message.Identity) ||
             !await PersistedIdentityMatchesAsync(moderationCase, cancellationToken)
                 .ConfigureAwait(false))

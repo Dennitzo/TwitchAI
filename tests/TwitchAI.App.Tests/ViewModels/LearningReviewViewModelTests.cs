@@ -1,4 +1,5 @@
 using TwitchAI.App.ViewModels;
+using TwitchAI.Core.Contracts;
 using TwitchAI.Core.Models;
 
 namespace TwitchAI.App.Tests.ViewModels;
@@ -47,6 +48,37 @@ public sealed class LearningReviewViewModelTests
         Assert.Equal(ModerationRuleCodes.Spam, review.SelectedRuleCode);
         Assert.Equal("Spam", review.SelectedRuleDisplayName);
         Assert.Equal(ModerationRuleCodes.Spam, review.CreateReview().RuleCode);
+    }
+
+    [Fact]
+    public async Task SelectRuleAsync_RequestsAndAppliesContextualAiReason()
+    {
+        var testService = new RecordingLearningTestService();
+        var viewModel = new LearningViewModel(
+            testService,
+            new NoOpLearningFeedbackService())
+        {
+            Review = new LearningReviewViewModel(
+                Result(
+                    ModerationRuleCodes.Spam,
+                    PolicySetCode.General,
+                    ModerationActionKind.Timeout,
+                    timeoutSeconds: 120,
+                    reason: "Wiederholter Spam.")),
+        };
+
+        var selected = await viewModel.SelectRuleAsync(
+            ModerationRuleCodes.Backseatgaming);
+
+        Assert.True(selected);
+        var request = Assert.Single(testService.ReasonRequests);
+        Assert.Equal(ModerationRuleCodes.Backseatgaming, request.RuleCode);
+        Assert.Equal(ModerationActionKind.Timeout, request.Action);
+        Assert.Equal(600, request.TimeoutSeconds);
+        Assert.Equal(
+            "Die Nachricht gibt dem Streamer ungefragt eine Spielanweisung.",
+            viewModel.Review!.Reason);
+        Assert.False(viewModel.IsBusy);
     }
 
     private static LearningTestResult Result(
@@ -119,4 +151,43 @@ public sealed class LearningReviewViewModelTests
             action,
             timeoutSeconds,
             reason);
+
+    private sealed class RecordingLearningTestService : ILearningTestService
+    {
+        public List<LearningReasonRequest> ReasonRequests { get; } = [];
+
+        public ValueTask<LearningTestResult> AnalyzeAsync(
+            LearningTestRequest request,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public ValueTask<bool> IsPolicyCurrentAsync(
+            LearningTestResult result,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(true);
+
+        public ValueTask<LearningReasonResult> GenerateReasonAsync(
+            LearningReasonRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            ReasonRequests.Add(request);
+            return ValueTask.FromResult(
+                new LearningReasonResult(
+                    request.RuleCode,
+                    "Die Nachricht gibt dem Streamer ungefragt eine Spielanweisung.",
+                    10,
+                    20,
+                    5,
+                    25));
+        }
+    }
+
+    private sealed class NoOpLearningFeedbackService : ILearningFeedbackService
+    {
+        public ValueTask<LearningFeedbackResult> SaveAsync(
+            LearningReviewItem review,
+            LearningFeedbackDecision decision,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
 }

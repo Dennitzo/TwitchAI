@@ -307,7 +307,7 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="230" />
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="230" />
+                <ColumnDefinition Width="280" />
               </Grid.ColumnDefinitions>
 
               <Grid Grid.ColumnSpan="5" Margin="0,0,0,1">
@@ -332,6 +332,7 @@
                 Grid.Row="1"
                 Header="Aktion"
                 HorizontalAlignment="Stretch"
+                IsEnabled="{x:Bind ViewModel.CanReview, Mode=OneWay}"
                 SelectedValue="{x:Bind ViewModel.Review.Action, Mode=TwoWay}"
                 SelectedValuePath="Tag">
                 <ComboBoxItem Content="Nachricht löschen" Tag="delete" />
@@ -345,6 +346,7 @@
                 Grid.Column="1"
                 Header="Timeout (Sekunden)"
                 HorizontalAlignment="Stretch"
+                IsEnabled="{x:Bind ViewModel.CanReview, Mode=OneWay}"
                 Maximum="1209600"
                 MinWidth="145"
                 Minimum="1"
@@ -359,6 +361,7 @@
                 Header="Verstoßkategorie"
                 HorizontalAlignment="Stretch"
                 DisplayMemberPath="DisplayName"
+                IsEnabled="{x:Bind ViewModel.CanReview, Mode=OneWay}"
                 ItemsSource="{x:Bind ViewModel.Review.RuleOptions, Mode=OneWay}"
                 PlaceholderText="{x:Bind ViewModel.Review.SelectedRuleDisplayName, Mode=OneWay}"
                 SelectedValue="{x:Bind ViewModel.Review.SelectedRuleCode, Mode=OneWay}"
@@ -372,6 +375,7 @@
                 Header="Kurze Begründung"
                 HorizontalAlignment="Stretch"
                 AcceptsReturn="False"
+                IsEnabled="{x:Bind ViewModel.CanReview, Mode=OneWay}"
                 MaxLength="120"
                 Text="{x:Bind ViewModel.Review.Reason, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                 TextWrapping="NoWrap"
@@ -386,24 +390,55 @@
                   FontSize="12"
                   Foreground="{ThemeResource MutedTextBrush}"
                   Text="Aktionen" />
-                <Grid ColumnSpacing="8">
+                <Grid
+                  x:Name="LearningActionButtonsGrid"
+                  ColumnSpacing="8"
+                  RowSpacing="8"
+                  SizeChanged="OnLearningActionButtonsSizeChanged">
+                  <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                  </Grid.RowDefinitions>
                   <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
                   </Grid.ColumnDefinitions>
                   <Button
+                    x:Name="AllowButton"
                     HorizontalAlignment="Stretch"
+                    AutomationProperties.Name="Lernvorschlag erlauben"
+                    Click="OnAllowClicked"
+                    Content="Erlauben"
+                    IsEnabled="{x:Bind ViewModel.CanReview, Mode=OneWay}"
+                    MinWidth="0"
+                    Padding="8"
+                    ToolTipService.ToolTip="Als erlaubt lernen und Vorschlag schließen"
+                    Style="{StaticResource SubtleButtonStyle}" />
+                  <Button
+                    x:Name="DiscardButton"
+                    Grid.Column="1"
+                    HorizontalAlignment="Stretch"
+                    AutomationProperties.Name="Lernvorschlag verwerfen"
                     Click="OnDiscardClicked"
                     Content="Verwerfen"
                     IsEnabled="{x:Bind ViewModel.CanReview, Mode=OneWay}"
+                    MinWidth="0"
+                    Padding="8"
+                    ToolTipService.ToolTip="Ohne Learning verwerfen"
                     Style="{StaticResource SubtleButtonStyle}" />
                   <Button
-                    Grid.Column="1"
+                    x:Name="ExecuteButton"
+                    Grid.Column="2"
                     HorizontalAlignment="Stretch"
+                    AutomationProperties.Name="Lernvorschlag ausführen"
                     AutomationProperties.HelpText="Speichert nur lokales Learning und führt niemals eine Twitch-Aktion aus."
                     Click="OnExecuteClicked"
                     Content="Ausführen"
                     IsEnabled="{x:Bind ViewModel.CanReview, Mode=OneWay}"
+                    MinWidth="0"
+                    Padding="8"
+                    ToolTipService.ToolTip="Als Moderationsverstoß lernen"
                     Style="{StaticResource AccentButtonStyle}" />
                 </Grid>
               </StackPanel>

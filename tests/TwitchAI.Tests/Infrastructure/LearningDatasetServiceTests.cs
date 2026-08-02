@@ -404,6 +404,55 @@ public sealed class LearningDatasetServiceTests
             item => item.PolicySet == PolicySetCode.Backseatgaming);
     }
 
+    [Fact]
+    public async Task Retrieval_MarksOnlyIdenticalHumanDecisionAsExact()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        await InsertManualAsync(
+            database,
+            manualId: 901,
+            "ich liebe dich",
+            finalDecision: "confirmed_violation",
+            action: "timeout",
+            policySet: "general",
+            ruleCode: ModerationRuleCodes.PersonalAttack,
+            occurredUtc: "2026-07-30T16:00:00.0000000+00:00");
+        await InsertManualAsync(
+            database,
+            manualId: 902,
+            "ich liebe dich wirklich",
+            finalDecision: "confirmed_violation",
+            action: "timeout",
+            policySet: "general",
+            ruleCode: ModerationRuleCodes.PersonalAttack,
+            occurredUtc: "2026-07-30T16:01:00.0000000+00:00");
+        var policy = new CoreEffectivePolicySnapshot(
+            [new PolicySetRevision(PolicySetCode.General, 1)],
+            "human-priority")
+        {
+            ActiveRules =
+            [
+                Rule(ModerationRuleCodes.PersonalAttack, PolicySetCode.General),
+            ],
+        };
+
+        var examples = await new SqliteRetrievalExampleStore(database.ConnectionFactory)
+            .GetRelevantAsync(
+                "channel",
+                categoryId: null,
+                policy,
+                ["ich liebe dich"]);
+
+        var identical = Assert.Single(
+            examples,
+            item => item.LowerText == "ich liebe dich");
+        var similar = Assert.Single(
+            examples,
+            item => item.LowerText == "ich liebe dich wirklich");
+        Assert.True(identical.IsExactHumanDecision);
+        Assert.False(similar.IsExactHumanDecision);
+    }
+
     private static SqliteLearningDatasetService CreateService(
         TestDatabase database,
         LearningContextRevision? revision = null) =>

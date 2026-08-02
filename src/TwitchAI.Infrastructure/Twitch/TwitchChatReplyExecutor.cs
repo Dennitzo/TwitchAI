@@ -68,13 +68,13 @@ public sealed class TwitchChatReplyExecutor : ITwitchChatReplyExecutor
         }
 
         var senderId = _options.TwitchApi.ModeratorUserId;
-        var currentBroadcasterId = _options.TwitchApi.BroadcasterId;
+        var currentBroadcasterIds = _options.TwitchApi.GetBroadcasterIds();
         if (string.IsNullOrWhiteSpace(senderId)
-            || string.IsNullOrWhiteSpace(currentBroadcasterId))
+            || currentBroadcasterIds.Count == 0)
         {
             return Rejected(
                 "twitch_identity_missing",
-                "Das verbundene Twitch-Konto oder der Kanal ist nicht vollständig konfiguriert.");
+                "Das verbundene Twitch-Konto oder die Kanäle sind nicht vollständig konfiguriert.");
         }
 
         var proposal = await _store
@@ -87,21 +87,20 @@ public sealed class TwitchChatReplyExecutor : ITwitchChatReplyExecutor
                 "Der Chat-Antwortvorschlag wurde bereits verarbeitet oder parallel geändert.");
         }
 
-        if (!string.Equals(
+        if (!currentBroadcasterIds.Contains(
                 proposal.BroadcasterId,
-                currentBroadcasterId,
-                StringComparison.Ordinal))
+                StringComparer.Ordinal))
         {
             await CompleteDefiniteFailureAsync(
                     proposal,
                     "channel_changed",
-                    "Der aktuell verbundene Twitch-Kanal stimmt nicht mehr mit dem Vorschlag überein.",
+                    "Der Twitch-Kanal des Vorschlags ist nicht mehr verbunden.",
                     cancellationToken)
                 .ConfigureAwait(false);
             return new ChatReplyExecutionResult(
                 ChatReplyExecutionOutcome.Failed,
                 "channel_changed",
-                "Der Kanal wurde gewechselt. Die Antwort wurde nicht gesendet.",
+                "Der Kanal ist nicht mehr verbunden. Die Antwort wurde nicht gesendet.",
                 proposal.RowVersion + 1);
         }
 

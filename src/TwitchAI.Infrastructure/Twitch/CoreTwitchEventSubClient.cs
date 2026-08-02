@@ -30,16 +30,19 @@ public sealed class CoreTwitchEventSubClient : ITwitchEventSubClient
     public async IAsyncEnumerable<TwitchChatEvent> ReadEventsAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(_options.BroadcasterId) ||
-            string.IsNullOrWhiteSpace(_options.ReaderUserId))
+        var broadcasterIds = _options.GetBroadcasterIds();
+        if (broadcasterIds.Count == 0 || string.IsNullOrWhiteSpace(_options.ReaderUserId))
         {
             throw new InvalidOperationException(
-                "TwitchApi BroadcasterId and ReaderUserId must be configured before EventSub starts.");
+                "TwitchApi BroadcasterIds and ReaderUserId must be configured before EventSub starts.");
         }
 
         var registration = new TwitchEventSubChannel(
-            _options.BroadcasterId,
-            _options.ReaderUserId);
+            broadcasterIds[0],
+            _options.ReaderUserId)
+        {
+            BroadcasterIds = broadcasterIds,
+        };
         await _availabilityStore.DeleteUnlinkedOlderThanAsync(
             DateTimeOffset.UtcNow - TimeSpan.FromHours(24),
             cancellationToken).ConfigureAwait(false);

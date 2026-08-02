@@ -37,9 +37,10 @@ Moderationsaktion wird niemals automatisch ausgeführt.
 1. LM Studio starten, das Modell laden und den lokalen Server auf
    `http://127.0.0.1:1234` bereitstellen.
 2. TwitchAI öffnen und unter **Einstellungen** die Twitch Client-ID eintragen.
-3. Optional den zu moderierenden Kanal eintragen. Ohne Kanalangabe wird der
-   eigene Kanal verwendet; andere Kanäle müssen in der Moderatorliste des
-   angemeldeten Kontos enthalten sein.
+3. Optional die zu moderierenden Kanäle kommagetrennt eintragen, zum Beispiel
+   `channel1, channel2, channel3`. Ohne Kanalangabe wird der eigene Kanal
+   verwendet; andere Kanäle müssen in der Moderatorliste des angemeldeten
+   Kontos enthalten sein.
 4. **Mit Twitch verbinden** wählen, den Device-Code im Browser bestätigen und
    die Verbindung prüfen.
 5. LM Studio prüfen und anschließend im Header **Analyse starten** wählen.

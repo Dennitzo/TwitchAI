@@ -24,6 +24,123 @@ public sealed class ModerationCoordinatorTests
         new(2026, 7, 26, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
+    public void ApplyHumanPriorityDecisions_PreservesCompatibleAiEvidenceForExactLearning()
+    {
+        const string text = "du idiot";
+        var rule = PersonalAttackRule();
+        var batch = HumanPriorityBatch(text, rule, localMatches: []);
+        var current = new ValidatedModerationDecision(
+            "m1",
+            ModerationActionKind.Timeout,
+            600,
+            PolicySetCode.General,
+            "Direkte Beleidigung eines Nutzers oder Streamers.",
+            [text],
+            0.94,
+            rule.RuleCode)
+        {
+            EvidenceKind = "direct_insult",
+        };
+        var result = ModerationCoordinator.ApplyHumanPriorityDecisions(
+            batch,
+            ValidReport(batch.BatchId, current),
+            [new RetrievalExample(
+                text,
+                ModerationActionKind.Timeout,
+                600,
+                PolicySetCode.General,
+                "Direkte Beleidigung eines Nutzers oder Streamers.",
+                IsPositive: true,
+                rule.RuleCode)
+            {
+                IsExactHumanDecision = true,
+            }]);
+
+        var decision = Assert.Single(result.Envelope!.Decisions);
+        Assert.Equal("direct_insult", decision.EvidenceKind);
+    }
+
+    [Fact]
+    public void ApplyHumanPriorityDecisions_PreservesPersonalDataTypeWithAiEvidence()
+    {
+        const string text = "deine adresse ist beispielstrasse 1";
+        var rule = new ModerationRuleDefinition(
+            ModerationRuleCodes.PersonalData,
+            PolicySetCode.General,
+            "Persönliche Daten / Doxxing",
+            ModerationRuleCodes.PersonalDataPromptInstruction,
+            ModerationActionKind.Timeout,
+            86_400,
+            "Veröffentlichung persönlicher Daten.",
+            Priority: 10);
+        var batch = HumanPriorityBatch(text, rule, localMatches: []);
+        var current = new ValidatedModerationDecision(
+            "m1",
+            ModerationActionKind.Timeout,
+            86_400,
+            PolicySetCode.General,
+            "Veröffentlichung persönlicher Daten.",
+            [],
+            0.98,
+            rule.RuleCode)
+        {
+            EvidenceKind = "disclosure",
+            SensitiveDataType = "address",
+        };
+        var result = ModerationCoordinator.ApplyHumanPriorityDecisions(
+            batch,
+            ValidReport(batch.BatchId, current),
+            [new RetrievalExample(
+                text,
+                ModerationActionKind.Timeout,
+                86_400,
+                PolicySetCode.General,
+                "Veröffentlichung persönlicher Daten.",
+                IsPositive: true,
+                rule.RuleCode)
+            {
+                IsExactHumanDecision = true,
+            }]);
+
+        var decision = Assert.Single(result.Envelope!.Decisions);
+        Assert.Equal("disclosure", decision.EvidenceKind);
+        Assert.Equal("address", decision.SensitiveDataType);
+    }
+
+    [Fact]
+    public void ApplyHumanPriorityDecisions_ExplicitPhraseEvidenceOverridesAiSubtype()
+    {
+        const string text = "ich liebe dich";
+        var rule = PersonalAttackRule();
+        var match = new BlacklistMatch(
+            PhraseId: 173,
+            RuleCode: rule.RuleCode,
+            PolicySet: rule.PolicySet,
+            MatchedPhrase: text);
+        var batch = HumanPriorityBatch(text, rule, [match]);
+        var current = new ValidatedModerationDecision(
+            "m1",
+            ModerationActionKind.Timeout,
+            600,
+            PolicySetCode.General,
+            "Unangebrachte persönliche Annäherung.",
+            [text],
+            0.9,
+            rule.RuleCode)
+        {
+            EvidenceKind = "direct_insult",
+        };
+
+        var result = ModerationCoordinator.ApplyHumanPriorityDecisions(
+            batch,
+            ValidReport(batch.BatchId, current),
+            retrievalExamples: []);
+
+        var decision = Assert.Single(result.Envelope!.Decisions);
+        Assert.Equal("unwanted_intimate_approach", decision.EvidenceKind);
+    }
+
+    [Fact]
     public async Task StartAsync_RejectsMissingTwitchSessionBeforePipelineWork()
     {
         var readiness = new TwitchConnectionReadiness();
@@ -393,6 +510,112 @@ public sealed class ModerationCoordinatorTests
         Assert.DoesNotContain(
             harness.AiRunActivities,
             item => item.State == LocalAiRunState.Queued);
+    }
+
+    [Fact]
+    public async Task MessageFromSecondChannelUsesItsOwnCategoryContext()
+    {
+        const string secondChannelId = "channel-2";
+        var secondContext = new ChannelContextSnapshot(
+            secondChannelId,
+            "game-2",
+            "Second Game",
+            Baseline,
+            Revision: 7,
+            IsVerified: true);
+        var batcher = new RecordingModerationBatcher();
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidEnvelope,
+            batcher: batcher,
+            channelContexts: [Context(), secondContext]);
+        var queued = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.ChatQueued);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(
+            MessageEvent(1, "Message in second channel", channelId: secondChannelId));
+
+        var pipelineEvent = await queued.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(secondChannelId, pipelineEvent.ChatMessage?.Identity.ChannelId);
+        Assert.Equal(secondContext, pipelineEvent.ChatMessage?.ChannelContext);
+        Assert.Equal(1, harness.Whitelist.GetCallCount);
+        Assert.Equal(1, batcher.EnqueueCallCount);
+    }
+
+    [Fact]
+    public async Task StopAsync_DiscardsQueuedMessagesFromAllChannels()
+    {
+        const string secondChannelId = "channel-2";
+        var batcher = new ModerationBatcher();
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidEnvelope,
+            batcher: batcher,
+            channelContexts:
+            [
+                Context(),
+                new ChannelContextSnapshot(
+                    secondChannelId,
+                    "game-2",
+                    "Second Game",
+                    Baseline,
+                    Revision: 1,
+                    IsVerified: true),
+            ]);
+        var queued = CompletionAfter(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.ChatQueued,
+            count: 2);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(MessageEvent(1, "first channel"));
+        harness.EventSub.Publish(
+            MessageEvent(2, "second channel", channelId: secondChannelId));
+        await queued.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal(2, batcher.WaitingMessageCount);
+
+        await harness.Coordinator.StopAsync();
+
+        Assert.Equal(0, batcher.WaitingMessageCount);
+        Assert.Null(batcher.NextDeadlineUtc);
+        Assert.False(batcher.TryDequeue(out _));
+    }
+
+    [Fact]
+    public async Task StopAsync_PublishesSupersededForSealedWaitingBatch()
+    {
+        var inferenceStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidEnvelope,
+            asyncModelResponse: async (_, cancellationToken) =>
+            {
+                inferenceStarted.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                throw new InvalidOperationException("Unreachable test path.");
+            });
+        var queued = CompletionAfter(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.ChatQueued,
+            count: 40);
+
+        await harness.Coordinator.StartAsync();
+        PublishMessages(harness.EventSub, startIndex: 1, count: 20);
+        await inferenceStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        PublishMessages(harness.EventSub, startIndex: 21, count: 20);
+        await queued.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+        await harness.Coordinator.StopAsync();
+
+        Assert.Contains(
+            harness.AiRunActivities,
+            activity => activity.State == LocalAiRunState.Superseded
+                && activity.ErrorCode == "analysis_stopped");
     }
 
     [Fact]
@@ -992,6 +1215,51 @@ public sealed class ModerationCoordinatorTests
         Assert.Equal(1, repository.AddCallCount);
     }
 
+    private static ModerationRuleDefinition PersonalAttackRule() =>
+        new(
+            ModerationRuleCodes.PersonalAttack,
+            PolicySetCode.General,
+            "Beleidigung & Belästigung",
+            ModerationRuleCodes.PersonalAttackPromptInstruction,
+            ModerationActionKind.Timeout,
+            600,
+            "Beleidigung oder Belästigung eines Nutzers oder Streamers.",
+            Priority: 50);
+
+    private static ModerationBatch HumanPriorityBatch(
+        string text,
+        ModerationRuleDefinition rule,
+        IReadOnlyList<BlacklistMatch> localMatches)
+    {
+        var policy = new CoreEffectivePolicy(
+            [new PolicySetRevision(PolicySetCode.General, 1)],
+            "human-priority-policy")
+        {
+            ActiveRules = [rule],
+        };
+        var batchId = Guid.Parse("f8cacbb8-e907-4a22-a5cb-5af4736f9bf4");
+        return new ModerationBatch(
+            batchId,
+            new ModerationBatchContext(Context(), policy),
+            [new ModerationBatchMessage(
+                "m1",
+                Snapshot(900, text, new CoreChatTextNormalizer()),
+                localMatches)],
+            Baseline,
+            Baseline.AddSeconds(1),
+            BatchSealReason.ManualFlush);
+    }
+
+    private static ModerationValidationReport ValidReport(
+        Guid batchId,
+        ValidatedModerationDecision decision) =>
+        new(
+            new ValidatedModerationEnvelope(batchId, [decision]),
+            [decision],
+            Issues: [],
+            RepairMessageIds: [],
+            RequiresFullRepair: false);
+
     private static TaskCompletionSource<ModerationPipelineEventArgs> CompletionFor(
         IModerationCoordinator coordinator,
         Func<ModerationPipelineEventArgs, bool> predicate)
@@ -1056,8 +1324,10 @@ public sealed class ModerationCoordinatorTests
         IReadOnlyDictionary<string, string>? badges = null,
         string? sharedChatSourceChannelId = null,
         string? login = null,
-        string? displayName = null)
+        string? displayName = null,
+        string? channelId = null)
     {
+        channelId ??= ChannelId;
         var receivedAt = Baseline.AddMilliseconds(index);
         userId ??= $"user-{index}";
         login ??= $"login-{userId}";
@@ -1065,7 +1335,7 @@ public sealed class ModerationCoordinatorTests
         var identity = ChatMessageIdentityV1.Create(
             $"event-{index}",
             $"message-{index}",
-            ChannelId,
+            channelId,
             userId,
             login,
             displayName,
@@ -1078,7 +1348,7 @@ public sealed class ModerationCoordinatorTests
             identity.EventSubNotificationId,
             receivedAt,
             identity,
-            ChannelId,
+            channelId,
             TargetMessageId: null,
             TargetUserId: null,
             ChannelContext: null);
@@ -1384,13 +1654,17 @@ public sealed class ModerationCoordinatorTests
             ILearningContextRevision? learningContextRevision = null,
             IRetrievalExampleStore? retrievalExampleStore = null,
             bool useCompactContractV6 = false,
-            IAiValidationAttemptStore? validationAttemptStore = null)
+            IAiValidationAttemptStore? validationAttemptStore = null,
+            IReadOnlyList<ChannelContextSnapshot>? channelContexts = null)
         {
+            var contexts = channelContexts?.ToArray() ?? [Context()];
             var eventSub = new FakeEventSubClient();
             var whitelistSource = new FakeWhitelistPhraseSource(
                 whitelist,
                 whitelistedLogins ?? Set());
-            var policyStore = new FakePolicyStore(generalRevisionForCall ?? (_ => 1));
+            var policyStore = new FakePolicyStore(
+                generalRevisionForCall ?? (_ => 1),
+                contexts);
             var localModel = asyncModelResponse is null
                 ? new FakeLocalModerationClient(modelResponse)
                 : new FakeLocalModerationClient(asyncModelResponse);
@@ -1410,11 +1684,13 @@ public sealed class ModerationCoordinatorTests
                     ModeratorUserId = "moderator-1",
                 },
             };
+            options.TwitchApi.SetBroadcasterIds(
+                contexts.Select(context => context.ChannelId));
             options.LmStudio.UseCompactModerationContractV6 =
                 useCompactContractV6;
             var coordinator = new ModerationCoordinator(
                 eventSub,
-                new FakeChannelContextService(Context()),
+                new FakeChannelContextService(contexts),
                 new CoreChatTextNormalizer(),
                 new WhitelistFilterAgent(whitelistSource),
                 policyStore,
@@ -1485,16 +1761,20 @@ public sealed class ModerationCoordinatorTests
         }
     }
 
-    private sealed class FakeChannelContextService(ChannelContextSnapshot context)
+    private sealed class FakeChannelContextService(
+        IReadOnlyList<ChannelContextSnapshot> contexts)
         : IChannelContextService
     {
+        private readonly Dictionary<string, ChannelContextSnapshot> _contexts =
+            contexts.ToDictionary(context => context.ChannelId, StringComparer.Ordinal);
+
         public ValueTask<ChannelContextSnapshot> GetCurrentAsync(
             string channelId,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Assert.Equal(context.ChannelId, channelId);
-            return ValueTask.FromResult(context);
+            Assert.True(_contexts.TryGetValue(channelId, out var context));
+            return ValueTask.FromResult(context!);
         }
     }
 
@@ -1557,7 +1837,7 @@ public sealed class ModerationCoordinatorTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Assert.Equal(ChannelId, channelId);
+            Assert.False(string.IsNullOrWhiteSpace(channelId));
             Interlocked.Increment(ref _getCallCount);
             return ValueTask.FromResult(
                 new ActiveWhitelistSnapshot(phrases, lowerUserLogins));
@@ -1571,7 +1851,7 @@ public sealed class ModerationCoordinatorTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Assert.Equal(ChannelId, channelId);
+            Assert.False(string.IsNullOrWhiteSpace(channelId));
             Assert.NotEqual(default, occurredAtUtc);
             _lastRecordedKind = kind;
             _lastRecordedValue = normalizedValue;
@@ -1580,9 +1860,13 @@ public sealed class ModerationCoordinatorTests
         }
     }
 
-    private sealed class FakePolicyStore(Func<int, long> generalRevisionForCall)
+    private sealed class FakePolicyStore(
+        Func<int, long> generalRevisionForCall,
+        IReadOnlyList<ChannelContextSnapshot> contexts)
         : IPolicyStore
     {
+        private readonly Dictionary<string, ChannelContextSnapshot> _contexts =
+            contexts.ToDictionary(context => context.ChannelId, StringComparer.Ordinal);
         private int _getCallCount;
 
         public int GetCallCount => Volatile.Read(ref _getCallCount);
@@ -1592,7 +1876,7 @@ public sealed class ModerationCoordinatorTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Assert.Equal(ChannelId, broadcasterId);
+            Assert.Contains(broadcasterId, _contexts);
             return Task.CompletedTask;
         }
 
@@ -1602,9 +1886,9 @@ public sealed class ModerationCoordinatorTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Assert.Equal(ChannelId, broadcasterId);
+            Assert.True(_contexts.TryGetValue(broadcasterId, out var context));
             Assert.Equal(
-                EffectivePolicyResolver.BootstrapJustChattingCategoryId,
+                context!.CategoryId,
                 categoryId);
             var call = Interlocked.Increment(ref _getCallCount);
             var revision = generalRevisionForCall(call);
@@ -1645,7 +1929,7 @@ public sealed class ModerationCoordinatorTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            Assert.Equal(ChannelId, channelId);
+            Assert.False(string.IsNullOrWhiteSpace(channelId));
             Assert.NotNull(policy);
             return ValueTask.FromResult<IReadOnlyList<PhraseRule>>([]);
         }

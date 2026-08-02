@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateRange(0.75, 0.96)]
-    [double]$VisibleHeightRatio = 0.90
+    [ValidateRange(0.75, 1.00)]
+    [double]$VisibleHeightRatio = 0.98
 )
 
 $ErrorActionPreference = 'Stop'

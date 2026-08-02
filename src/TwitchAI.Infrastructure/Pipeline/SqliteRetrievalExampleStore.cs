@@ -266,7 +266,13 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
             distinct.Where(item => !item.Candidate.Example.IsPositive));
         return InterleaveDecisions(moderated, allowed)
             .Take(MaximumRankedExamples)
-            .Select(item => item.Candidate.Example)
+            .Select(item => item.Candidate.Example with
+            {
+                IsExactHumanDecision = queries.Any(query =>
+                    StringComparer.Ordinal.Equals(
+                        item.Candidate.Example.LowerText,
+                        query.Text)),
+            })
             .ToArray();
     }
 

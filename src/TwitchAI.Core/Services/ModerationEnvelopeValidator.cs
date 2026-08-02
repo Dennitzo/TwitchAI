@@ -1024,6 +1024,14 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             && !text.Any(char.IsControl)
                 ? text
                 : null;
+        if (string.IsNullOrWhiteSpace(candidateReason))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "reason_invalid",
+                $"Decision '{messageId}': A moderation requires a non-empty contextual German reason.");
+        }
+
         var reason = ModerationReasonNormalizer.Normalize(
             candidateReason,
             rule,

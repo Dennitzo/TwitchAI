@@ -18,7 +18,7 @@ public sealed class LearningTestPromptFactoryTests
         {
             ActiveRules =
             [
-                Rule(ModerationRuleCodes.OtherAbuse, PolicySetCode.General),
+                Rule(ModerationRuleCodes.PersonalAttack, PolicySetCode.General),
                 Rule(
                     ModerationRuleCodes.Backseatgaming,
                     PolicySetCode.Backseatgaming),
@@ -48,19 +48,19 @@ public sealed class LearningTestPromptFactoryTests
         Assert.DoesNotContain("defaultAction", result.UserPrompt, StringComparison.Ordinal);
         Assert.DoesNotContain("publicReason", result.UserPrompt, StringComparison.Ordinal);
         Assert.Contains(
-            "use timeout 600 for ordinary abuse",
-            result.SystemPrompt,
-            StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(
-            "Delete only a single low-context nuisance",
+            "G_HATE and G_PERSONAL_ATTACK allow timeout 600 or 86400",
             result.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "G_ADVERTISING self-promotion or promotion of another channel always uses ban",
+            "Never use delete for missing context, irrelevance, or nuisance",
             result.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "86400 for strong insults or G_BEGGING",
+            "G_SELF_PROMOTION allows timeout 86400 or ban",
+            result.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "G_BEGGING requires timeout 86400",
             result.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -115,6 +115,47 @@ public sealed class LearningTestPromptFactoryTests
             StringComparison.Ordinal);
         Assert.DoesNotContain("localMatchCodes", result.UserPrompt, StringComparison.Ordinal);
         Assert.DoesNotContain("learningExamples", result.UserPrompt, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Create_ProjectsRuleSpecificEvidenceKindsAndExplainsExactSelection()
+    {
+        var text = new ChatTextNormalizer().Process("Ich liebe dich");
+        var policy = new EffectivePolicySnapshot(
+            [new(PolicySetCode.General, 1)],
+            "policy")
+        {
+            ActiveRules =
+            [
+                new ModerationRuleDefinition(
+                    ModerationRuleCodes.PersonalAttack,
+                    PolicySetCode.General,
+                    "Beleidigung & Belästigung",
+                    ModerationRuleCodes.PersonalAttackPromptInstruction,
+                    ModerationActionKind.Timeout,
+                    600,
+                    "Beleidigung oder Belästigung."),
+            ],
+        };
+
+        var result = LearningTestPromptFactory.Create(
+            Guid.NewGuid(),
+            text,
+            policy,
+            []);
+        using var json = System.Text.Json.JsonDocument.Parse(result.UserPrompt);
+        var rule = Assert.Single(
+            json.RootElement.GetProperty("activeRules").EnumerateArray());
+
+        Assert.Equal(
+            ["direct_insult", "unwanted_intimate_approach", "verified_harassment"],
+            rule.GetProperty("evidenceKinds")
+                .EnumerateArray()
+                .Select(item => item.GetString()!));
+        Assert.Contains(
+            "copy evidenceKind exactly from the selected rule's activeRules.evidenceKinds list",
+            result.SystemPrompt,
+            StringComparison.Ordinal);
     }
 
     private static ModerationRuleDefinition Rule(

@@ -66,8 +66,17 @@ public partial class App : Application
                         "TwitchAI.db");
                     options.TwitchOAuth.ClientId =
                         _localStorage.GetString("TwitchClientId") ?? string.Empty;
-                    options.TwitchApi.BroadcasterId =
-                        _localStorage.GetString("BroadcasterId") ?? string.Empty;
+                    var storedBroadcasterIds =
+                        TwitchChannelSelection.ParseBroadcasterIds(
+                            _localStorage.GetString("BroadcasterIds"));
+                    if (storedBroadcasterIds.Count == 0)
+                    {
+                        storedBroadcasterIds =
+                            TwitchChannelSelection.ParseBroadcasterIds(
+                                _localStorage.GetString("BroadcasterId"));
+                    }
+
+                    options.TwitchApi.SetBroadcasterIds(storedBroadcasterIds);
                     options.TwitchApi.ReaderUserId =
                         _localStorage.GetString("ReaderUserId") ?? string.Empty;
                     options.TwitchApi.ModeratorUserId =

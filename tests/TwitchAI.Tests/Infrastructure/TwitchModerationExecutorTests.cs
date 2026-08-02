@@ -94,7 +94,10 @@ public sealed class TwitchModerationExecutorTests
             new InfrastructureOptions
             {
                 DatabasePath = database.Path,
-                TwitchApi = new TwitchApiOptions(),
+                TwitchApi = new TwitchApiOptions
+                {
+                    BroadcasterId = channelId,
+                },
             },
             runtimeMode: new TwitchRuntimeModeSettings(isReadOnly: true),
             learningContextRevision: learningRevision);
@@ -246,7 +249,10 @@ public sealed class TwitchModerationExecutorTests
             new InfrastructureOptions
             {
                 DatabasePath = database.Path,
-                TwitchApi = new TwitchApiOptions(),
+                TwitchApi = new TwitchApiOptions
+                {
+                    BroadcasterId = channelId,
+                },
             },
             runtimeMode: new TwitchRuntimeModeSettings(isReadOnly: true));
         var phraseStateBefore = await ReadPhraseStateAsync(database);
@@ -369,6 +375,7 @@ public sealed class TwitchModerationExecutorTests
                 DatabasePath = database.Path,
                 TwitchApi = new TwitchApiOptions
                 {
+                    BroadcasterId = channelId,
                     ModeratorUserId = "moderator-1",
                 },
             },
@@ -595,6 +602,23 @@ public sealed class TwitchModerationExecutorTests
         Assert.Null(helix.Timeout);
     }
 
+    [Fact]
+    public async Task ExecuteAsync_CaseFromDisconnectedChannelIsBlocked()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var helix = new RecordingHelixClient();
+        var fixture = await CreateBanFixtureAsync(database, helix);
+        fixture.Options.SetBroadcasterIds(["different-channel"]);
+
+        var result = await fixture.Executor.ExecuteAsync(
+            CreateBanRequest(fixture.CaseId));
+
+        Assert.Equal(ModerationExecutionOutcome.Rejected, result.Outcome);
+        Assert.Equal("channel_not_connected", result.StatusCode);
+        Assert.False(result.TwitchExecuted);
+        Assert.Null(helix.Ban);
+    }
+
     [Theory]
     [InlineData("moderator")]
     [InlineData("lead_moderator")]
@@ -698,6 +722,7 @@ public sealed class TwitchModerationExecutorTests
                 DatabasePath = database.Path,
                 TwitchApi = new TwitchApiOptions
                 {
+                    BroadcasterId = channelId,
                     ModeratorUserId = "moderator-1",
                 },
             },
@@ -920,6 +945,7 @@ public sealed class TwitchModerationExecutorTests
                 DatabasePath = database.Path,
                 TwitchApi = new TwitchApiOptions
                 {
+                    BroadcasterId = channelId,
                     ModeratorUserId = "moderator-1",
                 },
             });
@@ -1261,6 +1287,11 @@ public sealed class TwitchModerationExecutorTests
                 Confidence: 0.99,
                 RuleCode: ModerationRuleCodes.GeneralPhrase),
             corePolicy.RevisionFingerprint);
+        var twitchOptions = new TwitchApiOptions
+        {
+            BroadcasterId = channelId,
+            ModeratorUserId = moderatorUserId,
+        };
         var executor = new TwitchModerationExecutor(
             repository,
             new SqliteMessageAvailabilityStore(
@@ -1275,12 +1306,9 @@ public sealed class TwitchModerationExecutorTests
             new InfrastructureOptions
             {
                 DatabasePath = database.Path,
-                TwitchApi = new TwitchApiOptions
-                {
-                    ModeratorUserId = moderatorUserId,
-                },
+                TwitchApi = twitchOptions,
             });
-        return new BanFixture(caseId, executor);
+        return new BanFixture(caseId, executor, twitchOptions);
     }
 
     private static ModerationExecutionRequest CreateBanRequest(long caseId) =>
@@ -1296,7 +1324,8 @@ public sealed class TwitchModerationExecutorTests
 
     private sealed record BanFixture(
         long CaseId,
-        TwitchModerationExecutor Executor);
+        TwitchModerationExecutor Executor,
+        TwitchApiOptions Options);
 
     private sealed class RecordingHelixClient : ITwitchHelixClient
     {

@@ -172,6 +172,31 @@ public sealed class TwitchChatReplyExecutorTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_WhenProposalBelongsToAnyConnectedChannel_SendsToProposalChannel()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var (store, proposal) = await AddPendingProposalAsync(database);
+        var helix = new RecordingHelixClient();
+        var executor = CreateExecutor(
+            store,
+            helix,
+            database.Path,
+            broadcasterId: "channel-2",
+            senderId: "moderator-1",
+            sessionReady: true,
+            broadcasterIds: ["channel-2", "channel-1"]);
+
+        var result = await executor.ExecuteAsync(
+            proposal.ProposalId,
+            proposal.RowVersion);
+
+        Assert.Equal(ChatReplyExecutionOutcome.Succeeded, result.Outcome);
+        Assert.Equal("chat_message_sent", result.StatusCode);
+        Assert.Equal(1, helix.SendCalls);
+        Assert.Equal("channel-1", helix.LastSend?.BroadcasterId);
+    }
+
+    [Fact]
     public async Task ExecuteAsync_OnAmbiguousNetworkFailure_RecordsOutcomeUnknownAndNeverRetries()
     {
         await using var database = await TestDatabase.CreateAsync();
@@ -250,7 +275,8 @@ public sealed class TwitchChatReplyExecutorTests
         string broadcasterId,
         string senderId,
         bool sessionReady,
-        bool readOnly = false)
+        bool readOnly = false,
+        IReadOnlyList<string>? broadcasterIds = null)
     {
         var readiness = new TwitchConnectionReadiness();
         readiness.SetSessionReady(
@@ -266,6 +292,7 @@ public sealed class TwitchChatReplyExecutorTests
                 TwitchApi = new TwitchApiOptions
                 {
                     BroadcasterId = broadcasterId,
+                    BroadcasterIds = broadcasterIds?.ToArray() ?? [],
                     ModeratorUserId = senderId,
                 },
             },

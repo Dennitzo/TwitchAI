@@ -48,9 +48,41 @@ public sealed class TwitchApiOptions
 
     public string BroadcasterId { get; set; } = string.Empty;
 
+    public string[] BroadcasterIds { get; set; } = [];
+
     public string ReaderUserId { get; set; } = string.Empty;
 
     public string ModeratorUserId { get; set; } = string.Empty;
+
+    public IReadOnlyList<string> GetBroadcasterIds()
+    {
+        var configured = BroadcasterIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return configured.Length > 0
+            ? configured
+            : string.IsNullOrWhiteSpace(BroadcasterId)
+                ? []
+                : [BroadcasterId.Trim()];
+    }
+
+    public void SetBroadcasterIds(IEnumerable<string> broadcasterIds)
+    {
+        ArgumentNullException.ThrowIfNull(broadcasterIds);
+        BroadcasterIds = broadcasterIds
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Select(id => id.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        BroadcasterId = BroadcasterIds.Length == 0
+            ? string.Empty
+            : BroadcasterIds[0];
+    }
+
+    public bool ContainsBroadcaster(string broadcasterId) =>
+        GetBroadcasterIds().Contains(broadcasterId, StringComparer.Ordinal);
 }
 
 public sealed class LmStudioOptions

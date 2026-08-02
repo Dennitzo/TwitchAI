@@ -48,9 +48,9 @@ public sealed partial class SettingsPage : Page
         catch (Exception exception)
         {
             await ShowMessageAsync(
-                "Read-Only-Modus umgestellt",
-                "Die Einstellung wurde gespeichert, die Twitch-Verbindung konnte "
-                + $"aber nicht neu aufgebaut werden: {exception.Message}");
+                "Read-Only-Modus nicht umgestellt",
+                "Die bisherige Einstellung und Twitch-Verbindung bleiben aktiv: "
+                + exception.Message);
         }
     }
 
@@ -207,7 +207,7 @@ public sealed partial class SettingsPage : Page
             {
                 await ShowMessageAsync(
                     "Twitch verbunden",
-                    "Konto, Moderator-ID und Zielkanal wurden über Twitch verifiziert.");
+                    "Konto, Moderator-ID und Zielkanäle wurden über Twitch verifiziert.");
             }
         }
         catch (Exception exception)

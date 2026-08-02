@@ -391,7 +391,7 @@ public sealed class LmStudioLiveActivityTests
                         message = new
                         {
                             content =
-                                """{"envelopeVersion":"twitchai.learning-test.response.v1","testId":"11111111-1111-1111-1111-111111111111","decision":{"verdict":"allow","action":"none","timeoutSeconds":null,"policySet":"G","ruleCode":"G_OTHER_ABUSE","reason":"","triggerPhrases":[],"confidence":0.8}}""",
+                                """{"envelopeVersion":"twitchai.learning-test.response.v1","testId":"11111111-1111-1111-1111-111111111111","decision":{"verdict":"allow","action":"none","timeoutSeconds":null,"policySet":"G","ruleCode":"G_PERSONAL_ATTACK","evidenceKind":null,"sensitiveDataType":null,"reason":"","triggerPhrases":[],"confidence":0.8}}""",
                         },
                         finish_reason = "stop",
                     },
@@ -418,7 +418,7 @@ public sealed class LmStudioLiveActivityTests
                 MessageCount: 1,
                 "system",
                 "{}",
-                ["G_OTHER_ABUSE", "BACKSEATGAMING"],
+                ["G_PERSONAL_DATA", "G_PERSONAL_ATTACK", "BACKSEATGAMING"],
                 ReplyTemplateIds: [],
                 LmStudioResponseSchemaKind.LearningTest,
                 LocalAiRunKind.LearningTest));
@@ -438,19 +438,251 @@ public sealed class LmStudioLiveActivityTests
         var decision = schema
             .GetProperty("properties")
             .GetProperty("decision");
-        Assert.Equal("object", decision.GetProperty("type").GetString());
+        var alternatives = decision.GetProperty("oneOf");
+        Assert.Equal(9, alternatives.GetArrayLength());
+
+        var allowPersonalAttack = FindLearningDecisionAlternative(
+            alternatives,
+            "allow",
+            "G_PERSONAL_ATTACK");
+        var allowProperties = allowPersonalAttack.GetProperty("properties");
         Assert.Equal(
-            ["BACKSEATGAMING", "G_OTHER_ABUSE"],
-            decision
-                .GetProperty("properties")
-                .GetProperty("ruleCode")
+            "null",
+            allowProperties.GetProperty("evidenceKind").GetProperty("type").GetString());
+        Assert.Equal(
+            "null",
+            allowProperties.GetProperty("sensitiveDataType").GetProperty("type").GetString());
+        Assert.Equal(
+            "none",
+            allowProperties.GetProperty("action").GetProperty("const").GetString());
+        Assert.Equal(
+            "null",
+            allowProperties.GetProperty("timeoutSeconds").GetProperty("type").GetString());
+        Assert.Equal(
+            string.Empty,
+            allowProperties.GetProperty("reason").GetProperty("const").GetString());
+        Assert.Equal(
+            0,
+            allowProperties.GetProperty("triggerPhrases").GetProperty("maxItems").GetInt32());
+
+        var moderatePersonalAttack = FindLearningDecisionAlternative(
+            alternatives,
+            "moderate",
+            "G_PERSONAL_ATTACK");
+        var personalAttackProperties = moderatePersonalAttack.GetProperty("properties");
+        Assert.Equal(
+            ["direct_insult", "unwanted_intimate_approach", "verified_harassment"],
+            personalAttackProperties
+                .GetProperty("evidenceKind")
                 .GetProperty("enum")
                 .EnumerateArray()
                 .Select(item => item.GetString()));
+        Assert.Equal(
+            "null",
+            personalAttackProperties
+                .GetProperty("sensitiveDataType")
+                .GetProperty("type")
+                .GetString());
+        Assert.Equal(
+            "G",
+            personalAttackProperties
+                .GetProperty("policySet")
+                .GetProperty("const")
+                .GetString());
+
+        var moderatePersonalData = FindLearningDecisionAlternative(
+            alternatives,
+            "moderate",
+            "G_PERSONAL_DATA");
+        var personalDataProperties = moderatePersonalData.GetProperty("properties");
+        Assert.Equal(
+            ["disclosure", "targeted_request", "threat_to_disclose"],
+            personalDataProperties
+                .GetProperty("evidenceKind")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.Equal(
+            ["address", "phone", "email", "ip", "identity", "location", "credentials", "other"],
+            personalDataProperties
+                .GetProperty("sensitiveDataType")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+
+        var moderateBackseat = FindLearningDecisionAlternative(
+            alternatives,
+            "moderate",
+            "BACKSEATGAMING");
+        var backseatProperties = moderateBackseat.GetProperty("properties");
+        Assert.Equal(
+            ["hidden_danger", "instruction", "solution", "spoiler"],
+            backseatProperties
+                .GetProperty("evidenceKind")
+                .GetProperty("enum")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.Equal(
+            "B",
+            backseatProperties
+                .GetProperty("policySet")
+                .GetProperty("const")
+                .GetString());
         Assert.Equal(1, gate.AcquireCount);
         Assert.All(
             activities,
             item => Assert.Equal(LocalAiRunKind.LearningTest, item.RunKind));
+    }
+
+    [Fact]
+    public async Task CompleteModerationAsync_LearningTestSchemaMatchesRuleActionMatrix()
+    {
+        string[] activeRuleCodes =
+        [
+            "G_PERSONAL_DATA",
+            "G_HARM",
+            "G_HATE",
+            "G_SEXUAL_CONTENT",
+            "G_PERSONAL_ATTACK",
+            "G_BEGGING",
+            "G_SPAM",
+            "BACKSEATGAMING",
+            "G_SELF_PROMOTION",
+            "G_BOT_SCAM",
+        ];
+        var alternatives = await CaptureLearningDecisionAlternativesAsync(
+            activeRuleCodes);
+        Assert.Equal(30, alternatives.GetArrayLength());
+
+        var expectedModerationActions = new Dictionary<string, string[]>(
+            StringComparer.Ordinal)
+        {
+            ["G_PERSONAL_DATA"] = ["ban:null", "timeout:86400"],
+            ["G_HARM"] = ["ban:null", "timeout:86400"],
+            ["G_HATE"] = ["ban:null", "timeout:600", "timeout:86400"],
+            ["G_SEXUAL_CONTENT"] = ["timeout:600", "timeout:86400"],
+            ["G_PERSONAL_ATTACK"] = ["ban:null", "timeout:600", "timeout:86400"],
+            ["G_BEGGING"] = ["timeout:86400"],
+            ["G_SPAM"] = ["delete:null", "timeout:2", "timeout:120"],
+            ["BACKSEATGAMING"] = ["timeout:600"],
+            ["G_SELF_PROMOTION"] = ["ban:null", "timeout:86400"],
+            ["G_BOT_SCAM"] = ["ban:null"],
+        };
+
+        foreach (var ruleCode in activeRuleCodes)
+        {
+            var allow = alternatives
+                .EnumerateArray()
+                .Where(item => HasLearningDecisionIdentity(item, "allow", ruleCode))
+                .ToArray();
+            Assert.Single(allow);
+            Assert.Equal(
+                "none:null",
+                GetLearningDecisionActionKey(allow[0]));
+
+            var actualModerationActions = alternatives
+                .EnumerateArray()
+                .Where(item => HasLearningDecisionIdentity(item, "moderate", ruleCode))
+                .Select(GetLearningDecisionActionKey)
+                .Order(StringComparer.Ordinal)
+                .ToArray();
+            Assert.Equal(
+                expectedModerationActions[ruleCode].Order(StringComparer.Ordinal),
+                actualModerationActions);
+            Assert.DoesNotContain(
+                actualModerationActions,
+                item => item.StartsWith("none:", StringComparison.Ordinal));
+        }
+    }
+
+    private static async Task<JsonElement> CaptureLearningDecisionAlternativesAsync(
+        IReadOnlyList<string> activeRuleCodes)
+    {
+        var responseBody = JsonSerializer.Serialize(
+            new
+            {
+                model = "openai/gpt-oss-20b",
+                choices = new[]
+                {
+                    new
+                    {
+                        message = new { content = "{}" },
+                        finish_reason = "stop",
+                    },
+                },
+            });
+        var handler = new StaticResponseHandler(HttpStatusCode.OK, responseBody);
+        using var httpClient = CreateHttpClient(handler);
+        var sut = new LmStudioClient(
+            httpClient,
+            new RecordingMetricsStore(),
+            new EmptyCredentialVault(),
+            CreateOptions());
+
+        await sut.CompleteModerationAsync(
+            new LmStudioModerationRequest(
+                "learning-test:action-matrix",
+                "policy",
+                MessageCount: 1,
+                "system",
+                "{}",
+                activeRuleCodes,
+                ReplyTemplateIds: [],
+                LmStudioResponseSchemaKind.LearningTest,
+                LocalAiRunKind.LearningTest));
+
+        using var document = JsonDocument.Parse(handler.RequestBody!);
+        return document.RootElement
+            .GetProperty("response_format")
+            .GetProperty("json_schema")
+            .GetProperty("schema")
+            .GetProperty("properties")
+            .GetProperty("decision")
+            .GetProperty("oneOf")
+            .Clone();
+    }
+
+    private static string GetLearningDecisionActionKey(JsonElement alternative)
+    {
+        var properties = alternative.GetProperty("properties");
+        var action = properties.GetProperty("action").GetProperty("const").GetString();
+        var timeout = properties.GetProperty("timeoutSeconds");
+        return timeout.GetProperty("type").GetString() == "null"
+            ? $"{action}:null"
+            : $"{action}:{timeout.GetProperty("const").GetInt32()}";
+    }
+
+    private static bool HasLearningDecisionIdentity(
+        JsonElement alternative,
+        string verdict,
+        string ruleCode)
+    {
+        var properties = alternative.GetProperty("properties");
+        return string.Equals(
+                   properties.GetProperty("verdict").GetProperty("const").GetString(),
+                   verdict,
+                   StringComparison.Ordinal)
+               && string.Equals(
+                   properties.GetProperty("ruleCode").GetProperty("const").GetString(),
+                   ruleCode,
+                   StringComparison.Ordinal);
+    }
+
+    private static JsonElement FindLearningDecisionAlternative(
+        JsonElement alternatives,
+        string verdict,
+        string ruleCode)
+    {
+        foreach (var alternative in alternatives.EnumerateArray())
+        {
+            if (HasLearningDecisionIdentity(alternative, verdict, ruleCode))
+            {
+                return alternative;
+            }
+        }
+
+        throw new Xunit.Sdk.XunitException(
+            $"Missing learning decision alternative '{verdict}/{ruleCode}'.");
     }
 
     private static LmStudioModerationRequest Request(

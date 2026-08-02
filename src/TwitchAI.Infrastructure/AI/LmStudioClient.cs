@@ -144,6 +144,18 @@ public sealed class SqliteLlmRunMetricsStore : ILlmRunMetricsStore
 
 public sealed class LmStudioClient : ILmStudioClient
 {
+    private static readonly (
+        ModerationActionKind Action,
+        int? TimeoutSeconds)[] LearningTestModerationSuggestions =
+    [
+        (ModerationActionKind.Delete, null),
+        (ModerationActionKind.Timeout, ModerationActionRules.PurgeTimeoutSeconds),
+        (ModerationActionKind.Timeout, ModerationActionRules.LightTimeoutSeconds),
+        (ModerationActionKind.Timeout, ModerationActionRules.DefaultTimeoutSeconds),
+        (ModerationActionKind.Timeout, ModerationActionRules.SevereTimeoutSeconds),
+        (ModerationActionKind.Ban, null),
+    ];
+
     private readonly HttpClient _httpClient;
     private readonly ILlmRunMetricsStore _metricsStore;
     private readonly ILmStudioCredentialVault _credentialVault;
@@ -538,6 +550,7 @@ public sealed class LmStudioClient : ILmStudioClient
                                     reason = new
                                     {
                                         type = "string",
+                                        minLength = 1,
                                         maxLength = 120,
                                     },
                                     triggerPhrases = new
@@ -596,7 +609,9 @@ public sealed class LmStudioClient : ILmStudioClient
     private static object CreateLearningTestResponseFormat(object?[] nullableRuleCodes)
     {
         var ruleCodes = nullableRuleCodes
-            .Where(item => item is not null)
+            .OfType<string>()
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(item => item, StringComparer.Ordinal)
             .ToArray();
         return new
         {
@@ -620,103 +635,193 @@ public sealed class LmStudioClient : ILmStudioClient
                         testId = new { type = "string" },
                         decision = new
                         {
-                            type = "object",
-                            additionalProperties = false,
-                            required = new[]
-                            {
-                                "verdict",
-                                "action",
-                                "timeoutSeconds",
-                                "policySet",
-                                "ruleCode",
-                                "evidenceKind",
-                                "sensitiveDataType",
-                                "reason",
-                                "triggerPhrases",
-                                "confidence",
-                            },
-                            properties = new
-                            {
-                                verdict = new
-                                {
-                                    type = "string",
-                                    @enum = new[] { "allow", "moderate" },
-                                },
-                                action = new
-                                {
-                                    type = "string",
-                                    @enum = new[] { "none", "delete", "timeout", "ban" },
-                                },
-                                timeoutSeconds = new
-                                {
-                                    type = new[] { "integer", "null" },
-                                    @enum = new object?[]
-                                    {
-                                        null,
-                                        2,
-                                        120,
-                                        600,
-                                        86_400,
-                                    },
-                                },
-                                policySet = new
-                                {
-                                    type = "string",
-                                    @enum = new[] { "G", "B" },
-                                },
-                                ruleCode = new
-                                {
-                                    type = "string",
-                                    @enum = ruleCodes,
-                                },
-                                evidenceKind = new
-                                {
-                                    type = new[] { "string", "null" },
-                                    @enum = ruleCodes
-                                        .Cast<string>()
-                                        .SelectMany(ModerationEvidenceKinds.ForRule)
-                                        .Distinct(StringComparer.Ordinal)
-                                        .Cast<object?>()
-                                        .Append(null)
-                                        .ToArray(),
-                                },
-                                sensitiveDataType = new
-                                {
-                                    type = new[] { "string", "null" },
-                                    @enum = new object?[]
-                                    {
-                                        null, "address", "phone", "email", "ip",
-                                        "identity", "location", "credentials", "other",
-                                    },
-                                },
-                                reason = new
-                                {
-                                    type = "string",
-                                    maxLength = 120,
-                                },
-                                triggerPhrases = new
-                                {
-                                    type = "array",
-                                    maxItems = ModerationTriggerEvidenceNormalizer.MaximumEvidencePhrases,
-                                    items = new
-                                    {
-                                        type = "string",
-                                        maxLength = ModerationTriggerEvidenceNormalizer.MaximumEvidenceCharacters,
-                                    },
-                                },
-                                confidence = new
-                                {
-                                    type = "number",
-                                    minimum = 0,
-                                    maximum = 1,
-                                },
-                            },
+                            // llama.cpp supports object alternatives, but cannot combine
+                            // properties with oneOf/anyOf on the same schema node. Keep
+                            // every alternative self-contained so the grammar couples a
+                            // rule code to exactly its compatible evidence kinds.
+                            oneOf = CreateLearningTestDecisionAlternatives(ruleCodes),
                         },
                     },
                 },
             },
         };
     }
+
+    private static Dictionary<string, object?>[] CreateLearningTestDecisionAlternatives(
+        string[] ruleCodes)
+    {
+        var alternatives = new List<Dictionary<string, object?>>(ruleCodes.Length * 2);
+        foreach (var ruleCode in ruleCodes)
+        {
+            alternatives.Add(CreateLearningTestDecisionAlternative(
+                ruleCode,
+                verdict: "allow",
+                evidenceKinds: [],
+                ModerationActionKind.None,
+                timeoutSeconds: null));
+
+            var evidenceKinds = ModerationEvidenceKinds.ForRule(ruleCode);
+            if (evidenceKinds.Count == 0)
+            {
+                continue;
+            }
+
+            foreach (var suggestion in LearningTestModerationSuggestions)
+            {
+                if (!ModerationActionRules.IsValidAiRuleSuggestion(
+                        suggestion.Action,
+                        suggestion.TimeoutSeconds,
+                        ruleCode))
+                {
+                    continue;
+                }
+
+                alternatives.Add(CreateLearningTestDecisionAlternative(
+                    ruleCode,
+                    verdict: "moderate",
+                    evidenceKinds,
+                    suggestion.Action,
+                    suggestion.TimeoutSeconds));
+            }
+        }
+
+        return alternatives.ToArray();
+    }
+
+    private static Dictionary<string, object?> CreateLearningTestDecisionAlternative(
+        string ruleCode,
+        string verdict,
+        IReadOnlyList<string> evidenceKinds,
+        ModerationActionKind action,
+        int? timeoutSeconds)
+    {
+        var isModerate = string.Equals(verdict, "moderate", StringComparison.Ordinal);
+        var isPersonalData = string.Equals(
+            ruleCode,
+            ModerationRuleCodes.PersonalData,
+            StringComparison.Ordinal);
+        var properties = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["verdict"] = new Dictionary<string, object?>
+            {
+                ["type"] = "string",
+                ["const"] = verdict,
+            },
+            ["action"] = new Dictionary<string, object?>
+            {
+                ["type"] = "string",
+                ["const"] = ToLearningTestActionCode(action),
+            },
+            ["timeoutSeconds"] = timeoutSeconds is { } seconds
+                ? new Dictionary<string, object?>
+                {
+                    ["type"] = "integer",
+                    ["const"] = seconds,
+                }
+                : new { type = "null" },
+            ["policySet"] = new Dictionary<string, object?>
+            {
+                ["type"] = "string",
+                ["const"] = string.Equals(
+                    ruleCode,
+                    ModerationRuleCodes.Backseatgaming,
+                    StringComparison.Ordinal)
+                    ? "B"
+                    : "G",
+            },
+            ["ruleCode"] = new Dictionary<string, object?>
+            {
+                ["type"] = "string",
+                ["const"] = ruleCode,
+            },
+            ["evidenceKind"] = isModerate
+                ? new
+                {
+                    type = "string",
+                    @enum = evidenceKinds,
+                }
+                : new { type = "null" },
+            ["sensitiveDataType"] = isModerate && isPersonalData
+                ? new
+                {
+                    type = "string",
+                    @enum = new[]
+                    {
+                        "address", "phone", "email", "ip", "identity",
+                        "location", "credentials", "other",
+                    },
+                }
+                : new { type = "null" },
+            ["reason"] = isModerate
+                ? new
+                {
+                    type = "string",
+                    minLength = 1,
+                    maxLength = 120,
+                }
+                : new
+                {
+                    type = "string",
+                    @const = string.Empty,
+                },
+            ["triggerPhrases"] = isModerate
+                ? new
+                {
+                    type = "array",
+                    maxItems = ModerationTriggerEvidenceNormalizer.MaximumEvidencePhrases,
+                    items = new
+                    {
+                        type = "string",
+                        maxLength = ModerationTriggerEvidenceNormalizer.MaximumEvidenceCharacters,
+                    },
+                }
+                : new
+                {
+                    type = "array",
+                    maxItems = 0,
+                    items = new { type = "string" },
+                },
+            ["confidence"] = new
+            {
+                type = "number",
+                minimum = 0,
+                maximum = 1,
+            },
+        };
+
+        return new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["type"] = "object",
+            ["additionalProperties"] = false,
+            ["required"] = new[]
+            {
+                "verdict",
+                "action",
+                "timeoutSeconds",
+                "policySet",
+                "ruleCode",
+                "evidenceKind",
+                "sensitiveDataType",
+                "reason",
+                "triggerPhrases",
+                "confidence",
+            },
+            ["properties"] = properties,
+        };
+    }
+
+    private static string ToLearningTestActionCode(ModerationActionKind action) =>
+        action switch
+        {
+            ModerationActionKind.None => "none",
+            ModerationActionKind.Delete => "delete",
+            ModerationActionKind.Timeout => "timeout",
+            ModerationActionKind.Ban => "ban",
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(action),
+                action,
+                "Unknown moderation action."),
+        };
 
     private static string? TryReadError(string body)
     {

@@ -19,7 +19,8 @@ public sealed record ModerationWireRuleV6(
     string RuleCode,
     string PolicySet,
     int Priority,
-    string Criteria);
+    string Criteria,
+    IReadOnlyList<string> EvidenceKinds);
 
 public sealed record ModerationWireMessageV6(
     string MessageId,
@@ -43,7 +44,8 @@ public sealed record ModerationWireExampleV6(
     string? RuleCode = null,
     string? Action = null,
     int? TimeoutSeconds = null,
-    string? Reason = null);
+    string? Reason = null,
+    bool? ExactHumanDecision = null);
 
 public sealed record ModerationWireReplyTemplateV6(
     string TemplateId,
@@ -58,7 +60,8 @@ public sealed record LearningTestWireRequestV1(
 
 public sealed record LearningTestWireMessageV1(
     string Text,
-    IReadOnlyList<string>? LocalMatchCodes = null);
+    IReadOnlyList<string>? LocalMatchCodes = null,
+    IReadOnlyList<ModerationWirePhraseMatchV1>? LocalPhraseMatches = null);
 
 public sealed record ModerationPromptCharacterCounts(
     int System,

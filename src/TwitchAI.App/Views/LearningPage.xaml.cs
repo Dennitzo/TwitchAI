@@ -56,7 +56,7 @@ public sealed partial class LearningPage : Page
                 GridLength.Auto,
                 new GridLength(230),
                 new GridLength(1, GridUnitType.Star),
-                new GridLength(230));
+                new GridLength(280));
             PlaceReviewElement(ActionEditor, row: 1, column: 0);
             PlaceReviewElement(TimeoutEditor, row: 1, column: 1);
             PlaceReviewElement(ViolationEditor, row: 1, column: 2);
@@ -96,7 +96,7 @@ public sealed partial class LearningPage : Page
         PlaceReviewElement(ActionButtons, row: 5, column: 0);
     }
 
-    private void OnViolationCategorySelectionChanged(
+    private async void OnViolationCategorySelectionChanged(
         object sender,
         SelectionChangedEventArgs e)
     {
@@ -111,9 +111,20 @@ public sealed partial class LearningPage : Page
             return;
         }
 
-        if (!review.TrySelectRule(selectedRuleCode))
+        try
         {
-            ((ComboBox)sender).SelectedValue = review.SelectedRuleCode;
+            if (!await ViewModel.SelectRuleAsync(selectedRuleCode))
+            {
+                ((ComboBox)sender).SelectedValue = review.SelectedRuleCode;
+            }
+        }
+        catch (Exception exception)
+        {
+            ViewModel.StatusMessage =
+                "Die Begründung konnte nicht neu erzeugt werden; der Kategorienstandard bleibt gesetzt.";
+            await ShowErrorAsync(
+                exception.Message,
+                "Begründung nicht möglich");
         }
     }
 
@@ -143,43 +154,48 @@ public sealed partial class LearningPage : Page
         }
     }
 
-    private async void OnDiscardClicked(object sender, RoutedEventArgs e)
+    private async void OnAllowClicked(object sender, RoutedEventArgs e)
     {
-        var dialog = new ContentDialog
-        {
-            XamlRoot = XamlRoot,
-            Title = "Vorschlag verwerfen",
-            Content =
-                "„Als erlaubt markieren“ speichert die Testnachricht als "
-                + "negatives Lernbeispiel.\n\n"
-                + "„Nur Vorschlag abbrechen“ schließt den Test ohne Lernsignal.",
-            PrimaryButtonText = "Als erlaubt markieren",
-            SecondaryButtonText = "Nur Vorschlag abbrechen",
-            CloseButtonText = "Zurück",
-            DefaultButton = ContentDialogButton.Close,
-        };
-        var choice = await dialog.ShowAsync();
-        if (choice == ContentDialogResult.None)
-        {
-            return;
-        }
-
         try
         {
-            if (choice == ContentDialogResult.Primary)
-            {
-                await ViewModel.MarkAllowedAsync();
-            }
-            else
-            {
-                ViewModel.Abort();
-            }
+            await ViewModel.MarkAllowedAsync();
         }
         catch (Exception exception)
         {
             ViewModel.StatusMessage = "Learning konnte nicht gespeichert werden.";
             await ShowErrorAsync(exception.Message, "Learning nicht möglich");
         }
+    }
+
+    private void OnDiscardClicked(object sender, RoutedEventArgs e) =>
+        ViewModel.Abort();
+
+    private void OnLearningActionButtonsSizeChanged(
+        object sender,
+        SizeChangedEventArgs e)
+    {
+        if (sender is not Grid actionGrid
+            || actionGrid.ColumnDefinitions.Count < 3)
+        {
+            return;
+        }
+
+        var useSingleRow = e.NewSize.Width >= 280;
+        actionGrid.ColumnDefinitions[0].Width =
+            new GridLength(1, GridUnitType.Star);
+        actionGrid.ColumnDefinitions[1].Width =
+            new GridLength(1, GridUnitType.Star);
+        actionGrid.ColumnDefinitions[2].Width = useSingleRow
+            ? new GridLength(1, GridUnitType.Star)
+            : new GridLength(0);
+
+        PlaceReviewElement(AllowButton, row: 0, column: 0);
+        PlaceReviewElement(DiscardButton, row: 0, column: 1);
+        PlaceReviewElement(
+            ExecuteButton,
+            row: useSingleRow ? 0 : 1,
+            column: useSingleRow ? 2 : 0,
+            columnSpan: useSingleRow ? 1 : 2);
     }
 
     private static void SetReviewColumnWidths(

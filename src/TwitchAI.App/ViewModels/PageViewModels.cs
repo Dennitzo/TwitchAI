@@ -2418,6 +2418,7 @@ public sealed record TwitchSessionRestoreResult(
 
 public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 {
+    private static readonly object TwitchDiagnosticGate = new();
     private readonly AppState _state;
     private readonly InfrastructureOptions _options;
     private readonly ITwitchOAuthClient _oauthClient;
@@ -2469,7 +2470,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _coordinator = coordinator;
         TwitchClientId = _localStorage.GetString("TwitchClientId")
             ?? options.TwitchOAuth.ClientId;
-        ChannelLogin = _localStorage.GetString("ChannelLogin") ?? string.Empty;
+        ChannelLogin = TwitchChannelSelection.FormatLogins(
+            TwitchChannelSelection.ParseLogins(
+                _localStorage.GetString("ChannelLogin")));
         LmStudioBaseUrl = _localStorage.GetString("LmStudioBaseUrl")
             ?? options.LmStudio.BaseAddress.ToString().TrimEnd('/');
         LmStudioModel = _localStorage.GetString("LmStudioModel")
@@ -2541,13 +2544,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         get => _readOnlyMode;
         set
         {
-            if (!SetProperty(ref _readOnlyMode, value))
+            if (!ApplyReadOnlyModeInMemory(value))
             {
                 return;
             }
-
-            _twitchRuntimeModeSettings.IsReadOnly = value;
-            _state.IsReadOnlyMode = value;
             try
             {
                 _localStorage.SetString(
@@ -2601,7 +2601,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _options.LmStudio.BaseAddress = EnsureTrailingSlash(baseAddress);
         _options.LmStudio.Model = LmStudioModel.Trim();
 
-        _localStorage.SetString("ChannelLogin", ChannelLogin.Trim());
+        ChannelLogin = TwitchChannelSelection.FormatLogins(
+            TwitchChannelSelection.ParseLogins(ChannelLogin));
+        _localStorage.SetString("ChannelLogin", ChannelLogin);
         _localStorage.SetString(
             "LmStudioBaseUrl",
             _options.LmStudio.BaseAddress.ToString());
@@ -2620,36 +2622,47 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         bool isReadOnly,
         CancellationToken cancellationToken = default)
     {
-        ReadOnlyMode = isReadOnly;
         var restartAnalysis = _coordinator.IsRunning;
         if (!restartAnalysis && !_state.IsTwitchConnectionReady)
         {
+            ReadOnlyMode = isReadOnly;
             return;
         }
 
-        if (restartAnalysis)
-        {
-            await _coordinator.StopAsync(cancellationToken);
-            _state.IsAnalysisRunning = false;
-        }
-
+        await _twitchSessionGate.WaitAsync(cancellationToken);
         try
         {
-            await CheckTwitchAsync(cancellationToken);
-            if (restartAnalysis)
-            {
-                await _coordinator.StartAsync(cancellationToken);
-                _state.IsAnalysisRunning = true;
-            }
+            IsBusy = true;
+            TwitchConnectionStatus = "Twitch-Verbindung wird neu geprüft";
+            ApplyTwitchClientId(TwitchClientId);
+            var validation = await _tokenProvider
+                .ValidateStoredAuthorizationAsync(cancellationToken);
+            EnsureValidatedTwitchClientId(validation);
+
+            var prepared = await PrepareTwitchIdentityAsync(
+                    isReadOnly,
+                    cancellationToken);
+            await ApplyPreparedTwitchIdentityAndRestartAnalysisAsync(
+                    prepared,
+                    restartAnalysis,
+                    cancellationToken);
 
             SaveStatus = isReadOnly
                 ? "Read-Only aktiv · Analyse verwendet nur lesende Twitch-Ereignisse"
                 : "Twitch-Ausführung aktiv · Moderationsrechte wurden neu geprüft";
         }
-        catch
+        catch (Exception exception)
         {
-            _state.IsAnalysisRunning = false;
+            WriteTwitchConnectionDiagnostic(
+                "Read-Only-Modus konnte nicht umgestellt werden.",
+                exception);
+            OnPropertyChanged(nameof(ReadOnlyMode));
             throw;
+        }
+        finally
+        {
+            IsBusy = false;
+            _twitchSessionGate.Release();
         }
     }
 
@@ -2673,7 +2686,12 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         CancellationToken cancellationToken = default)
     {
         IsBusy = true;
-        SetTwitchSessionPending("Twitch-Freigabe wird geprüft.");
+        if (_coordinator?.IsRunning != true
+            && !_state.IsTwitchConnectionReady)
+        {
+            SetTwitchSessionPending("Twitch-Freigabe wird geprüft.");
+        }
+
         TwitchConnectionStatus = "Warte auf Twitch-Freigabe";
         try
         {
@@ -2681,9 +2699,25 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 .CompleteDeviceAuthorizationAsync(authorization, cancellationToken);
             var validation = await _oauthClient
                 .ValidateAsync(token.AccessToken, cancellationToken);
-            EnsureAndPersistValidatedTwitchClientId(validation);
+            EnsureValidatedTwitchClientId(validation);
             await _tokenProvider.StoreNewAuthorizationAsync(token, cancellationToken);
-            await ConfigureTwitchIdentityAsync(cancellationToken);
+            await ConfigureTwitchIdentityAndRestartAnalysisAsync(cancellationToken);
+        }
+        catch (Exception exception) when (
+            exception is not OperationCanceledException
+            || !cancellationToken.IsCancellationRequested)
+        {
+            WriteTwitchConnectionDiagnostic(
+                "Twitch-Geräteautorisierung konnte nicht abgeschlossen werden.",
+                exception);
+            if (!string.IsNullOrWhiteSpace(exception.Message))
+            {
+                throw;
+            }
+
+            throw new InvalidOperationException(
+                MeaningfulExceptionMessage(exception),
+                exception);
         }
         finally
         {
@@ -2697,12 +2731,33 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         try
         {
             IsBusy = true;
-            SetTwitchSessionPending("Gespeicherte Twitch-Verbindung wird geprüft.");
+            if (_coordinator?.IsRunning != true
+                && !_state.IsTwitchConnectionReady)
+            {
+                SetTwitchSessionPending("Gespeicherte Twitch-Verbindung wird geprüft.");
+            }
+
             ApplyTwitchClientId(TwitchClientId);
             var validation = await _tokenProvider
                 .ValidateStoredAuthorizationAsync(cancellationToken);
-            EnsureAndPersistValidatedTwitchClientId(validation);
-            await ConfigureTwitchIdentityAsync(cancellationToken);
+            EnsureValidatedTwitchClientId(validation);
+            await ConfigureTwitchIdentityAndRestartAnalysisAsync(cancellationToken);
+        }
+        catch (Exception exception) when (
+            exception is not OperationCanceledException
+            || !cancellationToken.IsCancellationRequested)
+        {
+            WriteTwitchConnectionDiagnostic(
+                "Manuelle Twitch-Prüfung fehlgeschlagen.",
+                exception);
+            if (!string.IsNullOrWhiteSpace(exception.Message))
+            {
+                throw;
+            }
+
+            throw new InvalidOperationException(
+                MeaningfulExceptionMessage(exception),
+                exception);
         }
         finally
         {
@@ -2720,7 +2775,12 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             ApplyTwitchClientId(TwitchClientId);
 
             IsBusy = true;
-            SetTwitchSessionPending("Gespeicherte Twitch-Verbindung wird geprüft.");
+            if (_coordinator?.IsRunning != true
+                && !_state.IsTwitchConnectionReady)
+            {
+                SetTwitchSessionPending("Gespeicherte Twitch-Verbindung wird geprüft.");
+            }
+
             TwitchConnectionStatus = "Gespeicherte Twitch-Verbindung wird geprüft";
 
             bool hasStoredAuthorization;
@@ -2741,6 +2801,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             }
             catch (Exception exception) when (IsTransientConnectionFailure(exception))
             {
+                WriteTwitchConnectionDiagnostic(
+                    "Twitch-Kanäle konnten vorübergehend nicht vorbereitet werden.",
+                    exception);
                 return SetTwitchRestoreResult(
                     TwitchSessionRestoreOutcome.TemporarilyUnavailable,
                     "Die gespeicherte Twitch-Anmeldung ist vorhanden, konnte aber vorübergehend nicht gelesen werden.");
@@ -2763,7 +2826,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             {
                 var validation = await _tokenProvider
                     .ValidateStoredAuthorizationAsync(cancellationToken);
-                EnsureAndPersistValidatedTwitchClientId(validation);
+                EnsureValidatedTwitchClientId(validation);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -2810,7 +2873,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
             try
             {
-                await ConfigureTwitchIdentityAsync(cancellationToken);
+                await ConfigureTwitchIdentityAndRestartAnalysisAsync(cancellationToken);
                 return new TwitchSessionRestoreResult(
                     TwitchSessionRestoreOutcome.Connected,
                     TwitchConnectionStatus);
@@ -2827,9 +2890,13 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             }
             catch (Exception exception)
             {
+                WriteTwitchConnectionDiagnostic(
+                    "Gespeicherte Twitch-Kanalkonfiguration konnte nicht wiederhergestellt werden.",
+                    exception);
                 return SetTwitchRestoreResult(
                     TwitchSessionRestoreOutcome.ConfigurationRequired,
-                    $"Twitch-Anmeldung ist gültig · Kanalkonfiguration prüfen: {exception.Message}");
+                    "Twitch-Anmeldung ist gültig · Kanalkonfiguration prüfen: "
+                    + MeaningfulExceptionMessage(exception));
             }
         }
         finally
@@ -2909,54 +2976,61 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         LmStudioCredentialStatus = "Kein optionaler API-Token gespeichert";
     }
 
-    private async Task ConfigureTwitchIdentityAsync(CancellationToken cancellationToken)
+    private async Task ConfigureTwitchIdentityAndRestartAnalysisAsync(
+        CancellationToken cancellationToken)
     {
-        var currentUser = await _helixClient.GetCurrentUserAsync(cancellationToken);
-        var normalizedLogin = ChannelLogin.Trim().TrimStart('#');
-        TwitchModeratedChannel target;
-        if (normalizedLogin.Length == 0
-            || string.Equals(
-                normalizedLogin,
-                currentUser.Login,
-                StringComparison.OrdinalIgnoreCase))
+        var prepared = await PrepareTwitchIdentityAsync(
+                _twitchRuntimeModeSettings.IsReadOnly,
+                cancellationToken);
+        var restartAnalysis = _coordinator.IsRunning;
+        await ApplyPreparedTwitchIdentityAndRestartAnalysisAsync(
+                prepared,
+                restartAnalysis,
+                cancellationToken);
+    }
+
+    private async Task<PreparedTwitchIdentity> PrepareTwitchIdentityAsync(
+        bool isReadOnly,
+        CancellationToken cancellationToken)
+    {
+        var currentUser = await _helixClient
+            .GetCurrentUserAsync(cancellationToken);
+        var targets = await ResolveTargetChannelsAsync(
+                currentUser,
+                isReadOnly,
+                cancellationToken);
+
+        var channelInfos = new List<TwitchChannelInfo>(targets.Count);
+        foreach (var target in targets)
         {
-            target = new(
-                currentUser.Id,
-                currentUser.Login,
-                currentUser.DisplayName);
-        }
-        else if (_twitchRuntimeModeSettings.IsReadOnly)
-        {
-            var channel = await _helixClient
-                .GetUserByLoginAsync(normalizedLogin, cancellationToken);
-            target = channel is null
-                ? throw new InvalidOperationException(
-                    $"Der Twitch-Kanal '{normalizedLogin}' wurde nicht gefunden.")
-                : new TwitchModeratedChannel(
-                    channel.Id,
-                    channel.Login,
-                    channel.DisplayName);
-        }
-        else
-        {
-            var moderated = await _helixClient
-                .GetModeratedChannelsAsync(currentUser.Id, cancellationToken);
-            target = moderated.FirstOrDefault(channel =>
-                    string.Equals(
-                        channel.BroadcasterLogin,
-                        normalizedLogin,
-                        StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidOperationException(
-                    $"Der Kanal '{normalizedLogin}' ist nicht in der Moderatorliste dieses Kontos.");
+            TwitchChannelInfo? channelInfo;
+            try
+            {
+                channelInfo = await _helixClient
+                    .GetChannelAsync(target.BroadcasterId, cancellationToken);
+            }
+            catch (Exception exception) when (
+                exception is not OperationCanceledException
+                || !cancellationToken.IsCancellationRequested)
+            {
+                throw new InvalidOperationException(
+                    $"Kanalinformationen für '{target.BroadcasterLogin}' konnten nicht geladen werden: "
+                    + MeaningfulExceptionMessage(exception),
+                    exception);
+            }
+            if (channelInfo is null
+                || !string.Equals(
+                    channelInfo.BroadcasterId,
+                    target.BroadcasterId,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Die Kanalinformationen für '{target.BroadcasterLogin}' konnten nicht verifiziert werden.");
+            }
+
+            channelInfos.Add(channelInfo);
         }
 
-        _options.TwitchApi.ReaderUserId = currentUser.Id;
-        _options.TwitchApi.ModeratorUserId = currentUser.Id;
-        _options.TwitchApi.BroadcasterId = target.BroadcasterId;
-        ChannelLogin = target.BroadcasterLogin;
-
-        var channelInfo = await _helixClient
-            .GetChannelAsync(target.BroadcasterId, cancellationToken);
         var justChatting = await _helixClient
             .GetGameByNameAsync("Just Chatting", cancellationToken);
         var irl = await _helixClient
@@ -2986,45 +3060,235 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 "Die Twitch-Kategorie-ID für IRL konnte nicht verifiziert werden.");
         }
 
-        await PersistVerifiedCategoryAsync(
-            justChatting.Id,
-            justChatting.Name,
-            cancellationToken);
-        await PersistVerifiedCategoryAsync(
-            irl.Id,
-            irl.Name,
-            cancellationToken);
+        var policies = new List<
+            TwitchAI.Infrastructure.Persistence.EffectivePolicySnapshot>(
+            targets.Count);
+        for (var index = 0; index < targets.Count; index++)
+        {
+            try
+            {
+                policies.Add(
+                    await _policyStore.GetEffectivePolicyAsync(
+                        targets[index].BroadcasterId,
+                        channelInfos[index].CategoryId,
+                        cancellationToken));
+            }
+            catch (Exception exception) when (
+                exception is not OperationCanceledException
+                || !cancellationToken.IsCancellationRequested)
+            {
+                throw new InvalidOperationException(
+                    $"Regelkontext für '{targets[index].BroadcasterLogin}' konnte nicht geladen werden: "
+                    + MeaningfulExceptionMessage(exception),
+                    exception);
+            }
+        }
 
-        _localStorage.SetString(
-            "BroadcasterId",
-            _options.TwitchApi.BroadcasterId);
-        _localStorage.SetString("ReaderUserId", _options.TwitchApi.ReaderUserId);
-        _localStorage.SetString(
-            "ModeratorUserId",
-            _options.TwitchApi.ModeratorUserId);
-        _localStorage.SetString("ChannelLogin", ChannelLogin);
-        _localStorage.SetString("JustChattingCategoryId", justChatting.Id);
-        _localStorage.SetString("IrlCategoryId", irl.Id);
+        var normalizedChannelLogins = TwitchChannelSelection.FormatLogins(
+            targets.Select(target => target.BroadcasterLogin));
+        var categoryNames = channelInfos
+            .Select(info => info.CategoryName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var categoryName = categoryNames.Length switch
+        {
+            0 => "Kategorie unbekannt",
+            1 => categoryNames[0]!,
+            _ => "Mehrere Kategorien",
+        };
 
-        _state.ChannelDisplayName = target.BroadcasterName;
-        _state.CategoryName = channelInfo?.CategoryName ?? "Kategorie unbekannt";
-        var effectivePolicy = await _policyStore.GetEffectivePolicyAsync(
-            target.BroadcasterId,
-            channelInfo?.CategoryId,
-            cancellationToken);
-        _state.ActivePolicies = effectivePolicy.CategoryRevision > 0
-            ? "General + Backseatgaming"
-            : "Nur General";
-        _state.TwitchStatus = "Twitch verbunden";
+        return new PreparedTwitchIdentity(
+            currentUser,
+            targets,
+            channelInfos,
+            policies,
+            justChatting,
+            irl,
+            normalizedChannelLogins,
+            string.Join(", ", targets.Select(target => target.BroadcasterName)),
+            categoryName,
+            policies.Any(policy => policy.CategoryRevision > 0)
+                ? "General + Backseatgaming"
+                : "Nur General",
+            isReadOnly);
+    }
+
+    private async Task ApplyPreparedTwitchIdentityAndRestartAnalysisAsync(
+        PreparedTwitchIdentity prepared,
+        bool restartAnalysis,
+        CancellationToken cancellationToken)
+    {
+        if (restartAnalysis)
+        {
+            await _coordinator.StopAsync(cancellationToken);
+            _state.IsAnalysisRunning = false;
+        }
+
+        await ApplyPreparedTwitchIdentityAsync(prepared, cancellationToken);
+        if (!restartAnalysis)
+        {
+            return;
+        }
+
+        await _coordinator.StartAsync(cancellationToken);
+        _state.IsAnalysisRunning = true;
+    }
+
+    private async Task ApplyPreparedTwitchIdentityAsync(
+        PreparedTwitchIdentity prepared,
+        CancellationToken cancellationToken)
+    {
+        await PersistVerifiedCategoryAsync(
+                prepared.JustChatting.Id,
+                prepared.JustChatting.Name,
+                cancellationToken);
+        await PersistVerifiedCategoryAsync(
+                prepared.Irl.Id,
+                prepared.Irl.Name,
+                cancellationToken);
+
+        var broadcasterIds = prepared.Targets
+            .Select(target => target.BroadcasterId)
+            .ToArray();
+        _localStorage.SetStrings(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["BroadcasterId"] = broadcasterIds[0],
+                ["BroadcasterIds"] = string.Join(",", broadcasterIds),
+                ["ReaderUserId"] = prepared.CurrentUser.Id,
+                ["ModeratorUserId"] = prepared.CurrentUser.Id,
+                ["ChannelLogin"] = prepared.NormalizedChannelLogins,
+                ["JustChattingCategoryId"] = prepared.JustChatting.Id,
+                ["IrlCategoryId"] = prepared.Irl.Id,
+                ["TwitchClientId"] = _options.TwitchOAuth.ClientId,
+                [LocalAppSettingKeys.ReadOnlyMode] = prepared.IsReadOnly.ToString(),
+            });
+
+        _options.TwitchApi.ReaderUserId = prepared.CurrentUser.Id;
+        _options.TwitchApi.ModeratorUserId = prepared.CurrentUser.Id;
+        _options.TwitchApi.SetBroadcasterIds(broadcasterIds);
+        ApplyReadOnlyModeInMemory(prepared.IsReadOnly);
+        ChannelLogin = prepared.NormalizedChannelLogins;
+        TwitchClientIdPersistenceStatus =
+            _options.TwitchOAuth.ClientId.Length == 0
+                ? "Keine Client-ID gespeichert."
+                : "Client-ID lokal gespeichert.";
+
+        _state.ChannelDisplayName = prepared.ChannelDisplayName;
+        _state.CategoryName = prepared.CategoryName;
+        _state.ActivePolicies = prepared.ActivePolicies;
+        _state.TwitchStatus = prepared.Targets.Count == 1
+            ? "Twitch verbunden"
+            : $"Twitch verbunden · {prepared.Targets.Count} Kanäle";
         _state.IsTwitchConnectionReady = true;
         _twitchConnectionReadiness.SetSessionReady(
             isReady: true,
-            _twitchRuntimeModeSettings.IsReadOnly
-                ? "Twitch-Anmeldung und Read-Only-Kanal sind verbunden."
-                : "Twitch-Anmeldung und Moderationskanal sind verbunden.");
-        TwitchConnectionStatus = $"Verbunden als {currentUser.DisplayName}";
+            prepared.IsReadOnly
+                ? "Twitch-Anmeldung und Read-Only-Kanäle sind verbunden."
+                : "Twitch-Anmeldung und Moderationskanäle sind verbunden.");
+        TwitchConnectionStatus = prepared.Targets.Count == 1
+            ? $"Verbunden als {prepared.CurrentUser.DisplayName}"
+            : $"Verbunden als {prepared.CurrentUser.DisplayName} · {prepared.Targets.Count} Kanäle";
         SaveStatus = "Twitch-Zuordnung sicher gespeichert";
     }
+
+    private async Task<IReadOnlyList<TwitchModeratedChannel>> ResolveTargetChannelsAsync(
+        TwitchUserInfo currentUser,
+        bool isReadOnly,
+        CancellationToken cancellationToken)
+    {
+        var requestedLogins = TwitchChannelSelection.ParseLogins(ChannelLogin);
+        if (requestedLogins.Count == 0)
+        {
+            requestedLogins = [currentUser.Login];
+        }
+
+
+        var maximumChannels = TwitchChannelSelection.GetMaximumChannelCount(isReadOnly);
+        if (requestedLogins.Count > maximumChannels)
+        {
+            throw new InvalidOperationException(
+                $"Es können in diesem Modus höchstens {maximumChannels} "
+                + "Twitch-Kanäle gleichzeitig verbunden werden.");
+        }
+
+        var ownChannel = new TwitchModeratedChannel(
+            currentUser.Id,
+            currentUser.Login,
+            currentUser.DisplayName);
+        if (isReadOnly)
+        {
+            var readOnlyTargets = new List<TwitchModeratedChannel>(
+                requestedLogins.Count);
+            foreach (var login in requestedLogins)
+            {
+                if (string.Equals(
+                        login,
+                        currentUser.Login,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    readOnlyTargets.Add(ownChannel);
+                    continue;
+                }
+
+                var user = await _helixClient
+                    .GetUserByLoginAsync(login, cancellationToken);
+                if (user is null)
+                {
+                    throw new InvalidOperationException(
+                        $"Der Twitch-Kanal '{login}' wurde nicht gefunden.");
+                }
+
+                readOnlyTargets.Add(
+                    new TwitchModeratedChannel(
+                        user.Id,
+                        user.Login,
+                        user.DisplayName));
+            }
+
+            return readOnlyTargets
+                .DistinctBy(target => target.BroadcasterId, StringComparer.Ordinal)
+                .ToArray();
+        }
+
+        var moderated = await _helixClient
+            .GetModeratedChannelsAsync(currentUser.Id, cancellationToken);
+        var available = moderated
+            .Append(ownChannel)
+            .DistinctBy(target => target.BroadcasterId, StringComparer.Ordinal)
+            .ToDictionary(
+                target => target.BroadcasterLogin,
+                StringComparer.OrdinalIgnoreCase);
+        var targets = new List<TwitchModeratedChannel>(requestedLogins.Count);
+        foreach (var login in requestedLogins)
+        {
+            if (!available.TryGetValue(login, out var target))
+            {
+                throw new InvalidOperationException(
+                    $"Der Kanal '{login}' ist nicht in der Moderatorliste dieses Kontos.");
+            }
+
+            targets.Add(target);
+        }
+
+        return targets
+            .DistinctBy(target => target.BroadcasterId, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private sealed record PreparedTwitchIdentity(
+        TwitchUserInfo CurrentUser,
+        IReadOnlyList<TwitchModeratedChannel> Targets,
+        IReadOnlyList<TwitchChannelInfo> ChannelInfos,
+        IReadOnlyList<TwitchAI.Infrastructure.Persistence.EffectivePolicySnapshot> Policies,
+        TwitchGameInfo JustChatting,
+        TwitchGameInfo Irl,
+        string NormalizedChannelLogins,
+        string ChannelDisplayName,
+        string CategoryName,
+        string ActivePolicies,
+        bool IsReadOnly);
 
     private async Task PersistVerifiedCategoryAsync(
         string categoryId,
@@ -3062,6 +3326,18 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             : new Uri($"{text}/", UriKind.Absolute);
     }
 
+    private bool ApplyReadOnlyModeInMemory(bool value)
+    {
+        if (!SetProperty(ref _readOnlyMode, value, nameof(ReadOnlyMode)))
+        {
+            return false;
+        }
+
+        _twitchRuntimeModeSettings.IsReadOnly = value;
+        _state.IsReadOnlyMode = value;
+        return true;
+    }
+
     private string ApplyTwitchClientId(string? clientId)
     {
         var normalized = clientId?.Trim() ?? string.Empty;
@@ -3079,7 +3355,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             : "Client-ID lokal gespeichert.";
     }
 
-    private void EnsureAndPersistValidatedTwitchClientId(
+    private void EnsureValidatedTwitchClientId(
         TwitchTokenValidation validation)
     {
         if (string.IsNullOrWhiteSpace(_options.TwitchOAuth.ClientId))
@@ -3088,7 +3364,6 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
 
         EnsureRequiredScopes(validation);
-        PersistTwitchClientId();
     }
 
     private TwitchSessionRestoreResult SetTwitchRestoreResult(
@@ -3103,7 +3378,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _state.TwitchStatus = outcome switch
         {
             TwitchSessionRestoreOutcome.ConfigurationRequired =>
-                "Twitch autorisiert · Kanal prüfen",
+                "Twitch autorisiert · Kanäle prüfen",
             TwitchSessionRestoreOutcome.TemporarilyUnavailable =>
                 "Twitch vorübergehend nicht erreichbar",
             _ => "Twitch offline",
@@ -3135,8 +3410,58 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             TimeoutException => true,
             TaskCanceledException => true,
             IOException => true,
+            _ when exception.InnerException is not null =>
+                IsTransientConnectionFailure(exception.InnerException),
             _ => false,
         };
+    }
+
+    private static string MeaningfulExceptionMessage(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        for (Exception? current = exception;
+             current is not null;
+             current = current.InnerException)
+        {
+            if (!string.IsNullOrWhiteSpace(current.Message))
+            {
+                return current.Message.Trim();
+            }
+        }
+
+        return $"{exception.GetType().Name} (0x{exception.HResult:X8})";
+    }
+
+    private void WriteTwitchConnectionDiagnostic(
+        string operation,
+        Exception exception)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_localStorage.LocalFolderPath))
+            {
+                return;
+            }
+
+            lock (TwitchDiagnosticGate)
+            {
+                var path = Path.Combine(
+                    _localStorage.LocalFolderPath,
+                    "twitch-connection-error.log");
+                File.AppendAllText(
+                    path,
+                    $"{DateTimeOffset.UtcNow:O}{Environment.NewLine}"
+                    + operation
+                    + Environment.NewLine
+                    + exception
+                    + Environment.NewLine
+                    + Environment.NewLine);
+            }
+        }
+        catch
+        {
+            // A diagnostic write must never replace the original Twitch error.
+        }
     }
 
     public void Dispose()

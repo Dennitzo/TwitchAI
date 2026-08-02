@@ -86,9 +86,10 @@
             <TextBox
               x:Name="ChannelLoginInput"
               Grid.Column="1"
-              Header="Kanal"
-              PlaceholderText="channel_login"
-              Text="{x:Bind ViewModel.ChannelLogin, Mode=TwoWay}" />
+              Description="Kanäle durch Komma getrennt."
+              Header="Kanäle"
+              PlaceholderText="channel1, channel2, channel3"
+              Text="{x:Bind ViewModel.ChannelLogin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
           </Grid>
           <Grid
             x:Name="TwitchActions"

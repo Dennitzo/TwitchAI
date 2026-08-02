@@ -4,6 +4,7 @@ using Microsoft.UI.Dispatching;
 using TwitchAI.App.ViewModels;
 using TwitchAI.Core.Models;
 using TwitchAI.Core.Services;
+using TwitchAI.Infrastructure;
 using TwitchAI.Infrastructure.AI;
 using TwitchAI.Infrastructure.Pipeline;
 
@@ -17,11 +18,14 @@ public sealed class ModerationUiBridge : IDisposable
     private readonly AppState _state;
     private readonly IModerationCoordinator _coordinator;
     private readonly ILocalAiRunActivityMonitor _aiRunActivityMonitor;
+    private readonly InfrastructureOptions _options;
     private readonly object _aiRunGate = new();
     private readonly Dictionary<string, LocalAiRunActivity> _aiRunsByCorrelationId =
         new(StringComparer.Ordinal);
     private readonly LinkedList<string> _aiRunOrder = [];
     private readonly HashSet<string> _supersededAiRunIds =
+        new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ChannelPresentationState> _channelStates =
         new(StringComparer.Ordinal);
     private DispatcherQueue? _dispatcher;
     private long _aiRunVersion;
@@ -33,11 +37,13 @@ public sealed class ModerationUiBridge : IDisposable
     public ModerationUiBridge(
         AppState state,
         IModerationCoordinator coordinator,
-        ILocalAiRunActivityMonitor aiRunActivityMonitor)
+        ILocalAiRunActivityMonitor aiRunActivityMonitor,
+        InfrastructureOptions options)
     {
         _state = state;
         _coordinator = coordinator;
         _aiRunActivityMonitor = aiRunActivityMonitor;
+        _options = options;
         _coordinator.EventReceived += OnEventReceived;
         _aiRunActivityMonitor.ActivityChanged += OnAiRunActivityChanged;
     }
@@ -166,7 +172,11 @@ public sealed class ModerationUiBridge : IDisposable
         {
             case ModerationPipelineEventKind.Started:
                 _state.IsAnalysisRunning = true;
-                _state.TwitchStatus = "Twitch verbunden";
+                var connectedChannelCount =
+                    _options.TwitchApi.GetBroadcasterIds().Count;
+                _state.TwitchStatus = connectedChannelCount > 1
+                    ? $"Twitch verbunden · {connectedChannelCount} Kanäle"
+                    : "Twitch verbunden";
                 _state.EventSubStatus = "EventSub aktiv";
                 ApplyCategory(eventArgs.ChannelContext, eventArgs.ActivePolicySets);
                 break;
@@ -614,21 +624,59 @@ public sealed class ModerationUiBridge : IDisposable
             return;
         }
 
-        _state.CategoryName = string.IsNullOrWhiteSpace(context.CategoryDisplayName)
-            ? "Kategorie unbekannt"
-            : context.CategoryDisplayName;
-        _state.ActivePolicies = activePolicySets.Contains(
-            PolicySetCode.Backseatgaming)
+        var connectedChannels = _options.TwitchApi.GetBroadcasterIds();
+        if (connectedChannels.Count > 0
+            && !connectedChannels.Contains(context.ChannelId, StringComparer.Ordinal))
+        {
+            return;
+        }
+
+        foreach (var staleChannelId in _channelStates.Keys
+                     .Where(channelId => !connectedChannels.Contains(
+                         channelId,
+                         StringComparer.Ordinal))
+                     .ToArray())
+        {
+            _channelStates.Remove(staleChannelId);
+        }
+
+        _channelStates[context.ChannelId] = new ChannelPresentationState(
+            string.IsNullOrWhiteSpace(context.CategoryDisplayName)
+                ? "Kategorie unbekannt"
+                : context.CategoryDisplayName,
+            activePolicySets.Contains(PolicySetCode.Backseatgaming));
+
+        var categoryNames = _channelStates.Values
+            .Select(channel => channel.CategoryName)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        _state.CategoryName = categoryNames.Length switch
+        {
+            0 => "Kategorie unbekannt",
+            1 => categoryNames[0],
+            _ => "Mehrere Kategorien",
+        };
+        _state.ActivePolicies = _channelStates.Values.Any(
+            channel => channel.HasBackseatgaming)
             ? "General + Backseatgaming"
             : "Nur General";
     }
+
+    private sealed record ChannelPresentationState(
+        string CategoryName,
+        bool HasBackseatgaming);
 
     private void ApplyAvailability(ModerationPipelineEventArgs eventArgs)
     {
         var occurredAt = eventArgs.OccurredAtUtc ?? DateTimeOffset.UtcNow;
         foreach (var item in _state.ModerationCases)
         {
-            var affected = eventArgs.StatusCode switch
+            var isSameChannel = eventArgs.ChannelId is null
+                || string.Equals(
+                    item.ChannelId,
+                    eventArgs.ChannelId,
+                    StringComparison.Ordinal);
+            var affected = isSameChannel && (eventArgs.StatusCode switch
             {
                 "message_deleted" => string.Equals(
                     item.MessageId,
@@ -642,7 +690,7 @@ public sealed class ModerationUiBridge : IDisposable
                     && item.ReceivedAt <= occurredAt,
                 "room_cleared" or "eventsub_gap" => item.ReceivedAt <= occurredAt,
                 _ => false,
-            };
+            });
             if (!affected)
             {
                 continue;

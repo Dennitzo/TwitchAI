@@ -70,7 +70,7 @@ public sealed class DatabaseMigrationTests
         var journalMode = await ScalarAsync<string>(connection, "PRAGMA journal_mode;");
         var foreignKeys = await ScalarAsync<long>(connection, "PRAGMA foreign_keys;");
 
-        Assert.Equal(27, migrationCount);
+        Assert.Equal(30, migrationCount);
         Assert.Equal("wal", journalMode, ignoreCase: true);
         Assert.Equal(1, foreignKeys);
     }
@@ -120,6 +120,163 @@ public sealed class DatabaseMigrationTests
         Assert.Equal(0, await ScalarAsync<long>(connection,
             "SELECT COUNT(*) FROM blacklist_rules WHERE rule_code = 'LOCAL_BLACKLIST' AND archived_utc IS NULL;"));
         Assert.Empty(await ReadStringsAsync(connection, "PRAGMA foreign_key_check;"));
+    }
+
+    [Fact]
+    public async Task Version28_UpdatesPersonalAttackPolicyAndClearsAllowSubtype()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(27);
+        await using (var connection = await database.OpenConnectionAsync())
+        {
+            await using var insert = connection.CreateCommand();
+            insert.CommandText =
+                """
+                INSERT INTO manual_learning_examples(
+                    manual_example_id, test_id,
+                    message_text_original, lower_text,
+                    ai_verdict, ai_action, ai_policy_set, ai_rule_code,
+                    ai_reason, ai_trigger_phrases_json, confidence,
+                    local_match_codes_json, final_decision,
+                    actual_action, actual_policy_set, actual_rule_code,
+                    actual_reason, actual_trigger_phrases_json,
+                    policy_revision_fingerprint, model_id,
+                    prompt_tokens, completion_tokens, total_tokens,
+                    ai_latency_ms, eligible_for_learning,
+                    violation_subtype, row_version, created_utc, updated_utc)
+                VALUES(
+                    2801, 'v28-allow-subtype',
+                    'Ich liebe dich', 'ich liebe dich',
+                    'allow', 'none', 'general', 'G_PERSONAL_ATTACK',
+                    'Kein Verstoß.', '[]', 0.6,
+                    '[]', 'marked_allowed',
+                    'none', 'general', 'G_PERSONAL_ATTACK',
+                    'Im konkreten Kontext erlaubt.', '[]',
+                    'policy-v27', 'model',
+                    10, 5, 15, 20, 1,
+                    'text_flood', 1,
+                    '2026-08-01T08:00:00.0000000+00:00',
+                    '2026-08-01T08:00:00.0000000+00:00');
+                """;
+            await insert.ExecuteNonQueryAsync();
+        }
+
+        await database.Initializer.InitializeAsync();
+
+        await using var migrated = await database.OpenConnectionAsync();
+        var policy = await ScalarAsync<string>(
+            migrated,
+            """
+            SELECT prompt_instruction || '|' || public_reason
+            FROM blacklist_rules
+            WHERE rule_code = 'G_PERSONAL_ATTACK'
+              AND enabled = 1
+              AND archived_utc IS NULL;
+            """);
+        Assert.Contains("ich liebe dich", policy, StringComparison.Ordinal);
+        Assert.Contains(
+            "Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.",
+            policy,
+            StringComparison.Ordinal);
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                migrated,
+                """
+                SELECT violation_subtype IS NULL
+                FROM manual_learning_examples
+                WHERE manual_example_id = 2801;
+                """));
+        Assert.Equal(
+            2L,
+            await ScalarAsync<long>(
+                migrated,
+                """
+                SELECT row_version
+                FROM manual_learning_examples
+                WHERE manual_example_id = 2801;
+                """));
+    }
+
+    [Fact]
+    public async Task Version29_RemovesObsoleteLocalBlacklistFeedbackTrigger()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(28);
+
+        await database.Initializer.InitializeAsync();
+
+        await using var connection = await database.OpenConnectionAsync();
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                connection,
+                """
+                SELECT COUNT(*)
+                FROM sqlite_master
+                WHERE type = 'trigger'
+                  AND name = 'trg_v26_local_blacklist_feedback';
+                """));
+        Assert.Equal(
+            29L,
+            await ScalarAsync<long>(
+                connection,
+                "SELECT MAX(version) FROM schema_migrations;"));
+        Assert.DoesNotContain(
+            "manual_example_id",
+            await ReadStringsAsync(
+                connection,
+                "SELECT name FROM pragma_table_info('phrase_feedback');"));
+    }
+
+    [Fact]
+    public async Task Version30_UpdatesDefaultBackseatPromptAndPreservesCustomPrompt()
+    {
+        await using var defaultDatabase =
+            await TestDatabase.CreateAtSchemaVersionAsync(29);
+        await defaultDatabase.Initializer.InitializeAsync();
+        await using (var connection = await defaultDatabase.OpenConnectionAsync())
+        {
+            Assert.Equal(
+                ModerationRuleCodes.BackseatgamingPromptInstruction,
+                await ScalarAsync<string>(
+                    connection,
+                    """
+                    SELECT prompt_instruction
+                    FROM blacklist_rules
+                    WHERE rule_code = 'BACKSEATGAMING'
+                      AND enabled = 1
+                      AND archived_utc IS NULL;
+                    """));
+        }
+
+        await using var customDatabase =
+            await TestDatabase.CreateAtSchemaVersionAsync(29);
+        await using (var connection = await customDatabase.OpenConnectionAsync())
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                UPDATE blacklist_rules
+                SET prompt_instruction = 'Meine angepasste Backseat-Regel.'
+                WHERE rule_code = 'BACKSEATGAMING'
+                  AND enabled = 1
+                  AND archived_utc IS NULL;
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await customDatabase.Initializer.InitializeAsync();
+        await using var migrated = await customDatabase.OpenConnectionAsync();
+        Assert.Equal(
+            "Meine angepasste Backseat-Regel.",
+            await ScalarAsync<string>(
+                migrated,
+                """
+                SELECT prompt_instruction
+                FROM blacklist_rules
+                WHERE rule_code = 'BACKSEATGAMING'
+                  AND enabled = 1
+                  AND archived_utc IS NULL;
+                """));
     }
 
     [Fact]

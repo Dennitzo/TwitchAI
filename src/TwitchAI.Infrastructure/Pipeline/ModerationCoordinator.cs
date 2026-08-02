@@ -51,7 +51,8 @@ public sealed class ModerationPipelineEventArgs : EventArgs
         IReadOnlyList<PolicySetCode>? activePolicySets = null,
         Exception? exception = null,
         ChatReplyProposalRecord? chatReplyProposal = null,
-        IReadOnlyList<ModerationRuleDefinition>? activeRules = null)
+        IReadOnlyList<ModerationRuleDefinition>? activeRules = null,
+        string? channelId = null)
     {
         Kind = kind;
         StatusCode = statusCode;
@@ -70,6 +71,7 @@ public sealed class ModerationPipelineEventArgs : EventArgs
         ActiveRules = activeRules?.ToArray() ?? [];
         Exception = exception;
         ChatReplyProposal = chatReplyProposal;
+        ChannelId = channelId;
     }
 
     public ModerationPipelineEventKind Kind { get; }
@@ -105,6 +107,8 @@ public sealed class ModerationPipelineEventArgs : EventArgs
     public Exception? Exception { get; }
 
     public ChatReplyProposalRecord? ChatReplyProposal { get; }
+
+    public string? ChannelId { get; }
 }
 
 public interface IModerationCoordinator
@@ -130,6 +134,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
 
     private readonly object _lifecycleGate = new();
     private readonly object _contextGate = new();
+    private readonly SemaphoreSlim _lifecycleOperationGate = new(1, 1);
     private readonly ITwitchEventSubClient _eventSubClient;
     private readonly IChannelContextService _channelContextService;
     private readonly CoreTextNormalizer _normalizer;
@@ -159,7 +164,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
     private readonly SemaphoreSlim _inferenceSignal = new(0);
     private CancellationTokenSource? _runSource;
     private Task[] _runTasks = [];
-    private ChannelContextSnapshot? _currentContext;
+    private readonly Dictionary<string, ChannelContextSnapshot> _currentContexts =
+        new(StringComparer.Ordinal);
     private long _ingressSequence;
     private long _temporaryMessageSequence;
     private bool _disposed;
@@ -232,13 +238,27 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
+        await _lifecycleOperationGate.WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            await StartCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifecycleOperationGate.Release();
+        }
+    }
+
+    private async Task StartCoreAsync(CancellationToken cancellationToken)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_connectionReadiness is not null
             && !_connectionReadiness.IsSessionReady)
         {
             throw new InvalidOperationException(
                 "Die Analyse kann erst gestartet werden, wenn die Twitch-Anmeldung "
-                + "und der ausgewählte Moderationskanal erfolgreich verbunden sind.");
+                + "und die konfigurierten Kanäle erfolgreich verbunden sind.");
         }
 
         CancellationTokenSource source;
@@ -256,17 +276,31 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
 
         try
         {
-            await _policyStore
-                .EnsureBroadcasterSeededAsync(
-                    _options.TwitchApi.BroadcasterId,
-                    source.Token)
-                .ConfigureAwait(false);
-            var initialContext = await _channelContextService
-                .GetCurrentAsync(_options.TwitchApi.BroadcasterId, source.Token)
-                .ConfigureAwait(false);
-            SetCurrentContext(initialContext);
-            var initialPolicy = await ResolvePolicyAsync(initialContext, source.Token)
-                .ConfigureAwait(false);
+            var broadcasterIds = _options.TwitchApi.GetBroadcasterIds();
+            DiscardQueuedBatches("analysis_restart");
+            ClearCurrentContexts();
+            ChannelContextSnapshot? initialContext = null;
+            CoreEffectivePolicySnapshot? initialPolicy = null;
+            foreach (var broadcasterId in broadcasterIds)
+            {
+                await _policyStore
+                    .EnsureBroadcasterSeededAsync(broadcasterId, source.Token)
+                    .ConfigureAwait(false);
+                var context = await _channelContextService
+                    .GetCurrentAsync(broadcasterId, source.Token)
+                    .ConfigureAwait(false);
+                SetCurrentContext(context);
+                var policy = await ResolvePolicyAsync(context, source.Token)
+                    .ConfigureAwait(false);
+                initialContext ??= context;
+                initialPolicy ??= policy;
+            }
+
+            if (initialContext is null || initialPolicy is null)
+            {
+                throw new InvalidOperationException(
+                    "Mindestens ein Twitch-Kanal mit Regelkontext muss für die Analyse konfiguriert sein.");
+            }
 
             if (_connectionReadiness is not null
                 && !_connectionReadiness.IsSessionReady)
@@ -365,11 +399,27 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 source.Dispose();
             }
 
+            DiscardQueuedBatches("analysis_start_failed");
+
             throw;
         }
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
+    {
+        await _lifecycleOperationGate.WaitAsync(cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            await StopCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifecycleOperationGate.Release();
+        }
+    }
+
+    private async Task StopCoreAsync(CancellationToken cancellationToken)
     {
         CancellationTokenSource? source;
         Task[] tasks;
@@ -390,15 +440,19 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         _inferenceSignal.Release();
         try
         {
-            await Task.WhenAll(tasks).WaitAsync(cancellationToken).ConfigureAwait(false);
+            // Once shutdown has started, observe every old worker before the
+            // lifecycle gate is released. Otherwise a cancelled caller could
+            // start a new run while old workers still touch the shared batcher.
+            await Task.WhenAll(tasks).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (
-            source.IsCancellationRequested || cancellationToken.IsCancellationRequested)
+            source.IsCancellationRequested)
         {
             // A paused coordinator cancels EventSub and an in-flight local inference.
         }
         finally
         {
+            DiscardQueuedBatches("analysis_stopped");
             source.Dispose();
         }
 
@@ -538,6 +592,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         }
 
         await StopAsync().ConfigureAwait(false);
+        _lifecycleOperationGate.Dispose();
         _inferenceSignal.Dispose();
         _disposed = true;
         GC.SuppressFinalize(this);
@@ -582,14 +637,16 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 break;
             case TwitchChatEventKind.ChannelUpdated when chatEvent.ChannelContext is not null:
             {
-                var previousContext = GetCurrentContext();
+                var previousContext = GetCurrentContext(chatEvent.ChannelId);
                 var batchingContextChanged = previousContext is null
                     || !HasSameBatchingCategory(
                         previousContext,
                         chatEvent.ChannelContext);
                 if (previousContext is not null && batchingContextChanged)
                 {
-                    var flushed = _batcher.Flush(_timeProvider.GetUtcNow());
+                    var flushed = _batcher.FlushChannel(
+                        chatEvent.ChannelId,
+                        _timeProvider.GetUtcNow());
                     if (flushed is not null)
                     {
                         SignalSealedBatch(flushed);
@@ -647,10 +704,12 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 _availabilityRegistry.MarkUnknownGap(
                     chatEvent.ChannelId,
                     chatEvent.ReceivedAtUtc);
-                var currentContext = GetCurrentContext();
+                var currentContext = GetCurrentContext(chatEvent.ChannelId);
                 if (currentContext is not null)
                 {
-                    var flushed = _batcher.Flush(_timeProvider.GetUtcNow());
+                    var flushed = _batcher.FlushChannel(
+                        chatEvent.ChannelId,
+                        _timeProvider.GetUtcNow());
                     if (flushed is not null)
                     {
                         SignalSealedBatch(flushed);
@@ -684,10 +743,14 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         bool isTwitchEmoteOnly,
         CancellationToken cancellationToken)
     {
-        var context = GetCurrentContext()
-            ?? await _channelContextService
+        var context = GetCurrentContext(identity.ChannelId);
+        if (context is null)
+        {
+            context = await _channelContextService
                 .GetCurrentAsync(identity.ChannelId, cancellationToken)
                 .ConfigureAwait(false);
+            SetCurrentContext(context);
+        }
         var processed = _normalizer.Process(identity.OriginalText);
         var snapshot = new ChatMessageSnapshot(
             identity,
@@ -770,7 +833,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         {
             while (await timer.WaitForNextTickAsync(source.Token).ConfigureAwait(false))
             {
-                if (_batcher.SealIfDue(_timeProvider.GetUtcNow()) is { } batch)
+                var now = _timeProvider.GetUtcNow();
+                while (_batcher.SealIfDue(now) is { } batch)
                 {
                     SignalSealedBatch(batch);
                 }
@@ -977,6 +1041,11 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 retrievalExamples,
                 cancellationToken)
             .ConfigureAwait(false);
+
+        validation = ApplyHumanPriorityDecisions(
+            analysisBatch,
+            validation,
+            retrievalExamples);
 
         if (!validation.IsValid)
         {
@@ -1343,6 +1412,99 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         return initial with
         {
             Envelope = envelope,
+            ValidDecisions = decisions,
+        };
+    }
+
+    internal static ModerationValidationReport ApplyHumanPriorityDecisions(
+        ModerationBatch batch,
+        ModerationValidationReport validation,
+        IReadOnlyList<RetrievalExample> retrievalExamples)
+    {
+        if (!validation.IsValid)
+        {
+            return validation;
+        }
+
+        var currentById = validation.Envelope!.Decisions.ToDictionary(
+            decision => decision.TemporaryMessageId,
+            StringComparer.Ordinal);
+        var decisions = batch.Messages.Select(message =>
+        {
+            var current = currentById[message.TemporaryMessageId];
+            var priority = HumanModerationPriority.Resolve(
+                message.Message.Text.LowerText,
+                batch.Context.EffectivePolicy,
+                message.LocalMatches,
+                retrievalExamples);
+            if (priority is null)
+            {
+                return current;
+            }
+
+            if (priority.IsAllow)
+            {
+                return new ValidatedModerationDecision(
+                    current.TemporaryMessageId,
+                    ModerationActionKind.None,
+                    null,
+                    null,
+                    string.Empty,
+                    [],
+                    1d);
+            }
+
+            var priorityRule = priority.Rule
+                ?? throw new InvalidOperationException(
+                    "A moderate human-priority decision requires an active rule.");
+
+            var hasCompatibleAiEvidence =
+                current.Action != ModerationActionKind.None
+                && StringComparer.Ordinal.Equals(
+                    current.RuleCode,
+                    priorityRule.RuleCode)
+                && ModerationEvidenceKinds.IsValid(
+                    priorityRule.RuleCode,
+                    current.EvidenceKind);
+            if (priority.Source == "manual_blacklist_phrase"
+                && hasCompatibleAiEvidence)
+            {
+                return priority.EvidenceKind is null
+                    ? current
+                    : current with
+                    {
+                        EvidenceKind = priority.EvidenceKind,
+                    };
+            }
+
+            var evidenceKind = priority.EvidenceKind
+                ?? (hasCompatibleAiEvidence ? current.EvidenceKind : null);
+            var sensitiveDataType = priority.EvidenceKind is null
+                && hasCompatibleAiEvidence
+                && StringComparer.Ordinal.Equals(
+                    priorityRule.RuleCode,
+                    ModerationRuleCodes.PersonalData)
+                    ? current.SensitiveDataType
+                    : null;
+
+            return new ValidatedModerationDecision(
+                current.TemporaryMessageId,
+                priority.Action,
+                priority.TimeoutSeconds,
+                priorityRule.PolicySet,
+                priority.Reason,
+                priority.TriggerPhrases,
+                1d,
+                priorityRule.RuleCode)
+            {
+                EvidenceKind = evidenceKind,
+                SensitiveDataType = sensitiveDataType,
+            };
+        }).ToArray();
+
+        return validation with
+        {
+            Envelope = new ValidatedModerationEnvelope(batch.BatchId, decisions),
             ValidDecisions = decisions,
         };
     }
@@ -1741,7 +1903,9 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
 
         // Re-analysis must not restart the original ten-second collection
         // window. The replacement runs as soon as this stale attempt returns.
-        if (_batcher.Flush(_timeProvider.GetUtcNow()) is { } refreshedBatch)
+        if (_batcher.FlushChannel(
+                batch.Context.Channel.ChannelId,
+                _timeProvider.GetUtcNow()) is { } refreshedBatch)
         {
             SignalSealedBatch(refreshedBatch);
         }
@@ -1832,7 +1996,13 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
 
     private void ValidateRuntimeConfiguration()
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(_options.TwitchApi.BroadcasterId);
+        if (_options.TwitchApi.GetBroadcasterIds().Count == 0)
+        {
+            throw new ArgumentException(
+                "Mindestens eine Twitch-Broadcaster-ID muss konfiguriert sein.",
+                nameof(_options));
+        }
+
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.TwitchApi.ReaderUserId);
         ArgumentException.ThrowIfNullOrWhiteSpace(_options.TwitchApi.ModeratorUserId);
     }
@@ -1859,11 +2029,12 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             && left.IsVerified == right.IsVerified;
     }
 
-    private ChannelContextSnapshot? GetCurrentContext()
+    private ChannelContextSnapshot? GetCurrentContext(string channelId)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
         lock (_contextGate)
         {
-            return _currentContext;
+            return _currentContexts.GetValueOrDefault(channelId);
         }
     }
 
@@ -1871,7 +2042,15 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
     {
         lock (_contextGate)
         {
-            _currentContext = context;
+            _currentContexts[context.ChannelId] = context;
+        }
+    }
+
+    private void ClearCurrentContexts()
+    {
+        lock (_contextGate)
+        {
+            _currentContexts.Clear();
         }
     }
 
@@ -1935,6 +2114,18 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 TotalTokens: null,
                 ElapsedMilliseconds: null,
                 batch.SealedAtUtc));
+    }
+
+    private void DiscardQueuedBatches(string reasonCode)
+    {
+        while (_batcher.TryDequeue(out var batch) && batch is not null)
+        {
+            PublishSupersededAiRun(batch, reasonCode);
+        }
+
+        // Open, not-yet-sealed batches have no footer activity yet. Clear
+        // removes those together with any implementation-specific residue.
+        _batcher.Clear();
     }
 
     private void PublishRunningAiRun(ModerationBatch batch)
@@ -2006,7 +2197,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 "The local EventSub availability view changed.",
                 targetMessageId: chatEvent.TargetMessageId,
                 targetUserId: chatEvent.TargetUserId,
-                occurredAtUtc: chatEvent.ReceivedAtUtc));
+                occurredAtUtc: chatEvent.ReceivedAtUtc,
+                channelId: chatEvent.ChannelId));
     }
 
     private void PublishFault(string statusCode, string message, Exception exception)

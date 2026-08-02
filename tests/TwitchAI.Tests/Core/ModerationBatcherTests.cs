@@ -37,6 +37,206 @@ public sealed class ModerationBatcherTests
     }
 
     [Fact]
+    public void Enqueue_InterleavedChannelsKeepIndependentFixedDeadlines()
+    {
+        var sut = new ModerationBatcher();
+        var channelOne = Context(
+            "509658",
+            "general-v1",
+            channelId: "channel-1");
+        var channelTwo = Context(
+            "32982",
+            "general-backseat-v1",
+            channelId: "channel-2");
+
+        var first = sut.Enqueue(
+            Message(1, channelOne),
+            channelOne,
+            Baseline);
+        var second = sut.Enqueue(
+            Message(101, channelTwo),
+            channelTwo,
+            Baseline.AddSeconds(2));
+        var third = sut.Enqueue(
+            Message(2, channelOne),
+            channelOne,
+            Baseline.AddSeconds(9));
+
+        Assert.Empty(first.NewlySealedBatches);
+        Assert.Empty(second.NewlySealedBatches);
+        Assert.Empty(third.NewlySealedBatches);
+        Assert.Equal(Baseline.AddSeconds(10), sut.NextDeadlineUtc);
+
+        var channelOneBatch = sut.SealIfDue(Baseline.AddSeconds(10));
+
+        Assert.NotNull(channelOneBatch);
+        Assert.Equal("channel-1", channelOneBatch.Context.Channel.ChannelId);
+        Assert.Equal(
+            ["m1", "m2"],
+            channelOneBatch.Messages.Select(message => message.TemporaryMessageId));
+        Assert.Equal(Baseline.AddSeconds(12), sut.NextDeadlineUtc);
+        Assert.Null(sut.SealIfDue(Baseline.AddSeconds(12).AddTicks(-1)));
+
+        var channelTwoBatch = sut.SealIfDue(Baseline.AddSeconds(12));
+
+        Assert.NotNull(channelTwoBatch);
+        Assert.Equal("channel-2", channelTwoBatch.Context.Channel.ChannelId);
+        Assert.Equal(
+            ["m101"],
+            channelTwoBatch.Messages.Select(message => message.TemporaryMessageId));
+        Assert.Null(sut.NextDeadlineUtc);
+    }
+
+    [Fact]
+    public void Enqueue_InterleavedChannelsReachTwentyIndependently()
+    {
+        var sut = new ModerationBatcher();
+        var channelOne = Context(
+            "509658",
+            "general-v1",
+            channelId: "channel-1");
+        var channelTwo = Context(
+            "32982",
+            "general-backseat-v1",
+            channelId: "channel-2");
+
+        for (var index = 1; index < 20; index++)
+        {
+            var channelOneResult = sut.Enqueue(
+                Message(index, channelOne),
+                channelOne,
+                Baseline.AddMilliseconds(index * 2));
+            var channelTwoResult = sut.Enqueue(
+                Message(100 + index, channelTwo),
+                channelTwo,
+                Baseline.AddMilliseconds((index * 2) + 1));
+
+            Assert.Empty(channelOneResult.NewlySealedBatches);
+            Assert.Empty(channelTwoResult.NewlySealedBatches);
+        }
+
+        var channelOneTwentieth = sut.Enqueue(
+            Message(20, channelOne),
+            channelOne,
+            Baseline.AddSeconds(1));
+
+        var channelOneBatch = Assert.Single(
+            channelOneTwentieth.NewlySealedBatches);
+        Assert.Equal("channel-1", channelOneBatch.Context.Channel.ChannelId);
+        Assert.Equal(20, channelOneBatch.Messages.Count);
+        Assert.Equal(39, sut.WaitingMessageCount);
+
+        var channelTwoTwentieth = sut.Enqueue(
+            Message(120, channelTwo),
+            channelTwo,
+            Baseline.AddSeconds(1).AddMilliseconds(1));
+
+        var channelTwoBatch = Assert.Single(
+            channelTwoTwentieth.NewlySealedBatches);
+        Assert.Equal("channel-2", channelTwoBatch.Context.Channel.ChannelId);
+        Assert.Equal(20, channelTwoBatch.Messages.Count);
+        Assert.Equal(40, sut.WaitingMessageCount);
+        Assert.Null(sut.NextDeadlineUtc);
+    }
+
+    [Fact]
+    public void FlushChannel_SealsOnlyTheRequestedChannel()
+    {
+        var sut = new ModerationBatcher();
+        var channelOne = Context(
+            "509658",
+            "general-v1",
+            channelId: "channel-1");
+        var channelTwo = Context(
+            "32982",
+            "general-backseat-v1",
+            channelId: "channel-2");
+        sut.Enqueue(Message(1, channelOne), channelOne, Baseline);
+        sut.Enqueue(
+            Message(101, channelTwo),
+            channelTwo,
+            Baseline.AddSeconds(2));
+
+        var flushed = sut.FlushChannel(
+            "channel-2",
+            Baseline.AddSeconds(3));
+
+        Assert.NotNull(flushed);
+        Assert.Equal("channel-2", flushed.Context.Channel.ChannelId);
+        Assert.Equal(Baseline.AddSeconds(10), sut.NextDeadlineUtc);
+        Assert.Null(
+            sut.FlushChannel(
+                "channel-2",
+                Baseline.AddSeconds(4)));
+
+        var remaining = sut.SealIfDue(Baseline.AddSeconds(10));
+        Assert.NotNull(remaining);
+        Assert.Equal("channel-1", remaining.Context.Channel.ChannelId);
+    }
+
+    [Fact]
+    public void Clear_RemovesReadyAndOpenBatchesFromEveryChannel()
+    {
+        var sut = new ModerationBatcher();
+        var channelOne = Context(
+            "509658",
+            "general-v1",
+            channelId: "channel-1");
+        var channelTwo = Context(
+            "32982",
+            "general-backseat-v1",
+            channelId: "channel-2");
+        sut.Enqueue(Message(1, channelOne), channelOne, Baseline);
+        sut.Enqueue(Message(101, channelTwo), channelTwo, Baseline);
+        Assert.NotNull(sut.FlushChannel("channel-1", Baseline.AddSeconds(1)));
+        Assert.Equal(2, sut.WaitingMessageCount);
+
+        sut.Clear();
+
+        Assert.Equal(0, sut.WaitingMessageCount);
+        Assert.Null(sut.NextDeadlineUtc);
+        Assert.Null(sut.Flush(Baseline.AddSeconds(2)));
+        Assert.Null(sut.FlushChannel("channel-2", Baseline.AddSeconds(2)));
+        Assert.False(sut.TryDequeue(out var batch));
+        Assert.Null(batch);
+    }
+
+    [Fact]
+    public void Enqueue_ConsolidatesIntoMatchingQueuedBatchAcrossInterleavedChannels()
+    {
+        var sut = new ModerationBatcher();
+        var channelOne = Context(
+            "509658",
+            "general-v1",
+            channelId: "channel-1");
+        var channelTwo = Context(
+            "32982",
+            "general-backseat-v1",
+            channelId: "channel-2");
+        sut.Enqueue(Message(1, channelOne), channelOne, Baseline);
+        var firstQueued = sut.FlushChannel("channel-1", Baseline.AddSeconds(1));
+        sut.Enqueue(Message(101, channelTwo), channelTwo, Baseline.AddSeconds(2));
+        sut.FlushChannel("channel-2", Baseline.AddSeconds(3));
+
+        var result = sut.Enqueue(
+            Message(2, channelOne),
+            channelOne,
+            Baseline.AddSeconds(4));
+
+        var updated = Assert.Single(result.UpdatedQueuedBatches);
+        Assert.Equal(firstQueued!.BatchId, updated.BatchId);
+        Assert.Equal(["m1", "m2"], updated.Messages.Select(item => item.TemporaryMessageId));
+        Assert.Null(sut.NextDeadlineUtc);
+
+        Assert.True(sut.TryDequeue(out var dequeuedChannelOne));
+        Assert.Equal(
+            ["m1", "m2"],
+            dequeuedChannelOne!.Messages.Select(item => item.TemporaryMessageId));
+        Assert.True(sut.TryDequeue(out var dequeuedChannelTwo));
+        Assert.Equal("channel-2", dequeuedChannelTwo!.Context.Channel.ChannelId);
+    }
+
+    [Fact]
     public void SealIfDue_UsesFixedDeadlineFromFirstMessage()
     {
         var sut = new ModerationBatcher();

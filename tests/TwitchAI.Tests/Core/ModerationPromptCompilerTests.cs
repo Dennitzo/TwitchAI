@@ -115,19 +115,6 @@ public sealed class ModerationPromptCompilerTests
         var envelope = baseEnvelope with
         {
             ReplyTemplates = [new ChatReplyTemplatePrompt("r1", "WIE LANG GEHT DAS EVENT?")],
-            ActiveRules =
-            [
-                .. baseEnvelope.ActiveRules,
-                new ModerationRuleDefinition(
-                    ModerationRuleCodes.Disruption,
-                    PolicySetCode.General,
-                    "Chatstörung",
-                    "Erkenne gezielte erhebliche Chatstörung.",
-                    ModerationActionKind.Timeout,
-                    600,
-                    "Gezielte Störung des Chats.",
-                    Priority: 35),
-            ],
         };
 
         var compiled = new ModerationPromptCompiler().Compile(envelope);
@@ -143,7 +130,6 @@ public sealed class ModerationPromptCompilerTests
             [
                 ModerationRuleCodes.Backseatgaming,
                 ModerationRuleCodes.Spam,
-                ModerationRuleCodes.Disruption,
             ],
             message.GetProperty("excludedRuleCodes")
                 .EnumerateArray()
@@ -193,10 +179,9 @@ public sealed class ModerationPromptCompilerTests
             .Select(item => item.GetString()!)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
-        Assert.Contains(ModerationRuleCodes.Insult, allowedRuleCodes);
+        Assert.Contains(ModerationRuleCodes.PersonalAttack, allowedRuleCodes);
         Assert.DoesNotContain(ModerationRuleCodes.Backseatgaming, allowedRuleCodes);
         Assert.DoesNotContain(ModerationRuleCodes.Spam, allowedRuleCodes);
-        Assert.DoesNotContain(ModerationRuleCodes.Disruption, allowedRuleCodes);
     }
 
     [Theory]
@@ -278,7 +263,48 @@ public sealed class ModerationPromptCompilerTests
     }
 
     [Fact]
-    public void Compile_IncludesStrictInsultCriteriaExactlyOnceAsRuleData()
+    public void Compile_ProjectsRuleSpecificEvidenceKindsAndRequiresExactSelection()
+    {
+        var source = Envelope(
+            Guid.Parse("d46c7454-8752-42e8-a13e-98b6e77fc4a7"),
+            [new ModerationRequestMessageV3("m1", "ich liebe dich", [])]);
+        var envelope = source with
+        {
+            ActiveRules =
+            [
+                new ModerationRuleDefinition(
+                    ModerationRuleCodes.PersonalAttack,
+                    PolicySetCode.General,
+                    "Beleidigung & Belästigung",
+                    ModerationRuleCodes.PersonalAttackPromptInstruction,
+                    ModerationActionKind.Timeout,
+                    600,
+                    "Beleidigung oder Belästigung.",
+                    Priority: 50),
+            ],
+        };
+
+        var compiled = new ModerationPromptCompiler().Compile(envelope);
+        using var request = JsonDocument.Parse(compiled.UserPrompt);
+        var rule = Assert.Single(
+            request.RootElement.GetProperty("activeRules").EnumerateArray());
+
+        Assert.Equal(
+            ModerationRuleCodes.PersonalAttack,
+            rule.GetProperty("ruleCode").GetString());
+        Assert.Equal(
+            ["direct_insult", "unwanted_intimate_approach", "verified_harassment"],
+            rule.GetProperty("evidenceKinds")
+                .EnumerateArray()
+                .Select(item => item.GetString()!));
+        Assert.Contains(
+            "copy evidenceKind exactly from the selected rule's activeRules.evidenceKinds list",
+            compiled.SystemPrompt,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Compile_IncludesStrictPersonalAttackCriteriaExactlyOnceAsRuleData()
     {
         var compiled = new ModerationPromptCompiler().Compile(
             Envelope(
@@ -286,29 +312,29 @@ public sealed class ModerationPromptCompilerTests
                 [new ModerationRequestMessageV3("m1", "scheiße, das war knapp", [])]));
 
         using var request = JsonDocument.Parse(compiled.UserPrompt);
-        var insultRule = Assert.Single(
+        var personalAttackRule = Assert.Single(
             request.RootElement.GetProperty("activeRules").EnumerateArray(),
             rule => string.Equals(
                 rule.GetProperty("ruleCode").GetString(),
-                ModerationRuleCodes.Insult,
+                ModerationRuleCodes.PersonalAttack,
                 StringComparison.Ordinal));
 
         Assert.Equal(
-            ModerationRuleCodes.InsultPromptInstruction,
-            insultRule.GetProperty("criteria").GetString());
+            ModerationRuleCodes.PersonalAttackPromptInstruction,
+            personalAttackRule.GetProperty("criteria").GetString());
         Assert.Equal(
             1,
             compiled.UserPrompt.Split(
-                ModerationRuleCodes.InsultPromptInstruction,
+                ModerationRuleCodes.PersonalAttackPromptInstruction,
                 StringSplitOptions.None).Length - 1);
         Assert.DoesNotContain(
-            ModerationRuleCodes.InsultPromptInstruction,
+            ModerationRuleCodes.PersonalAttackPromptInstruction,
             compiled.SystemPrompt,
             StringComparison.Ordinal);
-        Assert.Contains("zielloser Fluch", ModerationRuleCodes.InsultPromptInstruction);
-        Assert.Contains("Situations-/Spiel-", ModerationRuleCodes.InsultPromptInstruction);
-        Assert.Contains("Mehrdeutigkeit", ModerationRuleCodes.InsultPromptInstruction);
-        Assert.Contains("Username/@", ModerationRuleCodes.InsultPromptInstruction);
+        Assert.Contains("zielloser Fluch", ModerationRuleCodes.PersonalAttackPromptInstruction);
+        Assert.Contains("Kritik an Handlung", ModerationRuleCodes.PersonalAttackPromptInstruction);
+        Assert.Contains("unerwünschter intimer", ModerationRuleCodes.PersonalAttackPromptInstruction);
+        Assert.Contains("Wiederholte Belästigung", ModerationRuleCodes.PersonalAttackPromptInstruction);
     }
 
     [Fact]
@@ -374,7 +400,7 @@ public sealed class ModerationPromptCompilerTests
             .EnumerateArray()
             .Select(item => item.GetString()!)
             .ToArray();
-        Assert.Contains("G_INSULT", banRules);
+        Assert.Contains(ModerationRuleCodes.PersonalAttack, banRules);
         Assert.Contains(ModerationRuleCodes.PersonalData, banRules);
         Assert.DoesNotContain(ModerationRuleCodes.Spam, banRules);
         Assert.DoesNotContain(ModerationRuleCodes.Backseatgaming, banRules);
@@ -510,13 +536,13 @@ public sealed class ModerationPromptCompilerTests
             ],
             [
                 new ModerationRuleDefinition(
-                    ModerationRuleCodes.Insult,
+                    ModerationRuleCodes.PersonalAttack,
                     PolicySetCode.General,
-                    "Beleidigung",
-                    ModerationRuleCodes.InsultPromptInstruction,
+                    "Beleidigung & Belästigung",
+                    ModerationRuleCodes.PersonalAttackPromptInstruction,
                     ModerationActionKind.Timeout,
                     600,
-                    "Beleidigung eines Nutzers oder Streamers.",
+                    "Beleidigung oder Belästigung eines Nutzers oder Streamers.",
                     Priority: 20),
                 new ModerationRuleDefinition(
                     ModerationRuleCodes.Spam,

@@ -71,6 +71,33 @@ public sealed class CoreTwitchEventSubClientTests
         Assert.True(chatEvent.IsTwitchEmoteOnly);
     }
 
+    [Fact]
+    public async Task ReadEventsAsync_PassesAllConfiguredBroadcastersToWebSocket()
+    {
+        var client = CreateClient(
+            new TwitchChatMessageEvent(
+                "eventsub-message-multi",
+                "channel-2",
+                DateTimeOffset.UtcNow,
+                "message-multi",
+                "viewer-1",
+                "viewer",
+                "Viewer",
+                "hello",
+                IsModerator: false,
+                new Dictionary<string, string>(),
+                SourceBroadcasterId: null,
+                SourceMessageId: null),
+            new ThrowingAvailabilityStore(AvailabilityFailure.None),
+            new RecordingDedupeStore(),
+            new ThrowingChannelStateRepository(),
+            ["channel-1", "channel-2"]);
+
+        var chatEvent = await ReadSingleAsync(client);
+
+        Assert.Equal("channel-2", chatEvent.Message?.ChannelId);
+    }
+
     [Theory]
     [InlineData("moderator")]
     [InlineData("lead_moderator")]
@@ -183,7 +210,8 @@ public sealed class CoreTwitchEventSubClientTests
         TwitchEventSubEvent eventSubEvent,
         IMessageAvailabilityStore availabilityStore,
         IEventSubDedupeStore dedupeStore,
-        IChannelStateRepository channelStateRepository)
+        IChannelStateRepository channelStateRepository,
+        IReadOnlyList<string>? broadcasterIds = null)
     {
         var options = new InfrastructureOptions
         {
@@ -194,12 +222,15 @@ public sealed class CoreTwitchEventSubClientTests
                 ModeratorUserId = "moderator-1",
             },
         };
+        options.TwitchApi.SetBroadcasterIds(broadcasterIds ?? ["channel-1"]);
         var contextService = new HelixChannelContextService(
             channelStateRepository,
             new StubHelixClient(),
             options);
         return new CoreTwitchEventSubClient(
-            new SingleEventWebSocketClient(eventSubEvent),
+            new SingleEventWebSocketClient(
+                eventSubEvent,
+                options.TwitchApi.GetBroadcasterIds()),
             contextService,
             availabilityStore,
             dedupeStore,
@@ -225,7 +256,9 @@ public sealed class CoreTwitchEventSubClientTests
         return Assert.Single(events);
     }
 
-    private sealed class SingleEventWebSocketClient(TwitchEventSubEvent eventSubEvent)
+    private sealed class SingleEventWebSocketClient(
+        TwitchEventSubEvent eventSubEvent,
+        IReadOnlyList<string> expectedBroadcasterIds)
         : ITwitchEventSubWebSocketClient
     {
         public async IAsyncEnumerable<TwitchEventSubEvent> ReadAllAsync(
@@ -233,6 +266,7 @@ public sealed class CoreTwitchEventSubClientTests
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Assert.Equal("channel-1", channel.BroadcasterId);
+            Assert.Equal(expectedBroadcasterIds, channel.GetBroadcasterIds());
             Assert.Equal("reader-1", channel.ReaderUserId);
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Yield();

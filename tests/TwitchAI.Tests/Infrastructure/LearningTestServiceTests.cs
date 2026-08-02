@@ -84,17 +84,17 @@ public sealed class LearningTestServiceTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_DeleteForInsultBecomesDefaultTimeout()
+    public async Task AnalyzeAsync_PersonalAttackPreservesTenMinuteTimeout()
     {
         var lmStudio = new FakeLmStudioClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
                     "moderate",
-                    "delete",
-                    null,
+                    "timeout",
+                    600,
                     "G",
-                    "G_INSULT",
+                    ModerationRuleCodes.PersonalAttack,
                     "Direkte Beleidigung gegen einen Nutzer.",
                     ["du idiot"],
                     0.94)));
@@ -106,14 +106,14 @@ public sealed class LearningTestServiceTests
         Assert.Equal(LearningVerdict.Moderate, result.Verdict);
         Assert.Equal(ModerationActionKind.Timeout, result.ProposedAction);
         Assert.Equal(600, result.ProposedTimeoutSeconds);
-        Assert.Equal("G_INSULT", result.ProposedRuleCode);
+        Assert.Equal(ModerationRuleCodes.PersonalAttack, result.ProposedRuleCode);
         Assert.Equal(
             "Direkte Beleidigung gegen einen Nutzer oder Streamer.",
             result.ProposedReason);
     }
 
     [Fact]
-    public async Task AnalyzeAsync_DeleteForSpamBecomesLightTimeout()
+    public async Task AnalyzeAsync_DeleteForSpamRemainsDelete()
     {
         var lmStudio = new FakeLmStudioClient(request =>
             Completion(
@@ -132,21 +132,21 @@ public sealed class LearningTestServiceTests
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("SPAM SPAM"));
 
-        Assert.Equal(ModerationActionKind.Timeout, result.ProposedAction);
-        Assert.Equal(120, result.ProposedTimeoutSeconds);
+        Assert.Equal(ModerationActionKind.Delete, result.ProposedAction);
+        Assert.Null(result.ProposedTimeoutSeconds);
         Assert.Equal(ModerationRuleCodes.Spam, result.ProposedRuleCode);
     }
 
     [Fact]
-    public async Task AnalyzeAsync_DeleteForBackseatgamingBecomesDefaultTimeout()
+    public async Task AnalyzeAsync_BackseatgamingPreservesTenMinuteTimeout()
     {
         var lmStudio = new FakeLmStudioClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
                     "moderate",
-                    "delete",
-                    null,
+                    "timeout",
+                    600,
                     "B",
                     ModerationRuleCodes.Backseatgaming,
                     "Unaufgeforderter Spielhinweis.",
@@ -164,22 +164,18 @@ public sealed class LearningTestServiceTests
             result.ProposedRuleCode);
     }
 
-    [Theory]
-    [InlineData("delete", null)]
-    [InlineData("timeout", 120)]
-    public async Task AnalyzeAsync_AdvertisingAlwaysBecomesBan(
-        string action,
-        int? timeoutSeconds)
+    [Fact]
+    public async Task AnalyzeAsync_BotScamPreservesBan()
     {
         var lmStudio = new FakeLmStudioClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
                     "moderate",
-                    action,
-                    timeoutSeconds,
+                    "ban",
+                    null,
                     "G",
-                    ModerationRuleCodes.Advertising,
+                    ModerationRuleCodes.BotScam,
                     "Unaufgeforderte Werbung oder Eigenwerbung.",
                     ["meinen kanal"],
                     0.97)));
@@ -191,24 +187,20 @@ public sealed class LearningTestServiceTests
         Assert.Equal(ModerationActionKind.Ban, result.ProposedAction);
         Assert.Null(result.ProposedTimeoutSeconds);
         Assert.Equal(
-            ModerationRuleCodes.Advertising,
+            ModerationRuleCodes.BotScam,
             result.ProposedRuleCode);
     }
 
-    [Theory]
-    [InlineData("delete", null)]
-    [InlineData("timeout", 120)]
-    public async Task AnalyzeAsync_BeggingAlwaysBecomesDayTimeout(
-        string action,
-        int? timeoutSeconds)
+    [Fact]
+    public async Task AnalyzeAsync_BeggingPreservesDayTimeout()
     {
         var lmStudio = new FakeLmStudioClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
                     "moderate",
-                    action,
-                    timeoutSeconds,
+                    "timeout",
+                    86_400,
                     "G",
                     ModerationRuleCodes.Begging,
                     "Betteln nach Subs, Geschenken oder Giveaways.",
@@ -227,17 +219,17 @@ public sealed class LearningTestServiceTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_DeleteForLowContextOtherAbuseRemainsDelete()
+    public async Task AnalyzeAsync_HarmPreservesDayTimeout()
     {
         var lmStudio = new FakeLmStudioClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
                     "moderate",
-                    "delete",
-                    null,
+                    "timeout",
+                    86_400,
                     "G",
-                    ModerationRuleCodes.OtherAbuse,
+                    ModerationRuleCodes.Harm,
                     "Unnötige Störnachricht.",
                     ["unnötiger lärm"],
                     0.83)));
@@ -246,9 +238,9 @@ public sealed class LearningTestServiceTests
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("Unnötiger Lärm"));
 
-        Assert.Equal(ModerationActionKind.Delete, result.ProposedAction);
-        Assert.Null(result.ProposedTimeoutSeconds);
-        Assert.Equal(ModerationRuleCodes.OtherAbuse, result.ProposedRuleCode);
+        Assert.Equal(ModerationActionKind.Timeout, result.ProposedAction);
+        Assert.Equal(86_400, result.ProposedTimeoutSeconds);
+        Assert.Equal(ModerationRuleCodes.Harm, result.ProposedRuleCode);
     }
 
     [Fact]
@@ -429,7 +421,8 @@ public sealed class LearningTestServiceTests
                     null,
                     "Unaufgeforderter Spielhinweis.",
                     ["geh nach links"],
-                    0.9)));
+                    0.9,
+                    evidenceKind: "instruction")));
         var phraseSource = new StaticPhraseRuleSource(
         [
             new PhraseRule(
@@ -454,6 +447,265 @@ public sealed class LearningTestServiceTests
         Assert.Equal(
             [ModerationRuleCodes.Backseatgaming],
             result.LocalMatchCodes);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ActivePhraseUsesTrustedEvidenceWithoutAiRepair()
+    {
+        const string message = "ich liebe dich";
+        var lmStudio = new FakeLmStudioClient(request =>
+            Completion(
+                Response(
+                    ReadTestId(request.UserPrompt),
+                    "moderate",
+                    "timeout",
+                    600,
+                    "G",
+                    ModerationRuleCodes.PersonalAttack,
+                    "Unangebrachte persoenliche Annaeherung.",
+                    [message],
+                    0.91,
+                    evidenceKind: "sexualization")));
+        var phraseSource = new StaticPhraseRuleSource(
+        [
+            new PhraseRule(
+                173,
+                ModerationRuleCodes.PersonalAttack,
+                PolicySetCode.General,
+                message,
+                PhraseManualOverride.Active,
+                0,
+                0,
+                IsArchived: false),
+        ]);
+        var sut = CreateService(lmStudio, phraseSource: phraseSource);
+
+        var result = await sut.AnalyzeAsync(new LearningTestRequest(message));
+
+        Assert.Single(lmStudio.Requests);
+        Assert.Equal(LearningVerdict.Moderate, result.Verdict);
+        Assert.Equal(ModerationRuleCodes.PersonalAttack, result.ProposedRuleCode);
+        Assert.Equal("unwanted_intimate_approach", result.EvidenceKind);
+        Assert.Equal("manual_blacklist_phrase", result.HumanPrioritySource);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ExactModerateLearningUsesTrustedEvidenceWithoutAiRepair()
+    {
+        const string message = "ich liebe dich";
+        var retrieval = new StaticRetrievalStore(
+        [
+            new RetrievalExample(
+                message,
+                ModerationActionKind.Timeout,
+                600,
+                PolicySetCode.General,
+                "Unangebrachte persoenliche Annaeherung.",
+                IsPositive: true,
+                ModerationRuleCodes.PersonalAttack)
+            {
+                IsExactHumanDecision = true,
+            },
+        ]);
+        var lmStudio = new FakeLmStudioClient(request =>
+            Completion(
+                Response(
+                    ReadTestId(request.UserPrompt),
+                    "moderate",
+                    "timeout",
+                    600,
+                    "G",
+                    ModerationRuleCodes.PersonalAttack,
+                    "Unangebrachte persoenliche Annaeherung.",
+                    [message],
+                    0.91,
+                    evidenceKind: "unwanted_intimate_approach")));
+        var sut = CreateService(lmStudio, retrieval: retrieval);
+
+        var result = await sut.AnalyzeAsync(new LearningTestRequest(message));
+
+        Assert.Single(lmStudio.Requests);
+        Assert.Equal(LearningVerdict.Moderate, result.Verdict);
+        Assert.Equal("unwanted_intimate_approach", result.EvidenceKind);
+        Assert.Equal("exact_moderate_learning", result.HumanPrioritySource);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_HumanRuleOverrideDoesNotCopyIncompatibleAiEvidence()
+    {
+        const string message = "du idiot";
+        var retrieval = new StaticRetrievalStore(
+        [
+            new RetrievalExample(
+                message,
+                ModerationActionKind.Timeout,
+                600,
+                PolicySetCode.General,
+                "Direkte Beleidigung.",
+                IsPositive: true,
+                ModerationRuleCodes.PersonalAttack)
+            {
+                IsExactHumanDecision = true,
+            },
+        ]);
+        var lmStudio = new FakeLmStudioClient(request =>
+            Completion(
+                Response(
+                    ReadTestId(request.UserPrompt),
+                    "moderate",
+                    "timeout",
+                    86_400,
+                    "G",
+                    ModerationRuleCodes.PersonalData,
+                    "Private Daten veroeffentlicht.",
+                    [],
+                    0.91,
+                    evidenceKind: "disclosure",
+                    sensitiveDataType: "email")));
+        var sut = CreateService(lmStudio, retrieval: retrieval);
+
+        var result = await sut.AnalyzeAsync(new LearningTestRequest(message));
+
+        Assert.Single(lmStudio.Requests);
+        Assert.Equal(ModerationRuleCodes.PersonalAttack, result.ProposedRuleCode);
+        Assert.Null(result.EvidenceKind);
+        Assert.Null(result.SensitiveDataType);
+        Assert.Equal("exact_moderate_learning", result.HumanPrioritySource);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_ExactAllowLearningOverridesInvalidAiEvidence()
+    {
+        const string message = "ich liebe dich";
+        var retrieval = new StaticRetrievalStore(
+        [
+            new RetrievalExample(
+                message,
+                ModerationActionKind.None,
+                null,
+                PolicySetCode.General,
+                "Im konkreten Kontext erlaubt.",
+                IsPositive: false,
+                ModerationRuleCodes.PersonalAttack)
+            {
+                IsExactHumanDecision = true,
+            },
+        ]);
+        var lmStudio = new FakeLmStudioClient(request =>
+            Completion(
+                Response(
+                    ReadTestId(request.UserPrompt),
+                    "moderate",
+                    "timeout",
+                    600,
+                    "G",
+                    ModerationRuleCodes.PersonalAttack,
+                    "Unangebrachte persoenliche Annaeherung.",
+                    [message],
+                    0.91,
+                    evidenceKind: "sexualization")));
+        var sut = CreateService(lmStudio, retrieval: retrieval);
+
+        var result = await sut.AnalyzeAsync(new LearningTestRequest(message));
+
+        Assert.Single(lmStudio.Requests);
+        Assert.Equal(LearningVerdict.Allow, result.Verdict);
+        Assert.Equal(ModerationActionKind.None, result.ProposedAction);
+        Assert.Null(result.EvidenceKind);
+        Assert.Equal("exact_allow_learning", result.HumanPrioritySource);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_SemanticEvidenceMismatchRepairsWithExplicitRuleMapping()
+    {
+        var lmStudio = new FakeLmStudioClient(request =>
+        {
+            var isRepair = request.CorrelationId.EndsWith(
+                "-repair",
+                StringComparison.Ordinal);
+            return
+            Completion(
+                Response(
+                    ReadTestId(request.UserPrompt),
+                    "moderate",
+                    "timeout",
+                    600,
+                    "G",
+                    ModerationRuleCodes.PersonalAttack,
+                    isRepair
+                        ? "Direkte Beleidigung."
+                        : "RAW-REASON-MUST-NOT-BE-COPIED",
+                    ["du idiot"],
+                    0.91,
+                    evidenceKind: isRepair
+                        ? "direct_insult"
+                        : "sexualization"));
+        });
+        var sut = CreateService(lmStudio);
+
+        var result = await sut.AnalyzeAsync(
+            new LearningTestRequest("Du Idiot"));
+
+        Assert.Equal(2, lmStudio.Requests.Count);
+        var repair = lmStudio.Requests[1];
+        Assert.Contains(
+            "\"validationErrorCodes\":[\"evidence_kind_invalid\"]",
+            repair.UserPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "\"allowedEvidenceKindsByRule\"",
+            repair.UserPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "\"invalidDecisionSummary\":{\"verdict\":\"moderate\",\"selectedRuleCode\":\"G_PERSONAL_ATTACK\",\"evidenceKind\":\"sexualization\"}",
+            repair.UserPrompt,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "RAW-REASON-MUST-NOT-BE-COPIED",
+            repair.UserPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains("direct_insult", repair.UserPrompt, StringComparison.Ordinal);
+        Assert.Contains("verified_harassment", repair.UserPrompt, StringComparison.Ordinal);
+        Assert.Equal("direct_insult", result.EvidenceKind);
+        Assert.Null(result.HumanPrioritySource);
+    }
+
+    [Fact]
+    public async Task AnalyzeAsync_EvidenceRepairCannotSilentlyChangeRuleCode()
+    {
+        var lmStudio = new FakeLmStudioClient(request =>
+        {
+            var isRepair = request.CorrelationId.EndsWith(
+                "-repair",
+                StringComparison.Ordinal);
+            return Completion(
+                Response(
+                    ReadTestId(request.UserPrompt),
+                    "moderate",
+                    "timeout",
+                    600,
+                    "G",
+                    isRepair
+                        ? ModerationRuleCodes.Hate
+                        : ModerationRuleCodes.PersonalAttack,
+                    isRepair
+                        ? "Hassrede gegen eine geschuetzte Gruppe."
+                        : "Direkte Beleidigung.",
+                    ["du idiot"],
+                    0.91,
+                    evidenceKind: isRepair ? "racist" : "sexualization"));
+        });
+        var sut = CreateService(lmStudio);
+
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await sut.AnalyzeAsync(
+                new LearningTestRequest("Du Idiot")));
+
+        Assert.Equal(2, lmStudio.Requests.Count);
+        Assert.Contains(
+            "repair_rule_changed",
+            exception.Message,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -645,6 +897,47 @@ public sealed class LearningTestServiceTests
                 .IsPolicyCurrentAsync(result));
     }
 
+    [Fact]
+    public async Task GenerateReasonAsync_UsesLowercaseTextAndSelectedRuleOnly()
+    {
+        var policy = Policy("policy-reason");
+        var lmStudio = new FakeLmStudioClient(
+            _ => Completion(
+                "{\"reason\":\"Die Nachricht gibt ungefragt vor, dass der Streamer nachladen muss.\"}"));
+        var sut = CreateService(lmStudio, new FakePolicyStore(policy));
+        var testResult = Result(
+            LearningPolicyRevisionFingerprint.Create(policy)) with
+        {
+            OriginalText = "DU MUSST NACHLADEN",
+            LowerText = "du musst nachladen",
+        };
+
+        var result = await sut.GenerateReasonAsync(
+            new LearningReasonRequest(
+                testResult,
+                ModerationRuleCodes.Backseatgaming,
+                ModerationActionKind.Timeout,
+                600));
+
+        Assert.Equal(ModerationRuleCodes.Backseatgaming, result.RuleCode);
+        Assert.Equal(
+            "Die Nachricht gibt ungefragt vor, dass der Streamer nachladen muss.",
+            result.Reason);
+        var request = Assert.Single(lmStudio.Requests);
+        Assert.Equal(LocalAiRunKind.LearningTest, request.RunKind);
+        Assert.NotNull(request.ResponseFormat);
+        Assert.Contains("du musst nachladen", request.UserPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("DU MUSST NACHLADEN", request.UserPrompt, StringComparison.Ordinal);
+        Assert.Contains(
+            ModerationRuleCodes.Backseatgaming,
+            request.UserPrompt,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            ModerationRuleCodes.PersonalAttack,
+            request.UserPrompt,
+            StringComparison.Ordinal);
+    }
+
     private static LearningTestService CreateService(
         ILmStudioClient client,
         IPolicyStore? store = null,
@@ -706,7 +999,7 @@ public sealed class LearningTestServiceTests
                     now),
                 StoredRule(
                     4,
-                    "G_INSULT",
+                    ModerationRuleCodes.PersonalAttack,
                     "Beleidigung",
                     "Direkte Beleidigung eines Nutzers oder Streamers.",
                     70,
@@ -715,12 +1008,12 @@ public sealed class LearningTestServiceTests
                     now),
                 StoredRule(
                     5,
-                    ModerationRuleCodes.Advertising,
+                    ModerationRuleCodes.BotScam,
                     "Werbung",
                     "Unaufgeforderte Werbung oder Eigenwerbung.",
                     75,
-                    ModerationRuleAction.Timeout,
-                    120,
+                    ModerationRuleAction.Ban,
+                    null,
                     now),
                 StoredRule(
                     6,
@@ -729,7 +1022,34 @@ public sealed class LearningTestServiceTests
                     "Betteln nach Subs, Geschenken oder Giveaways.",
                     76,
                     ModerationRuleAction.Timeout,
-                    120,
+                    86_400,
+                    now),
+                StoredRule(
+                    7,
+                    ModerationRuleCodes.Harm,
+                    "Gewalt und Drohungen",
+                    "Drohung oder Aufforderung zu Gewalt.",
+                    20,
+                    ModerationRuleAction.Timeout,
+                    86_400,
+                    now),
+                StoredRule(
+                    8,
+                    ModerationRuleCodes.Hate,
+                    "Hassrede",
+                    "Hassrede oder diskriminierende Aussage.",
+                    30,
+                    ModerationRuleAction.Timeout,
+                    600,
+                    now),
+                StoredRule(
+                    9,
+                    ModerationRuleCodes.PersonalData,
+                    "Persoenliche Daten",
+                    "Veroeffentlichung persoenlicher Daten.",
+                    10,
+                    ModerationRuleAction.Timeout,
+                    86_400,
                     now),
             ],
             []);
@@ -781,7 +1101,22 @@ public sealed class LearningTestServiceTests
         string? ruleCode,
         string reason,
         IReadOnlyList<string> triggerPhrases,
-        double confidence) =>
+        double confidence,
+        string? evidenceKind = null,
+        string? sensitiveDataType = null)
+    {
+        var resolvedEvidenceKind = evidenceKind;
+        if (string.Equals(verdict, "moderate", StringComparison.Ordinal)
+            && string.IsNullOrWhiteSpace(resolvedEvidenceKind))
+        {
+            var compatibleEvidenceKinds = ModerationEvidenceKinds
+                .ForRule(ruleCode);
+            resolvedEvidenceKind = compatibleEvidenceKinds.Count == 0
+                ? null
+                : compatibleEvidenceKinds[0];
+        }
+
+        return
         System.Text.Json.JsonSerializer.Serialize(
             new
             {
@@ -794,11 +1129,14 @@ public sealed class LearningTestServiceTests
                     timeoutSeconds,
                     policySet,
                     ruleCode,
+                    evidenceKind = resolvedEvidenceKind,
+                    sensitiveDataType,
                     reason,
                     triggerPhrases,
                     confidence,
                 },
             });
+    }
 
     private static Guid ReadTestId(string requestJson)
     {
