@@ -2434,6 +2434,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly ModerationQueueRuntimeSettings _queueRuntimeSettings;
     private readonly TwitchRuntimeModeSettings _twitchRuntimeModeSettings;
     private readonly IModerationCoordinator _coordinator;
+    private readonly IDatabaseTransferService _databaseTransferService;
     private readonly SemaphoreSlim _twitchSessionGate = new(1, 1);
 
     public SettingsViewModel(
@@ -2451,7 +2452,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ILocalAppStorage localStorage,
         ModerationQueueRuntimeSettings queueRuntimeSettings,
         TwitchRuntimeModeSettings twitchRuntimeModeSettings,
-        IModerationCoordinator coordinator)
+        IModerationCoordinator coordinator,
+        IDatabaseTransferService databaseTransferService)
     {
         _state = state;
         _options = options;
@@ -2468,6 +2470,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _queueRuntimeSettings = queueRuntimeSettings;
         _twitchRuntimeModeSettings = twitchRuntimeModeSettings;
         _coordinator = coordinator;
+        _databaseTransferService = databaseTransferService;
         TwitchClientId = _localStorage.GetString("TwitchClientId")
             ?? options.TwitchOAuth.ClientId;
         ChannelLogin = TwitchChannelSelection.FormatLogins(
@@ -2616,6 +2619,22 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             LocalAppSettingKeys.ReadOnlyMode,
             ReadOnlyMode.ToString());
         SaveStatus = "Lokal gespeichert · Verbindungsänderungen gelten nach App-Neustart";
+    }
+
+    public async Task ExportDatabaseAsync(string destinationPath, CancellationToken cancellationToken = default)
+    {
+        await _databaseTransferService.ExportAsync(destinationPath, cancellationToken).ConfigureAwait(false);
+        SaveStatus = "Datenbank exportiert · alle Daten sind enthalten";
+    }
+
+    public async Task ImportDatabaseAsync(string sourcePath, CancellationToken cancellationToken = default)
+    {
+        await _coordinator.StopAsync(cancellationToken).ConfigureAwait(false);
+        _state.IsAnalysisRunning = false;
+        await _databaseTransferService.ImportAsync(sourcePath, cancellationToken).ConfigureAwait(false);
+        _state.IsTwitchConnectionReady = false;
+        _twitchConnectionReadiness.SetSessionReady(false, "Datenbank importiert · Verbindung bitte erneut prüfen");
+        SaveStatus = "Datenbank importiert · TwitchAI bitte neu starten";
     }
 
     public async Task ApplyReadOnlyModeChangeAsync(

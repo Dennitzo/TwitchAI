@@ -4,6 +4,8 @@ using Microsoft.UI.Xaml.Controls;
 using TwitchAI.App.ViewModels;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.System;
+using Windows.Storage.Pickers;
+using Windows.Storage;
 
 namespace TwitchAI.App.Views;
 
@@ -51,6 +53,57 @@ public sealed partial class SettingsPage : Page
                 "Read-Only-Modus nicht umgestellt",
                 "Die bisherige Einstellung und Twitch-Verbindung bleiben aktiv: "
                 + exception.Message);
+        }
+    }
+
+    private async void OnExportDatabaseClicked(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var picker = new FileSavePicker
+            {
+                SuggestedStartLocation = PickerLocationId.DocumentsLibrary,
+                SuggestedFileName = $"TwitchAI-Datenstand-{DateTime.Now:yyyyMMdd-HHmmss}.db"
+            };
+            picker.FileTypeChoices.Add("SQLite-Datenbank", new List<string> { ".db" });
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.Current.MainWindow));
+            var file = await picker.PickSaveFileAsync();
+            if (file is null) return;
+            await ViewModel.ExportDatabaseAsync(file.Path);
+            await ShowMessageAsync("Export abgeschlossen", "Der vollständige Datenstand wurde exportiert.");
+        }
+        catch (Exception exception)
+        {
+            await ShowMessageAsync("Export nicht möglich", exception.Message);
+        }
+    }
+
+    private async void OnImportDatabaseClicked(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.DocumentsLibrary };
+            picker.FileTypeFilter.Add(".db");
+            picker.FileTypeFilter.Add(".sqlite");
+            WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.Current.MainWindow));
+            var file = await picker.PickSingleFileAsync();
+            if (file is null) return;
+            var confirmation = new ContentDialog
+            {
+                Title = "Datenbank importieren?",
+                Content = "Der aktuelle Datenstand wird vorher gesichert und durch die ausgewählte Datei ersetzt. Konfigurationseinträge werden aktiviert.",
+                PrimaryButtonText = "Importieren",
+                CloseButtonText = "Abbrechen",
+                DefaultButton = ContentDialogButton.Close,
+                XamlRoot = Content.XamlRoot
+            };
+            if (await confirmation.ShowAsync() != ContentDialogResult.Primary) return;
+            await ViewModel.ImportDatabaseAsync(file.Path);
+            await ShowMessageAsync("Import abgeschlossen", "Der Datenstand wurde importiert. Bitte TwitchAI neu starten.");
+        }
+        catch (Exception exception)
+        {
+            await ShowMessageAsync("Import nicht möglich", exception.Message);
         }
     }
 

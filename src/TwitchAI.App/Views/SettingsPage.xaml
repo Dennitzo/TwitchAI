@@ -295,6 +295,17 @@
         </StackPanel>
       </Border>
 
+      <Border Style="{StaticResource CardStyle}">
+        <StackPanel Spacing="10">
+          <TextBlock Style="{StaticResource SectionTitleStyle}" Text="Datenbanktransfer" />
+          <TextBlock Foreground="{ThemeResource MutedTextBrush}" Text="Export und Import übertragen den vollständigen SQLite-Datenstand. Konfigurationseinträge werden beim Import aktiviert; Zugangsdaten bleiben sicher auf diesem PC." TextWrapping="Wrap" />
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Button Click="OnExportDatabaseClicked" Content="Datenbank exportieren" />
+            <Button Click="OnImportDatabaseClicked" Content="Datenbank importieren" />
+          </StackPanel>
+        </StackPanel>
+      </Border>
+
       <Grid x:Name="SaveFooter" RowSpacing="10">
         <Grid.RowDefinitions>
           <RowDefinition Height="Auto" />

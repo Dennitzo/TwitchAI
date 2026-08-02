@@ -27,6 +27,7 @@ public static class DependencyInjection
             LearningContextRevision.ProcessWide);
         services.AddSingleton<ISqliteConnectionFactory, SqliteConnectionFactory>();
         services.AddSingleton<IDatabaseInitializer, DatabaseInitializer>();
+        services.AddSingleton<IDatabaseTransferService, DatabaseTransferService>();
         services.AddSingleton<IHostedService, DatabaseInitializationHostedService>();
         services.AddSingleton<IChatTextNormalizer, ChatTextNormalizer>();
         services.AddSingleton<IWhitelistTextNormalizer, WhitelistTextNormalizer>();

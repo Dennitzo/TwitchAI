@@ -64,7 +64,9 @@ unter `%LOCALAPPDATA%\TwitchAI`. Der Datenbankpfad ist
 
 ## Moderationsablauf
 
-1. EventSub liefert Chat, Lösch-, Clear- und Kategorieereignisse.
+1. EventSub liefert Chat sowie im Moderationsmodus Lösch- und Clear-Ereignisse.
+   Kategorien werden beim Start und regelmäßig per Helix abgeglichen; dadurch
+   verbrauchen viele überwachte Fremdkanäle keine `channel.update`-EventSub-Kosten.
 2. Die exakte Lowercase-Whitelist wird vor jeder weiteren Verarbeitung geprüft.
    Der Seed `KEKW` wird daher in beliebiger Groß-/Kleinschreibung übersprungen,
    ` KEKW` oder `KEKW!` dagegen nicht.

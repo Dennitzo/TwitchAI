@@ -5,7 +5,7 @@ namespace TwitchAI.Tests.Infrastructure;
 public sealed class TwitchEventSubSubscriptionTests
 {
     [Fact]
-    public void BuildSubscriptionRequests_ModerationModeCreatesFivePerChannel()
+    public void BuildSubscriptionRequests_ModerationModeCreatesFourChatSubscriptionsPerChannel()
     {
         var channel = new TwitchEventSubChannel("channel-1", "reader-1")
         {
@@ -17,7 +17,7 @@ public sealed class TwitchEventSubSubscriptionTests
             "session-1",
             isReadOnly: false);
 
-        Assert.Equal(10, requests.Count);
+        Assert.Equal(8, requests.Count);
         Assert.Equal(
             ["channel-1", "channel-2"],
             requests
@@ -30,10 +30,11 @@ public sealed class TwitchEventSubSubscriptionTests
         Assert.Equal(
             2,
             requests.Count(request => request.Type == "channel.chat.message_delete"));
+        Assert.DoesNotContain(requests, request => request.Type == "channel.update");
     }
 
     [Fact]
-    public void BuildSubscriptionRequests_ReadOnlyCreatesUpdateAndMessageOnly()
+    public void BuildSubscriptionRequests_ReadOnlyCreatesOnlyCostFreeChatMessages()
     {
         var channel = new TwitchEventSubChannel("channel-1", "reader-1")
         {
@@ -45,16 +46,35 @@ public sealed class TwitchEventSubSubscriptionTests
             "session-read-only",
             isReadOnly: true);
 
-        Assert.Equal(6, requests.Count);
+        Assert.Equal(3, requests.Count);
         Assert.All(
             requests,
-            request => Assert.True(
-                request.Type is "channel.update" or "channel.chat.message"));
-        Assert.Equal(
-            3,
-            requests.Count(request => request.Type == "channel.update"));
+            request => Assert.Equal("channel.chat.message", request.Type));
         Assert.Equal(
             3,
             requests.Count(request => request.Type == "channel.chat.message"));
+        Assert.DoesNotContain(requests, request => request.Type == "channel.update");
+    }
+
+    [Fact]
+    public void BuildSubscriptionRequests_ElevenReadOnlyChannelsStayBelowCostLimit()
+    {
+        var broadcasterIds = Enumerable.Range(1, 11)
+            .Select(index => $"channel-{index}")
+            .ToArray();
+        var channel = new TwitchEventSubChannel(broadcasterIds[0], "reader-1")
+        {
+            BroadcasterIds = broadcasterIds,
+        };
+
+        var requests = TwitchEventSubWebSocketClient.BuildSubscriptionRequests(
+            channel,
+            "session-read-only",
+            isReadOnly: true);
+
+        Assert.Equal(11, requests.Count);
+        Assert.All(
+            requests,
+            request => Assert.Equal("channel.chat.message", request.Type));
     }
 }

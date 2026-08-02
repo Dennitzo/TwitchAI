@@ -20,6 +20,11 @@ in drei Formen aufgeteilt:
 - `RuleNormalizedText`: NFKC, entfernte unsichtbare Zeichen,
   zusammengefasster Whitespace und invariantes Lowercase.
 
+Der EventSub-WebSocket abonniert pro Kanal nur die autorisierten Chat-Ereignisse.
+`channel.update` wird bewusst nicht abonniert, weil Fremdkanäle dafür jeweils
+EventSub-Kosten erzeugen und Twitch insgesamt nur zehn Kostenpunkte zulässt.
+Kategorie-Snapshots werden vor dem Start sowie periodisch über Helix abgeglichen.
+
 Whitelist-Treffer verlassen den Ingress an dieser Stelle. Alle übrigen
 Nachrichten erhalten einen unveränderlichen Kategorie- und Policy-Snapshot.
 `ModerationBatcher` trennt Kategorien sowie Revisionen und versiegelt nach dem

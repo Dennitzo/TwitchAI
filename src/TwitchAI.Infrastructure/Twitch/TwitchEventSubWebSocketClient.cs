@@ -609,16 +609,13 @@ public sealed class TwitchEventSubWebSocketClient :
                 ["broadcaster_user_id"] = broadcasterId,
                 ["user_id"] = channel.ReaderUserId,
             };
-            var channelCondition = new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                ["broadcaster_user_id"] = broadcasterId,
-            };
-            requests.Add(
-                new TwitchEventSubSubscriptionRequest(
-                    "channel.update",
-                    "2",
-                    channelCondition,
-                    sessionId));
+            // channel.update does not require broadcaster authorization and
+            // therefore normally costs one EventSub point for third-party
+            // channels. Twitch caps the token/client tuple at ten total cost,
+            // so eleven monitored channels made the complete WebSocket setup
+            // fail. Categories are already fetched before connecting and
+            // reconciled periodically through Helix; keep that scalable path
+            // instead of spending one cost point per channel here.
             requests.Add(
                 new TwitchEventSubSubscriptionRequest(
                     "channel.chat.message",
