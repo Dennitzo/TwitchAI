@@ -115,12 +115,18 @@ public sealed class DatabaseTransferService : IDatabaseTransferService
     private static async Task ActivateConfigurationAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        foreach (var table in new[] { "policy_sets", "blacklist_rules", "phrase_rules", "whitelist_phrases", "chat_reply_templates" })
+        foreach (var table in new[] { "policy_sets", "blacklist_rules", "phrase_rules", "whitelist_phrases" })
         {
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = $"UPDATE {table} SET enabled = 1, archived_utc = NULL, row_version = row_version + 1;";
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await using (var templateCommand = connection.CreateCommand())
+        {
+            templateCommand.Transaction = transaction;
+            templateCommand.CommandText = "UPDATE chat_reply_templates SET enabled = 1, row_version = row_version + 1;";
+            await templateCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         await using (var command = connection.CreateCommand())
         {
