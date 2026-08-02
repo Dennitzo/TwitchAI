@@ -1282,17 +1282,10 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 continue;
             }
 
-            var normalizedDecision = decision with
-            {
-                Reason = ModerationReasonNormalizer.Normalize(
-                    decision.Reason,
-                    decision.RuleCode,
-                    decision.PolicySet),
-            };
             var addResult = await _caseRepository
                 .AddIfNoActiveDuplicateAsync(
                     message,
-                    normalizedDecision,
+                    decision,
                     batch.Context.EffectivePolicy.RevisionFingerprint,
                     new ModerationCaseCreationMetadata(
                         batch.BatchId,
@@ -1314,7 +1307,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                         "active_duplicate_proposal",
                         "An identical message from this Twitch user already has an active moderation proposal.",
                         message,
-                        normalizedDecision,
+                        decision,
                         addResult.CaseId,
                         localMatchCodes: localMatchCodes,
                         aiLatencyMilliseconds: aiLatencyMilliseconds));
@@ -1331,7 +1324,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     "moderation_case_created",
                     "A validated moderation proposal awaits human review.",
                     message,
-                    normalizedDecision,
+                    decision,
                     caseId,
                     caseRowVersion: persistedCase?.RowVersion ?? 1,
                     localMatchCodes: localMatchCodes,
@@ -1346,6 +1339,11 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         IReadOnlyList<RetrievalExample> retrievalExamples,
         CancellationToken cancellationToken)
     {
+        if (!initial.IsValid || initial.Envelope is null)
+        {
+            return initial;
+        }
+
         var actionable = initial.Envelope!.Decisions
             .Where(decision => decision.Action != ModerationActionKind.None)
             .ToArray();
@@ -1398,7 +1396,10 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                         confirmation.RuleCode,
                         decision.RuleCode,
                         StringComparison.Ordinal)
-                        ? decision
+                        ? decision with
+                        {
+                            Reason = confirmation.Reason,
+                        }
                         : new ValidatedModerationDecision(
                             decision.TemporaryMessageId,
                             ModerationActionKind.None,
@@ -1466,40 +1467,35 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 && ModerationEvidenceKinds.IsValid(
                     priorityRule.RuleCode,
                     current.EvidenceKind);
-            if (priority.Source == "manual_blacklist_phrase"
-                && hasCompatibleAiEvidence)
+            if (hasCompatibleAiEvidence)
             {
-                return priority.EvidenceKind is null
-                    ? current
-                    : current with
-                    {
-                        EvidenceKind = priority.EvidenceKind,
-                    };
+                return current with
+                {
+                    Action = priority.Action,
+                    TimeoutSeconds = priority.TimeoutSeconds,
+                    PolicySet = priorityRule.PolicySet,
+                    TriggerPhrases = priority.TriggerPhrases.Count > 0
+                        ? priority.TriggerPhrases
+                        : current.TriggerPhrases,
+                    Confidence = 1d,
+                    RuleCode = priorityRule.RuleCode,
+                    EvidenceKind = priority.EvidenceKind ?? current.EvidenceKind,
+                };
             }
 
-            var evidenceKind = priority.EvidenceKind
-                ?? (hasCompatibleAiEvidence ? current.EvidenceKind : null);
-            var sensitiveDataType = priority.EvidenceKind is null
-                && hasCompatibleAiEvidence
-                && StringComparer.Ordinal.Equals(
-                    priorityRule.RuleCode,
-                    ModerationRuleCodes.PersonalData)
-                    ? current.SensitiveDataType
-                    : null;
-
-            return new ValidatedModerationDecision(
-                current.TemporaryMessageId,
-                priority.Action,
-                priority.TimeoutSeconds,
-                priorityRule.PolicySet,
-                priority.Reason,
-                priority.TriggerPhrases,
-                1d,
-                priorityRule.RuleCode)
-            {
-                EvidenceKind = evidenceKind,
-                SensitiveDataType = sensitiveDataType,
-            };
+            // Never synthesize an actionable decision from a generic rule
+            // reason. A moderation proposal must carry a contextual reason
+            // produced and validated from the AI response for this message.
+            return current.Action == ModerationActionKind.None
+                ? current
+                : new ValidatedModerationDecision(
+                    current.TemporaryMessageId,
+                    ModerationActionKind.None,
+                    null,
+                    null,
+                    string.Empty,
+                    [],
+                    current.Confidence);
         }).ToArray();
 
         return validation with

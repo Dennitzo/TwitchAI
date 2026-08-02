@@ -298,7 +298,6 @@ public sealed class ModerationRepairClient : IModerationRepairClient
                     Rule defaults are fallbacks, not constraints; use the message context and this scale.
                     Never ban for an unnecessary message, spam, begging, or backseatgaming alone.
                     For delete or ban, timeoutSeconds must be null. A timeout must be exactly 2, 120, 600, or 86400 seconds.
-                    For actionable decisions, use one short German reason sentence (maximum 120 characters).
                     When a person is the target, call them "Nutzer oder Streamer", never only "Nutzer".
                     Mention only the violation, never a policy code, action, or recommendation.
                     Return at most one trigger phrase: the smallest contiguous lowercase evidence span copied exactly from the message, never a keyword list.
@@ -306,6 +305,8 @@ public sealed class ModerationRepairClient : IModerationRepairClient
                     Usernames, @mentions, pronouns, emotes, filler, or isolated words alone are not evidence.
                     For G_PERSONAL_DATA, return no trigger phrases.
                     """
+                    + "\n"
+                    + ModerationReasonNormalizer.ContextualAiReasonInstruction
                     + "\n"
                     + ModerationRuleCodes.SpamClassifierGuidance,
                     repairPayload,

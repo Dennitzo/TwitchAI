@@ -107,6 +107,30 @@ public sealed class PolicyStoreTests
     }
 
     [Fact]
+    public async Task ReactivatedRetiredStreamerInstruction_IsNeverLoaded()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        await using (var connection = await database.OpenConnectionAsync())
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                """
+                UPDATE blacklist_rules
+                SET enabled = 1, archived_utc = NULL
+                WHERE rule_code = 'G_STREAMER_INSTRUCTION';
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var policy = await CreateStore(database)
+            .GetEffectivePolicyAsync("channel-1", "509658");
+
+        Assert.DoesNotContain(
+            policy.Rules,
+            item => GlobalPolicyStorage.IsRetiredRuleCode(item.RuleCode));
+    }
+
+    [Fact]
     public async Task UnknownCategory_FallsBackToGeneralOnly()
     {
         await using var database = await TestDatabase.CreateAsync();

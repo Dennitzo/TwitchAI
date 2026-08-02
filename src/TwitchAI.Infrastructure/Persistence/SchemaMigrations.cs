@@ -3412,5 +3412,54 @@ internal static class SchemaMigrations
               AND archived_utc IS NULL
               AND changes() > 0;
             """),
+        new(
+            31,
+            "Retire stale streamer-instruction rules left in existing databases",
+            """
+            CREATE TEMP TABLE twitchai_v31_affected_policy_scopes (
+                scope_id INTEGER PRIMARY KEY
+            ) STRICT;
+
+            INSERT INTO twitchai_v31_affected_policy_scopes(scope_id)
+            SELECT DISTINCT scope_id
+            FROM blacklist_rules
+            WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+              AND (enabled = 1 OR archived_utc IS NULL);
+
+            UPDATE phrase_rules
+            SET enabled = 0,
+                archived_utc = COALESCE(
+                    archived_utc,
+                    strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_id IN (
+                SELECT rule_id
+                FROM blacklist_rules
+                WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+            )
+              AND (enabled = 1 OR archived_utc IS NULL);
+
+            UPDATE blacklist_rules
+            SET enabled = 0,
+                archived_utc = COALESCE(
+                    archived_utc,
+                    strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+              AND (enabled = 1 OR archived_utc IS NULL);
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                SELECT scope_id
+                FROM twitchai_v31_affected_policy_scopes
+            );
+
+            DROP TABLE twitchai_v31_affected_policy_scopes;
+            """),
     ];
 }

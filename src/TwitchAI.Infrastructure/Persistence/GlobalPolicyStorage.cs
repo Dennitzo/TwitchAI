@@ -10,6 +10,14 @@ public static class GlobalPolicyStorage
     public const string BroadcasterId = "*";
     public const string GeneralRuleCode = "G_PERSONAL_ATTACK";
     public const string BackseatgamingRuleCode = "BACKSEATGAMING";
+    public const string RetiredStreamerInstructionRuleCode =
+        "G_STREAMER_INSTRUCTION";
     public const string JustChattingCategoryId = "509658";
     public const string IrlCategoryId = "509672";
+
+    public static bool IsRetiredRuleCode(string? ruleCode) =>
+        string.Equals(
+            ruleCode,
+            RetiredStreamerInstructionRuleCode,
+            StringComparison.OrdinalIgnoreCase);
 }

@@ -60,9 +60,6 @@ public sealed class HumanModerationPriorityTests
         Assert.Equal([Message], result.TriggerPhrases);
         Assert.Equal("manual_blacklist_phrase", result.Source);
         Assert.Equal("unwanted_intimate_approach", result.EvidenceKind);
-        Assert.Equal(
-            "Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.",
-            result.Reason);
     }
 
     [Fact]

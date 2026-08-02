@@ -1178,7 +1178,9 @@ public sealed partial class PoliciesViewModel : ObservableObject
                      row => string.Equals(
                          row.PolicySet,
                          SelectedPolicySet,
-                         StringComparison.Ordinal)))
+                         StringComparison.Ordinal)
+                         && !GlobalPolicyStorage.IsRetiredRuleCode(
+                             row.RuleCode)))
         {
             RuleOptions.Add(
                 new PolicyRuleOptionItem(

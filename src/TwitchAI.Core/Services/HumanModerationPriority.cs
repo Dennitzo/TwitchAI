@@ -7,7 +7,6 @@ public sealed record HumanPriorityDecision(
     ModerationRuleDefinition? Rule,
     ModerationActionKind Action,
     int? TimeoutSeconds,
-    string Reason,
     IReadOnlyList<string> TriggerPhrases,
     string? EvidenceKind,
     string Source);
@@ -37,7 +36,7 @@ public static class HumanModerationPriority
             {
                 return new HumanPriorityDecision(
                     true, null, ModerationActionKind.None, null,
-                    string.Empty, [], null, "exact_allow_learning");
+                    [], null, "exact_allow_learning");
             }
 
             var exactRule = policy.FindRule(exact.RuleCode);
@@ -58,10 +57,6 @@ public static class HumanModerationPriority
                     exactRule,
                     exact.Action,
                     exact.TimeoutSeconds,
-                    ModerationReasonNormalizer.Normalize(
-                        exact.Reason,
-                        exactRule,
-                        exactRule.PolicySet),
                     MatchingPhrases(localMatches, exactRule.RuleCode),
                     ResolveExplicitEvidenceKind(
                         lowerText,
@@ -92,10 +87,6 @@ public static class HumanModerationPriority
             matchedRule,
             matchedRule.DefaultAction,
             matchedRule.DefaultTimeoutSeconds,
-            ModerationReasonNormalizer.Normalize(
-                matchedRule.PublicReason,
-                matchedRule,
-                matchedRule.PolicySet),
             MatchingPhrases(localMatches, matchedRule.RuleCode),
             ResolveExplicitEvidenceKind(
                 lowerText,

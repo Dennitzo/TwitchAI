@@ -311,16 +311,22 @@ public sealed class LearningTestService : ILearningTestService
             ThrowIfLearningChanged(learningRevision);
 
             var decision = validation.Decision!;
-            var useAiPhraseDecision = humanPriority is
-                { IsAllow: false, Source: "manual_blacklist_phrase", Rule: { } priorityRule }
+            var useAiPriorityDecision = humanPriority is
+                { IsAllow: false, Rule: { } priorityRule }
                 && decision.Verdict == LearningVerdict.Moderate
                 && StringComparer.Ordinal.Equals(
                     decision.RuleCode,
                     priorityRule.RuleCode);
+            if (humanPriority is { IsAllow: false }
+                && !useAiPriorityDecision)
+            {
+                throw new InvalidDataException(
+                    "LM Studio did not provide a contextual reason for the human-priority rule.");
+            }
             var effectiveRuleCode = humanPriority switch
             {
                 { IsAllow: true } => decision.RuleCode,
-                { IsAllow: false, Rule: { } rule } when !useAiPhraseDecision => rule.RuleCode,
+                { IsAllow: false, Rule: { } rule } => rule.RuleCode,
                 _ => decision.RuleCode,
             };
             var selectedRule = policy.FindRule(effectiveRuleCode)
@@ -332,27 +338,22 @@ public sealed class LearningTestService : ILearningTestService
                 { IsAllow: false } => LearningVerdict.Moderate,
                 _ => decision.Verdict,
             };
-            var action = humanPriority is { IsAllow: false } && !useAiPhraseDecision
+            var action = humanPriority is { IsAllow: false }
                 ? humanPriority.Action
                 : verdict == LearningVerdict.Allow
                     ? ModerationActionKind.None
                     : decision.Action;
-            var timeoutSeconds = humanPriority is { IsAllow: false } && !useAiPhraseDecision
+            var timeoutSeconds = humanPriority is { IsAllow: false }
                 ? humanPriority.TimeoutSeconds
                 : verdict == LearningVerdict.Allow
                     ? null
                     : decision.TimeoutSeconds;
             var reason = verdict == LearningVerdict.Allow
                 ? string.Empty
-                : humanPriority is { IsAllow: false } && !useAiPhraseDecision
-                    ? humanPriority.Reason
-                : ModerationReasonNormalizer.Normalize(
-                    decision.Reason,
-                    selectedRule,
-                    selectedRule.PolicySet);
+                : decision.Reason;
             var triggers = verdict == LearningVerdict.Allow
                 ? []
-                : humanPriority is { IsAllow: false } && !useAiPhraseDecision
+                : humanPriority is { IsAllow: false }
                     ? humanPriority.TriggerPhrases
                 : decision.TriggerPhrases;
             var decisionUsesSelectedRule = string.Equals(
@@ -361,7 +362,7 @@ public sealed class LearningTestService : ILearningTestService
                 StringComparison.Ordinal);
             var evidenceKind = verdict == LearningVerdict.Allow
                 ? null
-                : humanPriority is { IsAllow: false } && !useAiPhraseDecision
+                : humanPriority is { IsAllow: false }
                     ? humanPriority.EvidenceKind
                         ?? (decisionUsesSelectedRule
                             && ModerationEvidenceKinds.IsValid(
@@ -526,12 +527,15 @@ public sealed class LearningTestService : ILearningTestService
             ThrowIfLearningChanged(learningRevision);
 
             var rawReason = ReadReason(completion.RawEnvelope);
-            var reason = ModerationReasonNormalizer.Normalize(
-                ModerationReasonNormalizer.IsSelfNegating(rawReason)
-                    ? null
-                    : rawReason,
-                selectedRule,
-                selectedRule.PolicySet);
+            if (ModerationReasonNormalizer.IsSelfNegating(rawReason)
+                || !ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+                    rawReason,
+                    selectedRule,
+                    out var reason))
+            {
+                throw new InvalidDataException(
+                    "LM Studio returned no concrete message-specific German reason.");
+            }
             return new LearningReasonResult(
                 selectedRule.RuleCode,
                 reason,
@@ -1416,10 +1420,15 @@ internal static class LearningEnvelopeValidator
                         "Backseatgaming requires at least one concrete multi-word trigger phrase.");
                 }
 
-                reason = ModerationReasonNormalizer.Normalize(
-                    reason,
-                    rule,
-                    rule.PolicySet);
+                if (!ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+                        reason,
+                        rule,
+                        out reason))
+                {
+                    return Invalid(
+                        "reason_not_contextual",
+                        "A moderate verdict requires a concrete, message-specific German reason and must not copy a generic rule reason.");
+                }
             }
 
             return new LearningEnvelopeValidationResult(

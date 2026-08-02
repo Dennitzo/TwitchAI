@@ -86,7 +86,7 @@ public sealed class ModerationCaseItemViolationCategoryTests
         Assert.Equal("General", item.PolicySet);
         Assert.Equal("timeout", item.Action);
         Assert.Equal(86_400, item.TimeoutSeconds);
-        Assert.Equal("Betteln nach Subs oder Giveaways.", item.Reason);
+        Assert.Equal("Bestehender Grund.", item.Reason);
     }
 
     [Fact]

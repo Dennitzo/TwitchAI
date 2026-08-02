@@ -34,7 +34,7 @@ public sealed class ModerationCoordinatorTests
             ModerationActionKind.Timeout,
             600,
             PolicySetCode.General,
-            "Direkte Beleidigung eines Nutzers oder Streamers.",
+            "Die Nachricht nennt den Nutzer direkt einen Idioten.",
             [text],
             0.94,
             rule.RuleCode)
@@ -58,6 +58,9 @@ public sealed class ModerationCoordinatorTests
 
         var decision = Assert.Single(result.Envelope!.Decisions);
         Assert.Equal("direct_insult", decision.EvidenceKind);
+        Assert.Equal(
+            "Die Nachricht nennt den Nutzer direkt einen Idioten.",
+            decision.Reason);
     }
 
     [Fact]
@@ -138,6 +141,37 @@ public sealed class ModerationCoordinatorTests
 
         var decision = Assert.Single(result.Envelope!.Decisions);
         Assert.Equal("unwanted_intimate_approach", decision.EvidenceKind);
+    }
+
+    [Fact]
+    public void ApplyHumanPriorityDecisions_DoesNotCreateGenericModerationWithoutAiReason()
+    {
+        const string text = "ich liebe dich";
+        var rule = PersonalAttackRule();
+        var match = new BlacklistMatch(
+            PhraseId: 173,
+            RuleCode: rule.RuleCode,
+            PolicySet: rule.PolicySet,
+            MatchedPhrase: text);
+        var batch = HumanPriorityBatch(text, rule, [match]);
+        var current = new ValidatedModerationDecision(
+            "m1",
+            ModerationActionKind.None,
+            null,
+            null,
+            string.Empty,
+            [],
+            0.9);
+
+        var result = ModerationCoordinator.ApplyHumanPriorityDecisions(
+            batch,
+            ValidReport(batch.BatchId, current),
+            retrievalExamples: []);
+
+        var decision = Assert.Single(result.Envelope!.Decisions);
+        Assert.Equal(ModerationActionKind.None, decision.Action);
+        Assert.Empty(decision.Reason);
+        Assert.Null(decision.RuleCode);
     }
 
     [Fact]

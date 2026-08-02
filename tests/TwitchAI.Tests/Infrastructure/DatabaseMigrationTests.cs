@@ -70,7 +70,7 @@ public sealed class DatabaseMigrationTests
         var journalMode = await ScalarAsync<string>(connection, "PRAGMA journal_mode;");
         var foreignKeys = await ScalarAsync<long>(connection, "PRAGMA foreign_keys;");
 
-        Assert.Equal(30, migrationCount);
+        Assert.Equal(31, migrationCount);
         Assert.Equal("wal", journalMode, ignoreCase: true);
         Assert.Equal(1, foreignKeys);
     }
@@ -277,6 +277,94 @@ public sealed class DatabaseMigrationTests
                   AND enabled = 1
                   AND archived_utc IS NULL;
                 """));
+    }
+
+    [Fact]
+    public async Task Version31_RetiresReactivatedStreamerInstructionRuleAndPhrases()
+    {
+        await using var database =
+            await TestDatabase.CreateAtSchemaVersionAsync(30);
+        long generalRevisionBefore;
+        await using (var connection = await database.OpenConnectionAsync())
+        {
+            generalRevisionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+
+            await using var reactivate = connection.CreateCommand();
+            reactivate.CommandText =
+                """
+                UPDATE blacklist_rules
+                SET enabled = 1,
+                    archived_utc = NULL,
+                    updated_utc = '2026-08-02T08:00:00.0000000+00:00'
+                WHERE rule_code = 'G_STREAMER_INSTRUCTION';
+
+                INSERT INTO phrase_rules(
+                    rule_id, phrase, normalized_phrase, enabled,
+                    manual_override, positive_confirmations,
+                    negative_confirmations, row_version,
+                    created_utc, updated_utc)
+                SELECT
+                    rule_id, 'spiel etwas anderes', 'spiel etwas anderes', 1,
+                    'active', 0, 0, 1,
+                    '2026-08-02T08:00:00.0000000+00:00',
+                    '2026-08-02T08:00:00.0000000+00:00'
+                FROM blacklist_rules
+                WHERE rule_code = 'G_STREAMER_INSTRUCTION';
+                """;
+            await reactivate.ExecuteNonQueryAsync();
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var migrated = await database.OpenConnectionAsync();
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                migrated,
+                """
+                SELECT COUNT(*)
+                FROM blacklist_rules
+                WHERE rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND enabled = 1
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                migrated,
+                """
+                SELECT COUNT(*)
+                FROM phrase_rules phrase
+                INNER JOIN blacklist_rules rule ON rule.rule_id = phrase.rule_id
+                WHERE rule.rule_code = 'G_STREAMER_INSTRUCTION'
+                  AND phrase.enabled = 1
+                  AND phrase.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            generalRevisionBefore + 1,
+            await ScalarAsync<long>(
+                migrated,
+                """
+                SELECT revision
+                FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            31L,
+            await ScalarAsync<long>(
+                migrated,
+                "SELECT MAX(version) FROM schema_migrations;"));
     }
 
     [Fact]

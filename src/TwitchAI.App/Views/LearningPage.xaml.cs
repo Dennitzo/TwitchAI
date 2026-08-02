@@ -121,7 +121,7 @@ public sealed partial class LearningPage : Page
         catch (Exception exception)
         {
             ViewModel.StatusMessage =
-                "Die Begründung konnte nicht neu erzeugt werden; der Kategorienstandard bleibt gesetzt.";
+                "Die Begründung konnte nicht neu erzeugt werden; bitte erneut versuchen oder konkret eingeben.";
             await ShowErrorAsync(
                 exception.Message,
                 "Begründung nicht möglich");

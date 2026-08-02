@@ -391,7 +391,9 @@ public sealed partial class ModerationCaseItem : ObservableObject
         TimeoutSeconds = normalized.TimeoutSeconds
             ?? ModerationActionRules.DefaultTimeoutSeconds;
         PolicySet = rule.PolicySet;
-        Reason = rule.PublicReason;
+        // Keep the AI's message-specific reason when a reviewer changes the
+        // category. A rule-level public reason is generic and must never
+        // replace the contextual moderation explanation.
     }
 
     private void EnsureProvisionalViolationRule()

@@ -785,7 +785,9 @@ public sealed class ConfigurationDataService : IConfigurationDataService, IDispo
         var rules = ruleRows
             .Where(row =>
                 IsCurrent(row)
-                && policyByScopeId.ContainsKey(Integer(row, "scope_id")))
+                && policyByScopeId.ContainsKey(Integer(row, "scope_id"))
+                && !GlobalPolicyStorage.IsRetiredRuleCode(
+                    Text(row, "rule_code")))
             .Select(row => new
             {
                 Id = Integer(row, "rule_id"),

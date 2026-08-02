@@ -52,7 +52,7 @@ public sealed class LearningTestServiceTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_ModeratePreservesValidActionAndNormalizesReason()
+    public async Task AnalyzeAsync_ModeratePreservesValidActionAndContextualReason()
     {
         var lmStudio = new FakeLmStudioClient(request =>
         {
@@ -65,7 +65,7 @@ public sealed class LearningTestServiceTests
                     120,
                     "G",
                     "G_SPAM",
-                    "Repeated spam directed at chat.",
+                    "Die Nachricht wiederholt 'spam' mehrfach und flutet damit den Chat.",
                     ["spam spam"],
                     0.91));
         });
@@ -78,7 +78,9 @@ public sealed class LearningTestServiceTests
         Assert.Equal(ModerationActionKind.Timeout, result.ProposedAction);
         Assert.Equal(120, result.ProposedTimeoutSeconds);
         Assert.Equal("G_SPAM", result.ProposedRuleCode);
-        Assert.Equal("Wiederholter Spam.", result.ProposedReason);
+        Assert.Equal(
+            "Die Nachricht wiederholt 'spam' mehrfach und flutet damit den Chat.",
+            result.ProposedReason);
         Assert.Equal(["spam spam"], result.ProposedTriggerPhrases);
         Assert.False(result.UsedRuleFallback);
     }
@@ -124,7 +126,7 @@ public sealed class LearningTestServiceTests
                     null,
                     "G",
                     ModerationRuleCodes.Spam,
-                    "Wiederholter Spam.",
+                    "Die Nachricht wiederholt 'spam' mehrfach und flutet den Chat.",
                     ["spam spam"],
                     0.91)));
         var sut = CreateService(lmStudio);
@@ -149,7 +151,7 @@ public sealed class LearningTestServiceTests
                     600,
                     "B",
                     ModerationRuleCodes.Backseatgaming,
-                    "Unaufgeforderter Spielhinweis.",
+                    "Die Nachricht weist den Streamer ungefragt an, nach links zu gehen.",
                     ["geh nach links"],
                     0.93)));
         var sut = CreateService(lmStudio);
@@ -176,7 +178,7 @@ public sealed class LearningTestServiceTests
                     null,
                     "G",
                     ModerationRuleCodes.BotScam,
-                    "Unaufgeforderte Werbung oder Eigenwerbung.",
+                    "Die Nachricht wirbt ausdrücklich für den eigenen Kanal.",
                     ["meinen kanal"],
                     0.97)));
         var sut = CreateService(lmStudio);
@@ -203,7 +205,7 @@ public sealed class LearningTestServiceTests
                     86_400,
                     "G",
                     ModerationRuleCodes.Begging,
-                    "Betteln nach Subs, Geschenken oder Giveaways.",
+                    "Die Nachricht fordert ausdrücklich einen kostenlosen Sub für den Absender.",
                     ["schenk mir bitte einen sub"],
                     0.95)));
         var sut = CreateService(lmStudio);
@@ -363,7 +365,7 @@ public sealed class LearningTestServiceTests
                     600,
                     "B",
                     ModerationRuleCodes.Backseatgaming,
-                    "Unaufgeforderter Spielhinweis.",
+                    "Die Nachricht weist den Streamer ungefragt an, nach links zu gehen.",
                     ["geh nach links"],
                     0.9)));
         var sut = CreateService(lmStudio);
@@ -419,7 +421,7 @@ public sealed class LearningTestServiceTests
                     600,
                     "B",
                     null,
-                    "Unaufgeforderter Spielhinweis.",
+                    "Die Nachricht weist den Streamer ungefragt an, nach links zu gehen.",
                     ["geh nach links"],
                     0.9,
                     evidenceKind: "instruction")));
@@ -531,7 +533,7 @@ public sealed class LearningTestServiceTests
     }
 
     [Fact]
-    public async Task AnalyzeAsync_HumanRuleOverrideDoesNotCopyIncompatibleAiEvidence()
+    public async Task AnalyzeAsync_HumanRuleOverrideRejectsIncompatibleAiReason()
     {
         const string message = "du idiot";
         var retrieval = new StaticRetrievalStore(
@@ -564,13 +566,14 @@ public sealed class LearningTestServiceTests
                     sensitiveDataType: "email")));
         var sut = CreateService(lmStudio, retrieval: retrieval);
 
-        var result = await sut.AnalyzeAsync(new LearningTestRequest(message));
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(
+            async () => await sut.AnalyzeAsync(new LearningTestRequest(message)));
 
         Assert.Single(lmStudio.Requests);
-        Assert.Equal(ModerationRuleCodes.PersonalAttack, result.ProposedRuleCode);
-        Assert.Null(result.EvidenceKind);
-        Assert.Null(result.SensitiveDataType);
-        Assert.Equal("exact_moderate_learning", result.HumanPrioritySource);
+        Assert.Contains(
+            "contextual reason for the human-priority rule",
+            exception.Message,
+            StringComparison.Ordinal);
     }
 
     [Fact]

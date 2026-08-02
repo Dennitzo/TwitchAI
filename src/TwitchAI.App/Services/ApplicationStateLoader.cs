@@ -226,10 +226,7 @@ public sealed class ApplicationStateLoader
             Action = ToUiAction(moderationCase.ProposedAction),
             TimeoutSeconds = moderationCase.ProposedTimeoutSeconds
                 ?? ModerationActionRules.DefaultTimeoutSeconds,
-            Reason = ModerationReasonNormalizer.Normalize(
-                moderationCase.Reason,
-                moderationCase.RuleCode,
-                moderationCase.PolicySet),
+            Reason = moderationCase.Reason,
             PolicySet = ToUiPolicySet(moderationCase.PolicySet),
             RuleCode = moderationCase.RuleCode,
             Confidence = moderationCase.Confidence,

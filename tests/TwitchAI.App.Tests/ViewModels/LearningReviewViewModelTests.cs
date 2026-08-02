@@ -14,7 +14,7 @@ public sealed class LearningReviewViewModelTests
             PolicySetCode.General,
             ModerationActionKind.Timeout,
             timeoutSeconds: 120,
-            reason: "Wiederholter Spam.");
+            reason: "Die Nachricht wiederholt 'spam' mehrfach und flutet den Chat.");
 
         var review = new LearningReviewViewModel(result);
 
@@ -40,7 +40,7 @@ public sealed class LearningReviewViewModelTests
                 PolicySetCode.General,
                 ModerationActionKind.Timeout,
                 timeoutSeconds: 120,
-                reason: "Wiederholter Spam."));
+                reason: "Die Nachricht wiederholt 'spam' mehrfach und flutet den Chat."));
 
         var selected = review.TrySelectRule(transientValue);
 
@@ -64,7 +64,7 @@ public sealed class LearningReviewViewModelTests
                     PolicySetCode.General,
                     ModerationActionKind.Timeout,
                     timeoutSeconds: 120,
-                    reason: "Wiederholter Spam.")),
+                    reason: "Die Nachricht wiederholt 'spam' mehrfach und flutet den Chat.")),
         };
 
         var selected = await viewModel.SelectRuleAsync(
@@ -79,6 +79,24 @@ public sealed class LearningReviewViewModelTests
             "Die Nachricht gibt dem Streamer ungefragt eine Spielanweisung.",
             viewModel.Review!.Reason);
         Assert.False(viewModel.IsBusy);
+    }
+
+    [Fact]
+    public void SelectingDifferentRule_ClearsOldReasonInsteadOfUsingRuleDefault()
+    {
+        var review = new LearningReviewViewModel(
+            Result(
+                ModerationRuleCodes.Spam,
+                PolicySetCode.General,
+                ModerationActionKind.Timeout,
+                timeoutSeconds: 120,
+                reason: "Die Nachricht wiederholt 'spam' mehrfach und flutet den Chat."));
+
+        var selected = review.TrySelectRule(ModerationRuleCodes.Backseatgaming);
+
+        Assert.True(selected);
+        Assert.Empty(review.Reason);
+        Assert.Throws<InvalidOperationException>(() => review.CreateReview());
     }
 
     private static LearningTestResult Result(

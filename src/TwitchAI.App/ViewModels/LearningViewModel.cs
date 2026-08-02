@@ -315,9 +315,7 @@ public sealed partial class LearningReviewViewModel : ObservableObject
             TimeoutSeconds = normalized.TimeoutSeconds
                 ?? initialRule.DefaultTimeoutSeconds
                 ?? ModerationActionRules.DefaultTimeoutSeconds;
-            Reason = string.IsNullOrWhiteSpace(result.ProposedReason)
-                ? initialRule.PublicReason
-                : result.ProposedReason;
+            Reason = result.ProposedReason;
         }
 
         _suppressRuleDefaults = false;
@@ -448,7 +446,10 @@ public sealed partial class LearningReviewViewModel : ObservableObject
         Action = ToActionValue(normalized.Action);
         TimeoutSeconds = normalized.TimeoutSeconds
             ?? ModerationActionRules.DefaultTimeoutSeconds;
-        Reason = selectedRule.PublicReason;
+        // A rule description is not a message-specific moderation reason.
+        // SelectRuleAsync replaces this empty value with a newly generated
+        // contextual AI reason before the review can be confirmed.
+        Reason = string.Empty;
     }
 
     partial void OnActionChanged(string value)

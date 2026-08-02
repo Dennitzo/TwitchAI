@@ -9,6 +9,27 @@ namespace TwitchAI.Tests.Infrastructure;
 public sealed class ModerationRepairClientTests
 {
     [Fact]
+    public async Task RepairAsync_LegacyPromptRequiresMessageSpecificReason()
+    {
+        var request = RequestWithMessages("m1");
+        var client = new RecordingLmStudioClient();
+        var sut = new ModerationRepairClient(client);
+
+        await sut.RepairAsync(
+            request,
+            "{}",
+            [new EnvelopeValidationError(
+                "reason_not_contextual",
+                "invalid")]);
+
+        var sent = Assert.IsType<LmStudioModerationRequest>(client.Request);
+        Assert.Contains(
+            ModerationReasonNormalizer.ContextualAiReasonInstruction,
+            sent.SystemPrompt,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task RepairAsync_V6SendsOnlyTargetMessagesWithoutInvalidResponse()
     {
         var envelope = RequestWithMessages("m1", "m2");

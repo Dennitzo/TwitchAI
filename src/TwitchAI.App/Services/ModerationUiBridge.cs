@@ -257,10 +257,7 @@ public sealed class ModerationUiBridge : IDisposable
             },
             TimeoutSeconds = decision.TimeoutSeconds
                 ?? ModerationActionRules.DefaultTimeoutSeconds,
-            Reason = ModerationReasonNormalizer.Normalize(
-                decision.Reason,
-                decision.RuleCode,
-                decision.PolicySet),
+            Reason = decision.Reason,
             PolicySet = decision.PolicySet == PolicySetCode.Backseatgaming
                 ? "Backseatgaming"
                 : "General",

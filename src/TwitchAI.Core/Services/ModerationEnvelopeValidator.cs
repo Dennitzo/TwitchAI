@@ -78,6 +78,8 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             "action",
             "timeoutSeconds",
             "ruleCode",
+            "evidenceKind",
+            "sensitiveDataType",
             "reason",
             "triggerPhrases",
             "confidence");
@@ -1032,15 +1034,22 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 $"Decision '{messageId}': A moderation requires a non-empty contextual German reason.");
         }
 
-        var reason = ModerationReasonNormalizer.Normalize(
-            candidateReason,
-            rule,
-            rule.PolicySet);
         if (ModerationReasonNormalizer.IsSelfNegating(candidateReason))
         {
             return SparseDecisionValidationResult.Valid(
                 NoActionDecision(messageId),
                 usedLocalFallback: true);
+        }
+
+        if (!ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+                candidateReason,
+                rule,
+                out var reason))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "reason_not_contextual",
+                $"Decision '{messageId}': reason must be a concrete, message-specific German sentence and must not copy a generic rule reason.");
         }
 
         var triggerResult = ParseTriggerPhrases(
@@ -1655,10 +1664,15 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 && !text.Any(char.IsControl)
                     ? text
                     : null;
-            reason = ModerationReasonNormalizer.Normalize(
-                candidate,
-                ruleResult.Rule,
-                policyResult.PolicySet);
+            if (!ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+                    candidate,
+                    ruleResult.Rule,
+                    out reason))
+            {
+                return DecisionValidationResult.Invalid(
+                    "reason_not_contextual",
+                    $"Decision '{messageId}': reason must be a concrete, message-specific German sentence and must not copy a generic rule reason.");
+            }
         }
 
         var triggerResult = ParseTriggerPhrases(

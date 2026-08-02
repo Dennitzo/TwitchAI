@@ -8,9 +8,41 @@ public static partial class ModerationReasonNormalizer
     public const int MaximumLength = 120;
 
     public const string ContextualAiReasonInstruction =
-        "Write one short German sentence up to 120 characters that explains the concrete violation in this exact message under the selected rule. "
-        + "Refer to the message context instead of merely repeating the category title or a generic policy reason. "
+        "Write a new, message-specific German reason for every moderation. Use one short sentence up to 120 characters. "
+        + "State the concrete act, wording, or target from this exact message so the reason is understandable without the category title. "
+        + "Never copy or paraphrase a generic rule description. For example, do not write 'Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.'. "
         + "Do not mention a rule code, timeout, ban, deletion, confidence, recommendation, or uncertainty.";
+
+    private static readonly HashSet<string> GenericAiReasons =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Belästigung oder Beleidigung eines Nutzers oder Streamers.",
+            "Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.",
+            "Direkte Beleidigung eines Nutzers oder Streamers.",
+            "Gezielte Belästigung eines Nutzers oder Streamers.",
+            "Unangebrachte persönliche Annäherung.",
+            "Hassrede oder menschenfeindliche Äußerung.",
+            "Hassrede oder diskriminierende Aussage.",
+            "Sexueller oder sexistischer Inhalt gegen einen Nutzer oder Streamer.",
+            "Sexualisierende Aussage über eine Person.",
+            "Sexuell expliziter Inhalt.",
+            "Drohung oder Aufforderung zu Gewalt oder Selbstverletzung.",
+            "Gewaltandrohung gegen eine Person.",
+            "Gewaltverherrlichender Inhalt.",
+            "Veröffentlichung persönlicher Daten.",
+            "Aufforderung zu Selbstverletzung.",
+            "Wiederholter Spam.",
+            "Betrugs- oder Phishingversuch.",
+            "Gezielte Störung des Chats.",
+            "Unaufgeforderte Werbung oder Eigenwerbung.",
+            "Betteln nach Subs, Geschenken oder Giveaways.",
+            "Sonstiger Verstoß gegen die Chatregeln.",
+            "Verstoß gegen die allgemeinen Chatregeln.",
+            "Unaufgeforderter Spielhinweis oder Spoiler.",
+            "Treffer in der manuellen Bot-/Scam-Blacklist.",
+            "Unaufgeforderte Eigenwerbung für einen eigenen Kanal oder Stream.",
+            "Automatisierte oder betrügerische Werbung im Chat.",
+        };
 
     public static bool IsSelfNegating(string? reason)
     {
@@ -48,6 +80,51 @@ public static partial class ModerationReasonNormalizer
             policySet,
             rule?.PublicReason);
     }
+
+    public static bool TryNormalizeContextualAiReason(
+        string? reason,
+        ModerationRuleDefinition? rule,
+        out string normalizedReason)
+    {
+        normalizedReason = string.Empty;
+        if (string.IsNullOrWhiteSpace(reason)
+            || reason.Any(char.IsControl))
+        {
+            return false;
+        }
+
+        var value = CollapseWhitespace().Replace(reason.Trim(), " ");
+        if (value.Length > MaximumLength
+            || LooksEnglish(value.ToLowerInvariant()))
+        {
+            return false;
+        }
+
+        value = IncludeStreamerAsPossibleTarget(value);
+        var firstSentenceEnd = value.IndexOfAny(['.', '!', '?']);
+        if (firstSentenceEnd >= 0)
+        {
+            value = value[..(firstSentenceEnd + 1)];
+        }
+
+        var configuredReason = ValidConfiguredReason(rule?.PublicReason);
+        if (value.Length is 0 or > MaximumLength
+            || GenericAiReasons.Any(reason => SameReason(value, reason))
+            || configuredReason is not null
+                && SameReason(value, configuredReason))
+        {
+            return false;
+        }
+
+        normalizedReason = value;
+        return true;
+    }
+
+    private static bool SameReason(string left, string right) =>
+        string.Equals(
+            left.Trim().TrimEnd('.', '!', '?'),
+            right.Trim().TrimEnd('.', '!', '?'),
+            StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizeCore(
         string? reason,

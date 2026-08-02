@@ -439,6 +439,7 @@ public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
             INNER JOIN policy_sets s ON s.scope_id = r.scope_id
             WHERE r.enabled = 1
               AND r.archived_utc IS NULL
+              AND r.rule_code <> 'G_STREAMER_INSTRUCTION'
               AND (r.scope_id = @general_scope_id OR r.scope_id = @category_scope_id)
             ORDER BY scope_rank, r.priority, r.rule_code;
             """;

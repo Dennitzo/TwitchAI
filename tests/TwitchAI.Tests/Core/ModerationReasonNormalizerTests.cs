@@ -5,6 +5,55 @@ namespace TwitchAI.Tests.Core;
 
 public sealed class ModerationReasonNormalizerTests
 {
+    [Theory]
+    [InlineData("Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.")]
+    [InlineData("Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer")]
+    public void TryNormalizeContextualAiReason_RejectsGenericPersonalAttackReason(
+        string genericReason)
+    {
+        var rule = new ModerationRuleDefinition(
+            ModerationRuleCodes.PersonalAttack,
+            PolicySetCode.General,
+            "Beleidigung und Belästigung",
+            "test",
+            ModerationActionKind.Timeout,
+            600,
+            "Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.",
+            Priority: 50);
+
+        var valid = ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+            genericReason,
+            rule,
+            out var reason);
+
+        Assert.False(valid);
+        Assert.Empty(reason);
+    }
+
+    [Fact]
+    public void TryNormalizeContextualAiReason_PreservesConcreteMessageReason()
+    {
+        var rule = new ModerationRuleDefinition(
+            ModerationRuleCodes.PersonalAttack,
+            PolicySetCode.General,
+            "Beleidigung und Belästigung",
+            "test",
+            ModerationActionKind.Timeout,
+            600,
+            "Allgemeiner Regelgrund.",
+            Priority: 50);
+
+        var valid = ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+            "Die Nachricht nennt den Nutzer direkt einen Idioten.",
+            rule,
+            out var reason);
+
+        Assert.True(valid);
+        Assert.Equal(
+            "Die Nachricht nennt den Nutzer oder Streamer direkt einen Idioten.",
+            reason);
+    }
+
     [Fact]
     public void Normalize_MapsLongEnglishHarassmentReasonToShortGermanReason()
     {

@@ -1259,6 +1259,59 @@ public sealed class ModerationEnvelopeValidatorTests
     }
 
     [Fact]
+    public void ValidateV7_GenericRuleReasonRequiresTargetedAiRepair()
+    {
+        var batch = Batch(
+            1,
+            includeBackseat: false,
+            firstMessage: "du bist ein idiot");
+        var personalAttackRule = new ModerationRuleDefinition(
+            ModerationRuleCodes.PersonalAttack,
+            PolicySetCode.General,
+            "Beleidigung und Belästigung",
+            ModerationRuleCodes.PersonalAttackPromptInstruction,
+            ModerationActionKind.Timeout,
+            600,
+            "Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.",
+            Priority: 50);
+        batch = batch with
+        {
+            Context = batch.Context with
+            {
+                EffectivePolicy = batch.Context.EffectivePolicy with
+                {
+                    ActiveRules =
+                    [
+                        .. batch.Context.EffectivePolicy.ActiveRules,
+                        personalAttackRule,
+                    ],
+                },
+            },
+        };
+        var moderation = V7Moderation(
+            "timeout",
+            600,
+            ModerationRuleCodes.PersonalAttack,
+            "Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.",
+            ["du bist ein idiot"],
+            0.95);
+        moderation["evidenceKind"] = "direct_insult";
+
+        var result = new ModerationEnvelopeValidator().ValidateV6(
+            V7Response(
+                batch,
+                new Dictionary<string, object?> { ["m1"] = moderation }),
+            batch);
+
+        Assert.False(result.IsValid);
+        Assert.Equal(["m1"], result.RepairMessageIds);
+        Assert.Contains(
+            result.Issues,
+            issue => issue.Code == "reason_not_contextual"
+                && issue.MessageId == "m1");
+    }
+
+    [Fact]
     public void ValidateV7_InvalidSingleDecisionKeepsOtherMessagesForTargetedRepair()
     {
         var batch = Batch(2, includeBackseat: false);
@@ -1540,10 +1593,20 @@ public sealed class ModerationEnvelopeValidatorTests
         string[] triggerPhrases,
         double confidence)
     {
+        var evidenceKinds = ModerationEvidenceKinds.ForRule(ruleCode);
         var result = new Dictionary<string, object?>
         {
             ["action"] = action,
             ["ruleCode"] = ruleCode,
+            ["evidenceKind"] = evidenceKinds.Count > 0
+                ? evidenceKinds[0]
+                : null,
+            ["sensitiveDataType"] = string.Equals(
+                ruleCode,
+                ModerationRuleCodes.PersonalData,
+                StringComparison.Ordinal)
+                    ? "address"
+                    : null,
             ["reason"] = reason,
             ["triggerPhrases"] = triggerPhrases,
             ["confidence"] = confidence,
@@ -1620,18 +1683,21 @@ public sealed class ModerationEnvelopeValidatorTests
         string? replyTemplateId = null,
         double? replyConfidence = null)
     {
+        var resolvedRuleCode = ruleCode ?? policySet switch
+        {
+            "G" => ModerationRuleCodes.GeneralPhrase,
+            "B" => ModerationRuleCodes.Backseatgaming,
+            _ => null,
+        };
         return new Dictionary<string, object?>
         {
             ["messageId"] = messageId,
             ["action"] = action,
             ["timeoutSeconds"] = timeoutSeconds,
             ["policySet"] = policySet,
-            ["ruleCode"] = ruleCode ?? policySet switch
-            {
-                "G" => ModerationRuleCodes.GeneralPhrase,
-                "B" => ModerationRuleCodes.Backseatgaming,
-                _ => null,
-            },
+            ["ruleCode"] = resolvedRuleCode,
+            ["evidenceKind"] = null,
+            ["sensitiveDataType"] = null,
             ["reason"] = reason,
             ["triggerPhrases"] = triggerPhrases,
             ["confidence"] = confidence,
