@@ -1,6 +1,5 @@
 using TwitchAI.Core.Models;
 using TwitchAI.Core.Services;
-using TwitchAI.Infrastructure;
 using TwitchAI.Infrastructure.AI;
 using TwitchAI.Infrastructure.Persistence;
 using TwitchAI.Infrastructure.Pipeline;
@@ -8,25 +7,33 @@ using StoredPolicy = TwitchAI.Infrastructure.Persistence.EffectivePolicySnapshot
 
 namespace TwitchAI.Tests.Infrastructure;
 
-public sealed class ContextualModerationReasonServiceTests
+public sealed class ReviewReasonServiceTests
 {
     [Fact]
-    public async Task GenerateAsync_RepairsInvalidGuidanceWithManualPriority()
+    public async Task GenerateAsync_UsesMessageContextAndRepairsOnceWithManualPriority()
     {
         var responseNumber = 0;
         var client = new FakeLmStudioClient(
             _ => Completion(
                 Interlocked.Increment(ref responseNumber) == 1
-                    ? "{\"violationReason\":\"Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.\",\"guidance\":\"Du solltest Beleidigungen vermeiden.\"}"
-                    : "{\"violationReason\":\"Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.\",\"guidance\":\"Abwertungen künftig bitte vermeiden.\"}"));
-        var sut = CreateService(client);
+                    ? "{\"reason\":\"\"}"
+                    : "{\"reason\":\"Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.\"}"));
+        var sut = CreateService(client, Policy());
 
         var result = await sut.GenerateAsync(Request());
 
         Assert.Equal(
-            "Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers. Abwertungen künftig bitte vermeiden.",
+            "Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.",
             result.Reason);
         Assert.Equal(2, client.Requests.Count);
+        Assert.Contains(
+            "@max du bist völlig unfähig",
+            client.Requests[0].UserPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            ModerationRuleCodes.PersonalAttack,
+            client.Requests[0].UserPrompt,
+            StringComparison.Ordinal);
         Assert.All(
             client.Requests,
             request =>
@@ -34,6 +41,7 @@ public sealed class ContextualModerationReasonServiceTests
                 Assert.Equal(LocalAiRunKind.ReviewReason, request.RunKind);
                 Assert.Equal(LocalAiRunPriority.ManualReview, request.Priority);
                 Assert.Equal("channel-1", request.SchedulingKey);
+                Assert.Equal(1, request.MessageCount);
             });
         Assert.EndsWith(
             "-repair",
@@ -42,55 +50,37 @@ public sealed class ContextualModerationReasonServiceTests
     }
 
     [Fact]
-    public async Task GenerateAsync_SecondInvalidResponseUsesNoPublicReason()
+    public async Task GenerateAsync_BackseatgamingReasonMustNameBackseatgaming()
     {
+        var responseNumber = 0;
         var client = new FakeLmStudioClient(
             _ => Completion(
-                "{\"violationReason\":\"Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.\",\"guidance\":\"Du solltest das vermeiden.\"}"));
-        var sut = CreateService(client);
-
-        await Assert.ThrowsAsync<InvalidDataException>(
-            () => sut.GenerateAsync(Request()).AsTask());
-
-        Assert.Equal(2, client.Requests.Count);
-    }
-
-    [Fact]
-    public async Task GenerateAsync_DeleteAcceptsEmptyParts()
-    {
-        var client = new FakeLmStudioClient(
-            _ => Completion("{\"violationReason\":\"\",\"guidance\":\"\"}"));
-        var sut = CreateService(client);
+                Interlocked.Increment(ref responseNumber) == 1
+                    ? "{\"reason\":\"Unaufgeforderte Spielanweisung an einen Nutzer oder den Streamer.\"}"
+                    : "{\"reason\":\"Unaufgefordertes Backseatgaming gegenüber einem Nutzer oder dem Streamer.\"}"));
+        var sut = CreateService(client, BackseatgamingPolicy());
 
         var result = await sut.GenerateAsync(
             Request() with
             {
-                Action = ModerationActionKind.Delete,
-                TimeoutSeconds = null,
+                RuleCode = ModerationRuleCodes.Backseatgaming,
+                OriginalText = "du musst jetzt links fahren und danach springen",
+                TriggerPhrases = ["links fahren"],
             });
 
-        Assert.Empty(result.Reason);
-        var properties = Assert.Single(client.Requests).ResponseFormat!.Value
-            .GetProperty("json_schema")
-            .GetProperty("schema")
-            .GetProperty("properties");
-        Assert.Equal(
-            string.Empty,
-            properties.GetProperty("violationReason").GetProperty("const").GetString());
-        Assert.Equal(
-            string.Empty,
-            properties.GetProperty("guidance").GetProperty("const").GetString());
+        Assert.Contains("Backseatgaming", result.Reason, StringComparison.Ordinal);
+        Assert.Equal(2, client.Requests.Count);
     }
 
-    private static ContextualModerationReasonService CreateService(
-        ILmStudioClient client) =>
+    private static ReviewReasonService CreateService(
+        ILmStudioClient client,
+        StoredPolicy policy) =>
         new(
-            new FakePolicyStore(Policy()),
+            new FakePolicyStore(policy),
             new TwitchAI.Core.Services.ChatTextNormalizer(),
-            client,
-            new InfrastructureOptions());
+            client);
 
-    private static ContextualModerationReasonRequest Request() =>
+    private static ReviewReasonRequest Request() =>
         new(
             "@max du bist völlig unfähig",
             "channel-1",
@@ -101,7 +91,23 @@ public sealed class ContextualModerationReasonServiceTests
             TriggerPhrases: ["du bist völlig unfähig"],
             CorrelationId: "review:case-1");
 
-    private static StoredPolicy Policy()
+    private static StoredPolicy Policy() => PolicyWithRule(
+        ModerationRuleCodes.PersonalAttack,
+        "Beleidigung und Belästigung",
+        ModerationRuleCodes.PersonalAttackPromptInstruction,
+        "Persönlicher Angriff.");
+
+    private static StoredPolicy BackseatgamingPolicy() => PolicyWithRule(
+        ModerationRuleCodes.Backseatgaming,
+        "Backseatgaming",
+        "Erkenne konkrete unaufgeforderte Spielanweisungen.",
+        "Unaufgefordertes Backseatgaming.");
+
+    private static StoredPolicy PolicyWithRule(
+        string ruleCode,
+        string title,
+        string instruction,
+        string publicReason)
     {
         var now = DateTimeOffset.UtcNow;
         return new StoredPolicy(
@@ -116,12 +122,12 @@ public sealed class ContextualModerationReasonServiceTests
                 new BlacklistRuleRecord(
                     RuleId: 1,
                     ScopeId: 1,
-                    ModerationRuleCodes.PersonalAttack,
-                    Title: "Beleidigung und Belästigung",
-                    PromptInstruction: ModerationRuleCodes.PersonalAttackPromptInstruction,
+                    ruleCode,
+                    title,
+                    instruction,
                     DefaultAction: ModerationRuleAction.Timeout,
                     DefaultTimeoutSeconds: 600,
-                    PublicReason: "Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.",
+                    publicReason,
                     Priority: 50,
                     Enabled: true,
                     RowVersion: 1,
@@ -168,6 +174,7 @@ public sealed class ContextualModerationReasonServiceTests
             LmStudioModerationRequest request,
             CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Requests.Add(request);
             return Task.FromResult(response(request));
         }

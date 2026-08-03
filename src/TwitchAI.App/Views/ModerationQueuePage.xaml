@@ -268,7 +268,10 @@
                       SelectedValue="{x:Bind Action, Mode=TwoWay}"
                       SelectedValuePath="Tag"
                       Visibility="{x:Bind ModerationEditorVisibility, Mode=OneWay}">
-                      <ComboBoxItem Content="Nachricht löschen" Tag="delete" />
+                      <ComboBoxItem
+                        Content="Nachricht löschen"
+                        Tag="delete"
+                        Visibility="{x:Bind DeleteActionVisibility, Mode=OneWay}" />
                       <ComboBoxItem Content="Timeout" Tag="timeout" />
                       <ComboBoxItem Content="Ban" Tag="ban" />
                     </ComboBox>
@@ -376,6 +379,7 @@
                           Padding="8"
                           Tag="{x:Bind}"
                           ToolTipService.ToolTip="Als erlaubt lernen und Vorschlag schließen"
+                          Visibility="{x:Bind AllowActionVisibility, Mode=OneWay}"
                           Style="{StaticResource SubtleButtonStyle}" />
                         <Button
                           x:Name="DiscardModerationButton"

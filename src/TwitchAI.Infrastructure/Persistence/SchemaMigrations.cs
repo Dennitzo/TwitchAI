@@ -3614,5 +3614,111 @@ internal static class SchemaMigrations
 
             DROP TABLE twitchai_v33_affected_policy_scopes;
             """),
+        new(
+            34,
+            "Record staged moderation confirmations in AI validation diagnostics",
+            """
+            ALTER TABLE ai_validation_attempts
+                RENAME TO ai_validation_attempts_v34_old;
+
+            CREATE TABLE ai_validation_attempts (
+                validation_attempt_id       INTEGER PRIMARY KEY,
+                correlation_id              TEXT NOT NULL
+                                                CHECK(length(correlation_id) BETWEEN 1 AND 128),
+                parent_correlation_id       TEXT
+                                                CHECK(parent_correlation_id IS NULL OR
+                                                      length(parent_correlation_id) BETWEEN 1 AND 128),
+                attempt_kind                TEXT NOT NULL CHECK(attempt_kind IN (
+                                                'initial','repair','confirmation','local_fallback')),
+                workload_kind               TEXT NOT NULL CHECK(workload_kind IN (
+                                                'live_moderation','learning_test')),
+                contract_version            TEXT NOT NULL
+                                                CHECK(length(contract_version) BETWEEN 1 AND 128),
+                schema_version              TEXT NOT NULL
+                                                CHECK(length(schema_version) BETWEEN 1 AND 128),
+                message_count               INTEGER NOT NULL CHECK(message_count > 0),
+                policy_hash                 TEXT NOT NULL
+                                                CHECK(length(policy_hash) BETWEEN 1 AND 256),
+                validation_error_codes_json TEXT NOT NULL DEFAULT '[]'
+                                                CHECK(json_valid(validation_error_codes_json) AND
+                                                      json_type(validation_error_codes_json) = 'array'),
+                affected_message_count      INTEGER NOT NULL
+                                                CHECK(affected_message_count BETWEEN 0 AND message_count),
+                system_prompt_character_count INTEGER NOT NULL
+                                                CHECK(system_prompt_character_count >= 0),
+                rules_character_count       INTEGER NOT NULL
+                                                CHECK(rules_character_count >= 0),
+                messages_character_count    INTEGER NOT NULL
+                                                CHECK(messages_character_count >= 0),
+                examples_character_count    INTEGER NOT NULL
+                                                CHECK(examples_character_count >= 0),
+                templates_character_count   INTEGER NOT NULL
+                                                CHECK(templates_character_count >= 0),
+                schema_character_count      INTEGER NOT NULL
+                                                CHECK(schema_character_count >= 0),
+                response_character_count    INTEGER NOT NULL
+                                                CHECK(response_character_count >= 0),
+                response_sha256             TEXT CHECK(
+                                                (response_character_count = 0 AND
+                                                 response_sha256 IS NULL) OR
+                                                (response_sha256 IS NOT NULL AND
+                                                 length(response_sha256) = 64)),
+                outcome                     TEXT NOT NULL CHECK(outcome IN (
+                                                'valid','repaired','fallback','rejected')),
+                recorded_utc                TEXT NOT NULL
+            ) STRICT;
+
+            INSERT INTO ai_validation_attempts(
+                validation_attempt_id, correlation_id, parent_correlation_id,
+                attempt_kind, workload_kind, contract_version, schema_version,
+                message_count, policy_hash, validation_error_codes_json,
+                affected_message_count, system_prompt_character_count,
+                rules_character_count, messages_character_count,
+                examples_character_count, templates_character_count,
+                schema_character_count, response_character_count,
+                response_sha256, outcome, recorded_utc)
+            SELECT
+                validation_attempt_id, correlation_id, parent_correlation_id,
+                attempt_kind, workload_kind, contract_version, schema_version,
+                message_count, policy_hash, validation_error_codes_json,
+                affected_message_count, system_prompt_character_count,
+                rules_character_count, messages_character_count,
+                examples_character_count, templates_character_count,
+                schema_character_count, response_character_count,
+                response_sha256, outcome, recorded_utc
+            FROM ai_validation_attempts_v34_old;
+
+            DROP TABLE ai_validation_attempts_v34_old;
+
+            CREATE INDEX ix_ai_validation_attempts_correlation
+                ON ai_validation_attempts(correlation_id, validation_attempt_id);
+
+            CREATE INDEX ix_ai_validation_attempts_recorded
+                ON ai_validation_attempts(recorded_utc DESC);
+
+            CREATE INDEX ix_ai_validation_attempts_outcome
+                ON ai_validation_attempts(
+                    workload_kind, attempt_kind, outcome, recorded_utc DESC);
+            """,
+            RequiresBackup: true),
+        new(
+            35,
+            "Remove moderate learning examples and retain allow learning only",
+            """
+            DELETE FROM learning_example_overrides
+            WHERE source_kind = 'manual_test'
+              AND (
+                    learning_decision = 'moderate'
+                    OR source_id IN (
+                        SELECT manual_example_id
+                        FROM manual_learning_examples
+                        WHERE final_decision = 'confirmed_violation'
+                    )
+              );
+
+            DELETE FROM manual_learning_examples
+            WHERE final_decision = 'confirmed_violation';
+            """,
+            RequiresBackup: true),
     ];
 }

@@ -42,6 +42,17 @@ public sealed record ModerationBatchMessage(
     ChatMessageSnapshot Message,
     IReadOnlyList<BlacklistMatch> LocalMatches)
 {
+    public IReadOnlyList<EffectiveAllowMatch> EffectiveAllowMatches { get; init; } = [];
+
+    public IReadOnlyList<EffectivePhraseMatch> EffectivePhraseMatches { get; init; } = [];
+
+    public IReadOnlyList<EffectiveLearningMatch> EffectiveLearningMatches { get; init; } = [];
+
+    public ModerationDecisionConstraint DecisionConstraint { get; init; } =
+        ModerationDecisionConstraint.Free;
+
+    public EffectiveLearningConsensus? LearningConsensus { get; init; }
+
     public long? ReanalysisCaseId { get; init; }
 
     public long? ReanalysisCaseRowVersion { get; init; }
@@ -107,7 +118,31 @@ public sealed record RetrievalExample(
     string? RuleCode = null)
 {
     public bool IsExactHumanDecision { get; init; }
+
+    public double SimilarityScore { get; init; }
+
+    public string Source { get; init; } = "learning";
+
+    public DateTimeOffset? EffectiveAtUtc { get; init; }
 }
+
+public sealed record ReviewReasonRequest(
+    string OriginalText,
+    string BroadcasterId,
+    string? CategoryId,
+    string RuleCode,
+    ModerationActionKind Action,
+    int? TimeoutSeconds,
+    IReadOnlyList<string> TriggerPhrases,
+    string CorrelationId);
+
+public sealed record ReviewReasonResult(
+    string RuleCode,
+    string Reason,
+    long AiLatencyMilliseconds,
+    int? PromptTokens,
+    int? CompletionTokens,
+    int? TotalTokens);
 
 public sealed record ChatReplyTemplatePrompt(
     string TemplateId,
@@ -131,15 +166,50 @@ public sealed record ModerationRequestMessageV3(
 {
     public IReadOnlyList<ModerationRequestPhraseMatchV1> LocalPhraseMatches { get; init; } = [];
 
+    public IReadOnlyList<ModerationRequestLearningMatchV1> EffectiveAllowMatches { get; init; } = [];
+
+    public IReadOnlyList<ModerationRequestPhraseMatchV1> EffectivePhraseMatches { get; init; } = [];
+
+    public IReadOnlyList<ModerationRequestLearningMatchV1> EffectiveLearningMatches { get; init; } = [];
+
+    public ModerationDecisionConstraint DecisionConstraint { get; init; } =
+        ModerationDecisionConstraint.Free;
+
+    public EffectiveLearningConsensus? LearningConsensus { get; init; }
+
     public int? TwitchEmoteCount { get; init; }
 
     public bool? IsTwitchEmoteOnly { get; init; }
+
+    public bool IsAutoModHeld { get; init; }
+
+    public string? AutoModReason { get; init; }
+
+    public string? AutoModCategory { get; init; }
+
+    public int? AutoModLevel { get; init; }
 }
 
 public sealed record ModerationRequestPhraseMatchV1(
     long PhraseId,
     string RuleCode,
-    string Phrase);
+    string Phrase,
+    double Score = 1d,
+    string MatchKind = "manual_phrase");
+
+public sealed record ModerationRequestLearningMatchV1(
+    string Text,
+    string Decision,
+    PolicySetCode PolicySet,
+    string? RuleCode,
+    string? Action,
+    int? TimeoutSeconds,
+    string? Reason,
+    double Score,
+    bool Exact,
+    string Source = "learning",
+    DateTimeOffset? EffectiveAtUtc = null,
+    string? MatchedPhrase = null);
 
 public sealed record ModerationDecisionCandidateV3(
     string MessageId,

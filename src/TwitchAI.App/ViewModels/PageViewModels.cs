@@ -29,7 +29,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
     private readonly IConfigurationDataService _configuration;
     private readonly IPolicyStore _policyStore;
     private readonly ITwitchChatReplyExecutor _chatReplyExecutor;
-    private readonly IContextualModerationReasonService _reasonService;
+    private readonly IReviewReasonService _reviewReasonService;
     private readonly HashSet<ModerationCaseItem> _observedCases = [];
     private readonly Dictionary<long, CancellationTokenSource> _reasonRuns = [];
 
@@ -41,7 +41,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         IConfigurationDataService configuration,
         IPolicyStore policyStore,
         ITwitchChatReplyExecutor chatReplyExecutor,
-        IContextualModerationReasonService reasonService)
+        IReviewReasonService reviewReasonService)
     {
         _state = state;
         _executor = executor;
@@ -50,7 +50,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         _configuration = configuration;
         _policyStore = policyStore;
         _chatReplyExecutor = chatReplyExecutor;
-        _reasonService = reasonService;
+        _reviewReasonService = reviewReasonService;
         Cases = state.ModerationCases;
         Cases.CollectionChanged += OnCasesCollectionChanged;
         foreach (var item in Cases)
@@ -165,6 +165,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         }
 
         item.Reason = string.Empty;
+        item.IsReasonGenerating = false;
         item.ReasonGenerationStatus = string.Empty;
         if (item.Action is not ("timeout" or "ban"))
         {
@@ -176,14 +177,14 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
             cancellationToken);
         _reasonRuns[item.CaseId] = linkedCancellation;
         item.IsReasonGenerating = true;
-        item.ReasonGenerationStatus = "AI erstellt eine neue Begründung …";
+        item.ReasonGenerationStatus = "AI erstellt eine kontextbezogene Reason …";
         try
         {
             var action = item.Action == "ban"
                 ? ModerationActionKind.Ban
                 : ModerationActionKind.Timeout;
-            var generated = await _reasonService.GenerateAsync(
-                new ContextualModerationReasonRequest(
+            var generated = await _reviewReasonService.GenerateAsync(
+                new ReviewReasonRequest(
                     item.OriginalMessage,
                     item.ChannelId,
                     item.CategoryId,
@@ -201,13 +202,15 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
                 linkedCancellation.Token);
             if (!linkedCancellation.IsCancellationRequested
                 && Cases.Contains(item)
+                && _reasonRuns.TryGetValue(item.CaseId, out var current)
+                && ReferenceEquals(current, linkedCancellation)
                 && string.Equals(
                     item.RuleCode,
                     generated.RuleCode,
                     StringComparison.OrdinalIgnoreCase))
             {
                 item.Reason = generated.Reason;
-                item.ReasonGenerationStatus = "AI-Begründung wurde aktualisiert.";
+                item.ReasonGenerationStatus = "AI-Reason wurde aktualisiert.";
             }
         }
         catch (OperationCanceledException)
@@ -223,7 +226,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
                     StringComparison.OrdinalIgnoreCase))
             {
                 item.ReasonGenerationStatus =
-                    $"AI-Begründung fehlgeschlagen: {exception.Message} Manuelle Eingabe ist möglich.";
+                    $"AI-Reason fehlgeschlagen: {exception.Message} Manuelle Eingabe ist möglich.";
             }
         }
         finally

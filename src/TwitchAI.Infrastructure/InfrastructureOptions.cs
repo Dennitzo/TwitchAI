@@ -31,6 +31,7 @@ public sealed class TwitchOAuthOptions
         "user:read:moderated_channels",
         "moderator:manage:chat_messages",
         "moderator:manage:banned_users",
+        "moderator:manage:automod",
     ];
 }
 

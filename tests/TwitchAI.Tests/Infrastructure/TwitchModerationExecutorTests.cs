@@ -11,6 +11,30 @@ namespace TwitchAI.Tests.Infrastructure;
 
 public sealed class TwitchModerationExecutorTests
 {
+    [Fact]
+    public async Task ExecuteAsync_AutoModHeldCaseRejectsDelete()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var helix = new RecordingHelixClient();
+        var fixture = await CreateBanFixtureAsync(
+            database,
+            helix,
+            isAutoModHeld: true);
+        var request = CreateBanRequest(fixture.CaseId) with
+        {
+            Action = ModerationActionKind.Delete,
+            Reason = string.Empty,
+        };
+
+        var result = await fixture.Executor.ExecuteAsync(request);
+
+        Assert.Equal(ModerationExecutionOutcome.Rejected, result.Outcome);
+        Assert.Equal("automod_action_invalid", result.StatusCode);
+        Assert.Null(helix.Delete);
+        Assert.Null(helix.Timeout);
+        Assert.Null(helix.Ban);
+    }
+
     [Theory]
     [InlineData("delete")]
     [InlineData("timeout")]
@@ -1230,7 +1254,8 @@ public sealed class TwitchModerationExecutorTests
         TestDatabase database,
         RecordingHelixClient helix,
         string moderatorUserId = "moderator-1",
-        string? badgeSetId = null)
+        string? badgeSetId = null,
+        bool isAutoModHeld = false)
     {
         const string channelId = "channel-ban";
         var infrastructureNormalizer =
@@ -1271,7 +1296,10 @@ public sealed class TwitchModerationExecutorTests
             identity,
             new CoreChatTextNormalizer().Process(identity.OriginalText),
             context,
-            IngressSequence: 1);
+            IngressSequence: 1)
+        {
+            IsAutoModHeld = isAutoModHeld,
+        };
         var repository = new CoreModerationCaseRepository(
             database.ConnectionFactory,
             infrastructureNormalizer);

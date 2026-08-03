@@ -183,6 +183,7 @@ public sealed class SqliteLearningDatasetService : ILearningDatasetService
         var whereClause =
             """
             WHERE is_removed = 0
+              AND learning_decision = 'allow'
               AND (@decision IS NULL OR learning_decision = @decision)
               AND (@policy_set IS NULL OR policy_set = @policy_set)
               AND (
@@ -526,30 +527,8 @@ public sealed class SqliteLearningDatasetService : ILearningDatasetService
             };
         }
 
-        if (draft.Action == ModerationActionKind.None)
-        {
-            throw new ArgumentException(
-                "Moderated learning examples require an action.",
-                nameof(draft));
-        }
-
-        if (draft.Action == ModerationActionKind.Timeout)
-        {
-            if (draft.TimeoutSeconds is not >= 1 or > 1_209_600)
-            {
-                throw new ArgumentOutOfRangeException(
-                    nameof(draft),
-                    "Timeout duration must be between 1 and 1209600 seconds.");
-            }
-        }
-        else if (draft.TimeoutSeconds is not null)
-        {
-            throw new ArgumentException(
-                "Only timeout actions may contain a duration.",
-                nameof(draft));
-        }
-
-        return draft with { RuleCode = ruleCode, Reason = reason };
+        throw new InvalidOperationException(
+            "Moderate-Learning ist deaktiviert; es sind ausschließlich Allow-Learnings zulässig.");
     }
 
     private static void ValidateQuery(LearningDatasetQuery query)

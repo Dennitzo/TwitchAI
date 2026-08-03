@@ -87,6 +87,15 @@ public sealed class TwitchModerationExecutor : ITwitchModerationExecutor
                 "Der Moderationsfall wurde bereits geändert oder verarbeitet.");
         }
 
+        if (moderationCase.Message.IsAutoModHeld
+            && request.Action is not (
+                ModerationActionKind.Timeout or ModerationActionKind.Ban))
+        {
+            return Rejected(
+                "automod_action_invalid",
+                "Eine von AutoMod zurückgehaltene Nachricht darf nur mit Timeout oder Ban bearbeitet werden.");
+        }
+
         if (!_options.ContainsBroadcaster(
                 moderationCase.Message.Identity.ChannelId))
         {

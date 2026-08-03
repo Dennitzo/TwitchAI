@@ -29,24 +29,26 @@ Whitelist-Treffer verlassen den Ingress an dieser Stelle. Alle übrigen
 Nachrichten erhalten einen unveränderlichen Kategorie- und Policy-Snapshot.
 `ModerationBatcher` trennt Kategorien sowie Revisionen und versiegelt nach dem
 ersten Grenzwert: 20 Nachrichten, 6.000 Nachrichtenzeichen oder zehn Sekunden
-seit der ersten Nachricht. Ein zweiter Batch kann während einer laufenden
-Inferenz gesammelt werden; der Inferenz-Worker bleibt seriell.
+seit der ersten Nachricht. Verschiedene Channels können bis zur globalen
+Vier-Slot-Grenze parallel inferieren; je Channel bleibt die Verarbeitung FIFO
+und auf einen aktiven Request begrenzt.
 
 ## Modellgrenze
 
-Das kompakte Request-/Response-Envelope v7 enthält keine Twitch-Identitäten. Ein
-lokales Mapping verbindet temporäre IDs mit den Snapshots. Das Ergebnis ist ein
-Objekt, in dem jede temporäre ID als verpflichtender Schlüssel genau einmal
-vorkommt. `null` bedeutet erlaubt; Moderationen und optionale Chat-Antworten
-bleiben kompakte Werte. Damit erzwingt bereits das dynamische JSON-Schema die
-vollständige, eindeutige Zuordnung. Der Validator leitet das Regelset lokal aus
-dem Regelcode ab.
+Die kompakten Stage-Envelopes enthalten keine Twitch-Identitäten. Die
+Klassifikation v1 wählt nur Regel, Aktion, Evidence und optional eine
+Chat-Antwort. Exakte Allow-Entscheidungen sperren Moderation; exakte Moderate-
+und aktive Phrasentreffer werden direkt zu Bestätigungskandidaten. Die
+Bestätigung v1 prüft alle Kandidaten eines Batches gemeinsam unter fest
+vorgegebener Regel und Aktion und erzeugt erst dann Triggerbeleg, Begründung und
+Hinweis. Ein lokales Mapping verbindet die temporären Schlüssel mit den
+Snapshots.
 
-Bei einem Fehler mit sicher zuordenbarer Message-ID bleiben gültige
-Entscheidungen erhalten und nur die betroffene Nachricht wird einmal kompakt
-repariert. Ungültiges Root-JSON, unbekannte IDs oder eine beschädigte
-Gesamtstruktur lösen weiterhin höchstens eine vollständige Batchreparatur aus.
-Bleibt das Ergebnis ungültig, entsteht kein Moderationsfall.
+Bei einem Klassifikationsfehler mit sicher zuordenbarer Message-ID bleiben
+gültige Entscheidungen erhalten und nur die betroffene Nachricht wird einmal
+kompakt repariert. Bestätigungen werden nie repariert: ungültige Kandidaten
+fallen einzeln auf `noAction`, gültige Kandidaten desselben Responses bleiben
+verwendbar. Es gibt keinen separaten Reason-Request.
 
 Retrieval ist auf sechs Beispiele und ungefähr 800 Tokens begrenzt. Lokale
 Blacklistbestände werden nicht in den Prompt kopiert; nur gefundene Regelcodes

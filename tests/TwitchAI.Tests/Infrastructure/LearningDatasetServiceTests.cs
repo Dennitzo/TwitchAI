@@ -253,7 +253,7 @@ public sealed class LearningDatasetServiceTests
     }
 
     [Fact]
-    public async Task Retrieval_RanksSimilarTextBalancesLabelsAndKeepsNewestConflict()
+    public async Task Retrieval_RanksOnlyAllowLearningAndIgnoresModerateHistory()
     {
         await using var database = await TestDatabase.CreateAsync();
         await InsertManualAsync(
@@ -313,13 +313,12 @@ public sealed class LearningDatasetServiceTests
         Assert.Equal(
             "kann mir bitte jemand einen sub schenken",
             examples[0].LowerText);
-        Assert.True(examples[0].IsPositive);
+        Assert.False(examples[0].IsPositive);
         Assert.Equal(
             1,
             examples.Count(item =>
                 item.LowerText == "kann mir bitte jemand einen sub schenken"));
-        Assert.Contains(examples.Take(3), item => item.IsPositive);
-        Assert.Contains(examples.Take(3), item => !item.IsPositive);
+        Assert.All(examples, item => Assert.False(item.IsPositive));
         Assert.DoesNotContain(
             examples,
             item => item.RuleCode == ModerationRuleCodes.Backseatgaming);
@@ -331,7 +330,7 @@ public sealed class LearningDatasetServiceTests
                 categoryId: "any-known-game",
                 CreatePolicy(includeBackseatgaming: true),
                 ["wohin muss ich jetzt gehen"]);
-        Assert.Contains(
+        Assert.DoesNotContain(
             withBackseatgaming,
             item => item.RuleCode == ModerationRuleCodes.Backseatgaming);
     }
@@ -382,10 +381,10 @@ public sealed class LearningDatasetServiceTests
             database,
             manualId: 801,
             relevantText,
-            finalDecision: "confirmed_violation",
-            action: "timeout",
+            finalDecision: "marked_allowed",
+            action: "none",
             policySet: "general",
-            ruleCode: ModerationRuleCodes.OtherAbuse,
+            ruleCode: ModerationRuleCodes.Spam,
             occurredUtc: "2026-07-30T14:00:00.0000000+00:00");
         await InsertManyBackseatExamplesAsync(database, count: 1_000);
 
@@ -412,8 +411,8 @@ public sealed class LearningDatasetServiceTests
             database,
             manualId: 901,
             "ich liebe dich",
-            finalDecision: "confirmed_violation",
-            action: "timeout",
+            finalDecision: "marked_allowed",
+            action: "none",
             policySet: "general",
             ruleCode: ModerationRuleCodes.PersonalAttack,
             occurredUtc: "2026-07-30T16:00:00.0000000+00:00");
@@ -421,8 +420,8 @@ public sealed class LearningDatasetServiceTests
             database,
             manualId: 902,
             "ich liebe dich wirklich",
-            finalDecision: "confirmed_violation",
-            action: "timeout",
+            finalDecision: "marked_allowed",
+            action: "none",
             policySet: "general",
             ruleCode: ModerationRuleCodes.PersonalAttack,
             occurredUtc: "2026-07-30T16:01:00.0000000+00:00");

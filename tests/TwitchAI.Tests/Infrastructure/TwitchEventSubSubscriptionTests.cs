@@ -5,7 +5,7 @@ namespace TwitchAI.Tests.Infrastructure;
 public sealed class TwitchEventSubSubscriptionTests
 {
     [Fact]
-    public void BuildSubscriptionRequests_ModerationModeCreatesFourChatSubscriptionsPerChannel()
+    public void BuildSubscriptionRequests_ModerationModeIncludesAutoModHoldPerChannel()
     {
         var channel = new TwitchEventSubChannel("channel-1", "reader-1")
         {
@@ -17,7 +17,7 @@ public sealed class TwitchEventSubSubscriptionTests
             "session-1",
             isReadOnly: false);
 
-        Assert.Equal(8, requests.Count);
+        Assert.Equal(10, requests.Count);
         Assert.Equal(
             ["channel-1", "channel-2"],
             requests
@@ -30,6 +30,16 @@ public sealed class TwitchEventSubSubscriptionTests
         Assert.Equal(
             2,
             requests.Count(request => request.Type == "channel.chat.message_delete"));
+        Assert.Equal(
+            2,
+            requests.Count(request => request.Type == "automod.message.hold"));
+        Assert.All(
+            requests.Where(request => request.Type == "automod.message.hold"),
+            request =>
+            {
+                Assert.Equal("2", request.Version);
+                Assert.Equal("reader-1", request.Condition["moderator_user_id"]);
+            });
         Assert.DoesNotContain(requests, request => request.Type == "channel.update");
     }
 
@@ -54,6 +64,7 @@ public sealed class TwitchEventSubSubscriptionTests
             3,
             requests.Count(request => request.Type == "channel.chat.message"));
         Assert.DoesNotContain(requests, request => request.Type == "channel.update");
+        Assert.DoesNotContain(requests, request => request.Type == "automod.message.hold");
     }
 
     [Fact]

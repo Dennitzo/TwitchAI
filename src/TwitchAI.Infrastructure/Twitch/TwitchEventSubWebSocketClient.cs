@@ -56,6 +56,20 @@ public sealed record TwitchChatMessageEvent(
     public bool IsTwitchEmoteOnly { get; init; }
 }
 
+public sealed record TwitchAutoModMessageHeldEvent(
+    string EventMessageId,
+    string BroadcasterId,
+    DateTimeOffset ObservedAt,
+    string MessageId,
+    string UserId,
+    string UserLogin,
+    string UserDisplayName,
+    string MessageText,
+    string Reason,
+    string? Category,
+    int? Level)
+    : TwitchEventSubEvent(EventMessageId, BroadcasterId, ObservedAt);
+
 public sealed record TwitchCategoryChangedEvent(
     string EventMessageId,
     string BroadcasterId,
@@ -645,6 +659,16 @@ public sealed class TwitchEventSubWebSocketClient :
                     "1",
                     chatCondition,
                     sessionId));
+            requests.Add(
+                new TwitchEventSubSubscriptionRequest(
+                    "automod.message.hold",
+                    "2",
+                    new Dictionary<string, string>(StringComparer.Ordinal)
+                    {
+                        ["broadcaster_user_id"] = broadcasterId,
+                        ["moderator_user_id"] = channel.ReaderUserId,
+                    },
+                    sessionId));
         }
 
         return requests;
@@ -703,6 +727,11 @@ public sealed class TwitchEventSubWebSocketClient :
         TwitchEventSubEvent? parsed = subscriptionType switch
         {
             "channel.chat.message" => ParseChatMessage(
+                eventMessageId,
+                broadcasterId,
+                observedAt,
+                @event),
+            "automod.message.hold" => ParseAutoModMessageHeld(
                 eventMessageId,
                 broadcasterId,
                 observedAt,
@@ -825,6 +854,36 @@ public sealed class TwitchEventSubWebSocketClient :
             TwitchEmoteCount = twitchEmoteCount,
             IsTwitchEmoteOnly = isTwitchEmoteOnly,
         };
+    }
+
+    internal static TwitchAutoModMessageHeldEvent ParseAutoModMessageHeld(
+        string eventMessageId,
+        string broadcasterId,
+        DateTimeOffset observedAt,
+        JsonElement @event)
+    {
+        var message = @event.GetProperty("message");
+        string? category = null;
+        int? level = null;
+        if (@event.TryGetProperty("automod", out var autoMod)
+            && autoMod.ValueKind == JsonValueKind.Object)
+        {
+            category = NullIfEmpty(OptionalString(autoMod, "category"));
+            level = OptionalInt32(autoMod, "level");
+        }
+
+        return new TwitchAutoModMessageHeldEvent(
+            eventMessageId,
+            broadcasterId,
+            observedAt,
+            RequiredString(@event, "message_id"),
+            RequiredString(@event, "user_id"),
+            RequiredString(@event, "user_login"),
+            RequiredString(@event, "user_name"),
+            RequiredString(message, "text"),
+            RequiredString(@event, "reason"),
+            category,
+            level);
     }
 
     private static (int Count, bool IsEmoteOnly) ParseTwitchEmoteMetadata(
@@ -996,6 +1055,14 @@ public sealed class TwitchEventSubWebSocketClient :
                property.TryGetInt32(out var value)
             ? value
             : throw new InvalidDataException($"EventSub payload is missing numeric '{name}'.");
+    }
+
+    private static int? OptionalInt32(JsonElement parent, string name)
+    {
+        return parent.TryGetProperty(name, out var property)
+               && property.TryGetInt32(out var value)
+            ? value
+            : null;
     }
 
     private static string? NullIfEmpty(string? value)

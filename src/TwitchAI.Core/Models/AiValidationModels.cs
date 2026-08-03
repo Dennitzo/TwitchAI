@@ -7,6 +7,7 @@ public enum AiValidationAttemptKind
 {
     Initial,
     Repair,
+    Confirmation,
     LocalFallback,
 }
 

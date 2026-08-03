@@ -6,6 +6,37 @@ namespace TwitchAI.Tests.Infrastructure;
 public sealed class TwitchChatBadgeRolesTests
 {
     [Fact]
+    public void ParseAutoModMessageHeld_ReadsMessageAndAutoModContext()
+    {
+        using var document = JsonDocument.Parse(
+            """
+            {
+              "user_id": "user-1",
+              "user_login": "viewer",
+              "user_name": "Viewer",
+              "message_id": "held-1",
+              "message": { "text": "you are an idiot", "fragments": [] },
+              "reason": "automod",
+              "automod": { "category": "aggressive", "level": 3, "boundaries": [] },
+              "blocked_term": null
+            }
+            """);
+
+        var parsed = TwitchEventSubWebSocketClient.ParseAutoModMessageHeld(
+            "event-automod-1",
+            "channel-1",
+            DateTimeOffset.UtcNow,
+            document.RootElement);
+
+        Assert.Equal("held-1", parsed.MessageId);
+        Assert.Equal("user-1", parsed.UserId);
+        Assert.Equal("you are an idiot", parsed.MessageText);
+        Assert.Equal("automod", parsed.Reason);
+        Assert.Equal("aggressive", parsed.Category);
+        Assert.Equal(3, parsed.Level);
+    }
+
+    [Fact]
     public void ParseChatMessage_CountsStructuredTwitchEmotes()
     {
         using var document = JsonDocument.Parse(

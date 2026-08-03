@@ -36,6 +36,30 @@ public interface IRetrievalExampleStore
         string queryLowerText,
         CancellationToken cancellationToken = default) =>
         GetRelevantForLearningTestAsync(policy, cancellationToken);
+
+    async ValueTask<IReadOnlyDictionary<string, IReadOnlyList<RetrievalExample>>>
+        GetRelevantPerMessageAsync(
+            string channelId,
+            string? categoryId,
+            CoreEffectivePolicySnapshot policy,
+            IReadOnlyList<string> queryLowerTexts,
+            CancellationToken cancellationToken = default)
+    {
+        var result = new Dictionary<string, IReadOnlyList<RetrievalExample>>(
+            StringComparer.Ordinal);
+        foreach (var query in queryLowerTexts.Distinct(StringComparer.Ordinal))
+        {
+            result[query] = await GetRelevantAsync(
+                    channelId,
+                    categoryId,
+                    policy,
+                    [query],
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return result;
+    }
 }
 
 public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connectionFactory)
@@ -77,6 +101,34 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
                 cancellationToken)
             .ConfigureAwait(false);
         return Rank(candidates, queryLowerTexts);
+    }
+
+    public async ValueTask<IReadOnlyDictionary<string, IReadOnlyList<RetrievalExample>>>
+        GetRelevantPerMessageAsync(
+            string channelId,
+            string? categoryId,
+            CoreEffectivePolicySnapshot policy,
+            IReadOnlyList<string> queryLowerTexts,
+            CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(channelId);
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(queryLowerTexts);
+        await using var connection = await connectionFactory
+            .OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var candidates = await ReadCandidatesAsync(
+                connection,
+                policy,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return queryLowerTexts
+            .Where(query => !string.IsNullOrWhiteSpace(query))
+            .Distinct(StringComparer.Ordinal)
+            .ToDictionary(
+                query => query,
+                query => (IReadOnlyList<RetrievalExample>)Rank(candidates, [query]),
+                StringComparer.Ordinal);
     }
 
     public ValueTask<IReadOnlyList<RetrievalExample>>
@@ -172,6 +224,7 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
                                     source_id DESC) AS decision_rank
                 FROM taxonomy_examples
                 WHERE is_removed = 0
+                  AND learning_decision = 'allow'
             )
             """ + "\n" +
             """
@@ -185,6 +238,7 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
                 ON active.policy_set = decision.policy_set
                AND active.rule_code = decision.rule_code
             WHERE decision.decision_rank = 1
+              AND decision.learning_decision = 'allow'
             ORDER BY julianday(decision.effective_utc) DESC,
                      decision.effective_utc DESC,
                      decision.source_kind DESC,
@@ -250,8 +304,8 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
                 CharacterNgrams(item)))
             .ToArray();
 
-        // The newest effective human decision wins for identical text. This
-        // prevents contradictory allow/moderate labels reaching one prompt.
+        // Only allow examples reach retrieval. If several allow records contain
+        // identical text, the newest effective record supplies its metadata.
         var distinct = candidates
             .OrderByDescending(item => item.EffectiveAtUtc)
             .ThenByDescending(item => item.SourceId)
@@ -260,11 +314,9 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
             .Where(item => item.Score >= MinimumSimilarity)
             .ToArray();
 
-        var moderated = SortCandidates(
-            distinct.Where(item => item.Candidate.Example.IsPositive));
         var allowed = SortCandidates(
             distinct.Where(item => !item.Candidate.Example.IsPositive));
-        return InterleaveDecisions(moderated, allowed)
+        return allowed
             .Take(MaximumRankedExamples)
             .Select(item => item.Candidate.Example with
             {
@@ -272,42 +324,11 @@ public sealed class SqliteRetrievalExampleStore(ISqliteConnectionFactory connect
                     StringComparer.Ordinal.Equals(
                         item.Candidate.Example.LowerText,
                         query.Text)),
+                SimilarityScore = item.Score,
+                Source = item.Candidate.SourceKind.ToString(),
+                EffectiveAtUtc = item.Candidate.EffectiveAtUtc,
             })
             .ToArray();
-    }
-
-    private static List<ScoredCandidate> InterleaveDecisions(
-        IReadOnlyList<ScoredCandidate> moderated,
-        IReadOnlyList<ScoredCandidate> allowed)
-    {
-        var result = new List<ScoredCandidate>(moderated.Count + allowed.Count);
-        var moderatedIndex = 0;
-        var allowedIndex = 0;
-        var preferModerated = moderated.Count > 0 &&
-            (allowed.Count == 0 || moderated[0].Score >= allowed[0].Score);
-        while (moderatedIndex < moderated.Count || allowedIndex < allowed.Count)
-        {
-            if (preferModerated && moderatedIndex < moderated.Count)
-            {
-                result.Add(moderated[moderatedIndex++]);
-            }
-            else if (!preferModerated && allowedIndex < allowed.Count)
-            {
-                result.Add(allowed[allowedIndex++]);
-            }
-            else if (moderatedIndex < moderated.Count)
-            {
-                result.Add(moderated[moderatedIndex++]);
-            }
-            else
-            {
-                result.Add(allowed[allowedIndex++]);
-            }
-
-            preferModerated = !preferModerated;
-        }
-
-        return result;
     }
 
     private static List<ScoredCandidate> SortCandidates(

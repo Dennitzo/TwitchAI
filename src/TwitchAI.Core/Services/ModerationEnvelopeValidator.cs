@@ -4,13 +4,21 @@ using TwitchAI.Core.Models;
 
 namespace TwitchAI.Core.Services;
 
-public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
+public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeValidator
 {
     public const string ResponseEnvelopeVersion = "twitchai.moderation.response.v4";
     public const string SparseResponseEnvelopeVersion =
         "twitchai.moderation.response.v6";
     public const string KeyedResponseEnvelopeVersion =
         ModerationPromptCompiler.ResponseEnvelopeVersion;
+    public const string PriorKeyedResponseEnvelopeVersion =
+        "twitchai.moderation.response.v3";
+    public const string PreviousKeyedResponseEnvelopeVersion =
+        "twitchai.moderation.response.v2";
+    public const string EarlierKeyedResponseEnvelopeVersion =
+        "twitchai.moderation.response.v1";
+    public const string HistoricalKeyedResponseEnvelopeVersion =
+        "twitchai.moderation.response.v9";
     private const int MaximumRawResponseCharacters = 262_144;
     private const int MaximumTriggerPhrases = 3;
 
@@ -88,6 +96,15 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
     private static readonly HashSet<string> RequiredKeyedModerationProperties =
         Set("action", "ruleCode", "evidenceKind", "violationReason", "guidance", "triggerPhrases", "confidence");
 
+    private static readonly HashSet<string> DetectionModerationProperties =
+        Set(
+            "action", "timeoutSeconds", "ruleCode", "evidenceKind",
+            "sensitiveDataType", "reason",
+            "triggerPhrases", "confidence");
+
+    private static readonly HashSet<string> RequiredDetectionModerationProperties =
+        Set("action", "ruleCode", "evidenceKind", "triggerPhrases", "reason", "confidence");
+
     private static readonly HashSet<string> KeyedReplyProperties =
         Set("replyTemplateId", "confidence");
 
@@ -133,6 +150,11 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
         string rawJson,
         ModerationBatch batch) =>
         ValidateCompactCore(rawJson, batch, allowMissingRuleFallback: true);
+
+    public ModerationValidationReport ValidateLive(
+        string rawJson,
+        ModerationBatch batch) =>
+        ValidateCompactCore(rawJson, batch, allowMissingRuleFallback: false);
 
     public ModerationValidationReport ValidateV4(
         string rawJson,
@@ -250,10 +272,7 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             }
 
             if (!TryGetRequiredString(root, "envelopeVersion", out var version)
-                || !string.Equals(
-                    version,
-                    KeyedResponseEnvelopeVersion,
-                    StringComparison.Ordinal))
+                || !IsKeyedResponseVersion(version))
             {
                 return FullRepairReport(
                     batch,
@@ -344,6 +363,18 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
 
                 if (property.Value.ValueKind == JsonValueKind.Null)
                 {
+                    if (sourceById[messageId].Message.IsAutoModHeld)
+                    {
+                        MarkMessageInvalid(
+                            messageId,
+                            "automod_action_required",
+                            $"Decision '{messageId}': an AutoMod-held message requires timeout or ban.",
+                            invalidIds,
+                            validatedById,
+                            issues);
+                        continue;
+                    }
+
                     if (RepeatedPhraseSpamDetector.IsSpam(
                             sourceById[messageId].Message.Text.LowerText))
                     {
@@ -376,6 +407,18 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 SparseDecisionValidationResult result;
                 if (property.Value.TryGetProperty("replyTemplateId", out _))
                 {
+                    if (sourceById[messageId].Message.IsAutoModHeld)
+                    {
+                        MarkMessageInvalid(
+                            messageId,
+                            "automod_reply_forbidden",
+                            $"Decision '{messageId}': an AutoMod-held message cannot produce a reply.",
+                            invalidIds,
+                            validatedById,
+                            issues);
+                        continue;
+                    }
+
                     result = ValidateV6Reply(
                         property.Value,
                         sourceById,
@@ -391,7 +434,11 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                         batch.Context.EffectivePolicy,
                         allowMissingRuleFallback,
                         keyedMessageId: messageId,
-                        sanitizeOptionalTriggers: true);
+                        sanitizeOptionalTriggers: true,
+                        detectionOnly: string.Equals(
+                            version,
+                            KeyedResponseEnvelopeVersion,
+                            StringComparison.Ordinal));
                 }
 
                 if (result.Error is not null)
@@ -641,6 +688,18 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                     continue;
                 }
 
+                if (sourceById[messageId].Message.IsAutoModHeld)
+                {
+                    MarkMessageInvalid(
+                        messageId,
+                        "automod_action_required",
+                        $"Decision '{messageId}': an AutoMod-held message requires timeout or ban.",
+                        invalidIds,
+                        validatedById,
+                        issues);
+                    continue;
+                }
+
                 if (RepeatedPhraseSpamDetector.IsSpam(
                         sourceById[messageId].Message.Text.LowerText))
                 {
@@ -826,7 +885,8 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
         EffectivePolicySnapshot activePolicy,
         bool allowMissingRuleFallback,
         string? keyedMessageId = null,
-        bool sanitizeOptionalTriggers = false)
+        bool sanitizeOptionalTriggers = false,
+        bool detectionOnly = false)
     {
         if (element.ValueKind != JsonValueKind.Object)
         {
@@ -848,10 +908,14 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
         var structureError = ValidateObjectShape(
             element,
             isKeyedDecision
-                ? KeyedModerationProperties
+                ? detectionOnly
+                    ? DetectionModerationProperties
+                    : KeyedModerationProperties
                 : SparseModerationProperties,
             isKeyedDecision
-                ? RequiredKeyedModerationProperties
+                ? detectionOnly
+                    ? RequiredDetectionModerationProperties
+                    : RequiredKeyedModerationProperties
                 : RequiredSparseModerationProperties,
             "moderation");
         if (structureError is not null)
@@ -888,6 +952,15 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 messageId,
                 "action_invalid",
                 $"Decision '{messageId}' must use delete, timeout, or ban.");
+        }
+
+        if (source.Message.IsAutoModHeld
+            && action is not (ModerationActionKind.Timeout or ModerationActionKind.Ban))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "automod_action_invalid",
+                $"Decision '{messageId}': an AutoMod-held message permits only timeout or ban.");
         }
 
         var hasTimeout = element.TryGetProperty(
@@ -1014,18 +1087,6 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
 
         if (string.Equals(
                 rule.RuleCode,
-                ModerationRuleCodes.Backseatgaming,
-                StringComparison.Ordinal)
-            && !HasMinimumBackseatContext(source.Message.Text.LowerText))
-        {
-            return SparseDecisionValidationResult.Invalid(
-                messageId,
-                "backseat_context_insufficient",
-                $"Decision '{messageId}': Backseatgaming requires a concrete multi-word statement and cannot be inferred from a question or fragment.");
-        }
-
-        if (string.Equals(
-                rule.RuleCode,
                 ModerationRuleCodes.Spam,
                 StringComparison.Ordinal)
             && source.Message.IsTwitchEmoteOnly
@@ -1049,7 +1110,12 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
 
         string? candidateViolationReason;
         string? candidateGuidance;
-        if (isKeyedDecision)
+        if (detectionOnly)
+        {
+            candidateViolationReason = ReadStringProperty(element, "reason");
+            candidateGuidance = null;
+        }
+        else if (isKeyedDecision)
         {
             candidateViolationReason = ReadStringProperty(
                 element,
@@ -1062,7 +1128,8 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             candidateGuidance = null;
         }
 
-        if (ModerationReasonNormalizer.IsSelfNegating(candidateViolationReason))
+        if (!detectionOnly
+            && ModerationReasonNormalizer.IsSelfNegating(candidateViolationReason))
         {
             return SparseDecisionValidationResult.Valid(
                 NoActionDecision(messageId),
@@ -1128,7 +1195,25 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
         }
 
         string reason;
-        if (isKeyedDecision)
+        if (detectionOnly)
+        {
+            if (!ModerationReasonComposer.TryComposeReasonOnly(
+                    candidateViolationReason,
+                    action,
+                    rule,
+                    triggerResult.TriggerPhrases,
+                    out var reasonOnlyComposition,
+                    out var reasonOnlyError))
+            {
+                return SparseDecisionValidationResult.Invalid(
+                    messageId,
+                    reasonOnlyError,
+                    $"Decision '{messageId}': the AI reason is invalid.");
+            }
+
+            reason = reasonOnlyComposition.Reason;
+        }
+        else if (isKeyedDecision)
         {
             if (!ModerationReasonComposer.TryComposeAiReason(
                     candidateViolationReason,
@@ -1166,21 +1251,6 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
                 messageId,
                 "reason_contains_trigger_phrase",
                 $"Decision '{messageId}': reason must summarize the violation and must not repeat triggerPhrases.");
-        }
-
-        var isBackseat = string.Equals(
-            rule.RuleCode,
-            ModerationRuleCodes.Backseatgaming,
-            StringComparison.Ordinal);
-        if (isBackseat
-            && (triggerResult.TriggerPhrases!.Count == 0
-                || triggerResult.TriggerPhrases.Any(
-                    phrase => CountLexicalTokens(phrase) < 2)))
-        {
-            return SparseDecisionValidationResult.Invalid(
-                messageId,
-                "backseat_evidence_insufficient",
-                $"Decision '{messageId}': Backseatgaming requires at least one concrete multi-word trigger phrase.");
         }
 
         var evidenceMissing = !string.Equals(
@@ -1407,7 +1477,18 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
 
     private static bool IsCompactResponse(string rawJson) =>
         HasEnvelopeVersion(rawJson, SparseResponseEnvelopeVersion)
-        || HasEnvelopeVersion(rawJson, KeyedResponseEnvelopeVersion);
+            || HasEnvelopeVersion(rawJson, KeyedResponseEnvelopeVersion)
+            || HasEnvelopeVersion(rawJson, PriorKeyedResponseEnvelopeVersion)
+            || HasEnvelopeVersion(rawJson, PreviousKeyedResponseEnvelopeVersion)
+            || HasEnvelopeVersion(rawJson, EarlierKeyedResponseEnvelopeVersion)
+        || HasEnvelopeVersion(rawJson, HistoricalKeyedResponseEnvelopeVersion);
+
+    private static bool IsKeyedResponseVersion(string version) =>
+        string.Equals(version, KeyedResponseEnvelopeVersion, StringComparison.Ordinal)
+        || string.Equals(version, PriorKeyedResponseEnvelopeVersion, StringComparison.Ordinal)
+        || string.Equals(version, PreviousKeyedResponseEnvelopeVersion, StringComparison.Ordinal)
+        || string.Equals(version, EarlierKeyedResponseEnvelopeVersion, StringComparison.Ordinal)
+        || string.Equals(version, HistoricalKeyedResponseEnvelopeVersion, StringComparison.Ordinal);
 
     private static bool IsSparseV6(string rawJson) =>
         HasEnvelopeVersion(rawJson, SparseResponseEnvelopeVersion);
@@ -1476,7 +1557,7 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             }
 
             if (!TryGetRequiredString(root, "envelopeVersion", out var version)
-                || version != ResponseEnvelopeVersion)
+            || !IsLegacyResponseVersion(version))
             {
                 return Error("version_invalid", "The response envelope version is invalid.");
             }
@@ -1550,6 +1631,12 @@ public sealed class ModerationEnvelopeValidator : IModerationEnvelopeValidator
             return Error("envelope_invalid", exception.Message);
         }
     }
+
+    private static bool IsLegacyResponseVersion(string version) =>
+        string.Equals(version, ResponseEnvelopeVersion, StringComparison.Ordinal)
+        || string.Equals(version, PreviousKeyedResponseEnvelopeVersion, StringComparison.Ordinal)
+        || string.Equals(version, EarlierKeyedResponseEnvelopeVersion, StringComparison.Ordinal)
+        || string.Equals(version, HistoricalKeyedResponseEnvelopeVersion, StringComparison.Ordinal);
 
     private static DecisionValidationResult ValidateDecision(
         JsonElement element,

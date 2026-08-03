@@ -21,6 +21,17 @@ public static partial class ModerationReasonComposer
         + $"violationReason is at most {MaximumViolationReasonLength} characters and guidance is at most {MaximumGuidanceLength} characters. "
         + "For delete, return empty violationReason and empty guidance.";
 
+    public static readonly string StructuredRequiredAiReasonInstruction =
+        StructuredAiReasonInstruction
+            .Replace(
+                "For timeout and ban, return two separate German fields",
+                "For every selected moderation action, return two non-empty separate German fields",
+                StringComparison.Ordinal)
+            .Replace(
+                "For delete, return empty violationReason and empty guidance.",
+                "Delete also requires a concrete violationReason and guidance for human review.",
+                StringComparison.Ordinal);
+
     public static bool TryComposeAiReason(
         string? violationReason,
         string? guidance,
@@ -93,6 +104,55 @@ public static partial class ModerationReasonComposer
             normalizedViolation,
             normalizedGuidance,
             combined);
+        return true;
+    }
+
+    public static bool TryComposeReasonOnly(
+        string? reason,
+        ModerationActionKind action,
+        ModerationRuleDefinition? rule,
+        IReadOnlyList<string>? triggerPhrases,
+        out ModerationReasonComposition composition,
+        out string errorCode)
+    {
+        composition = new(string.Empty, string.Empty, string.Empty);
+        errorCode = string.Empty;
+        if (action is ModerationActionKind.None)
+        {
+            errorCode = "reason_action_invalid";
+            return false;
+        }
+
+        if (!ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+                reason,
+                rule,
+                out var normalized))
+        {
+            errorCode = "reason_invalid";
+            return false;
+        }
+
+        normalized = EnsurePeriod(normalized);
+        if (string.Equals(
+                rule?.RuleCode,
+                ModerationRuleCodes.Backseatgaming,
+                StringComparison.OrdinalIgnoreCase)
+            && !normalized.Contains("Backseatgaming", StringComparison.OrdinalIgnoreCase))
+        {
+            errorCode = "reason_category_missing";
+            return false;
+        }
+
+        if (normalized.Length > ModerationReasonNormalizer.MaximumLength
+            || ModerationReasonNormalizer.ContainsTriggerPhraseExcerpt(
+                normalized,
+                triggerPhrases))
+        {
+            errorCode = "reason_invalid";
+            return false;
+        }
+
+        composition = new(normalized, string.Empty, normalized);
         return true;
     }
 
@@ -202,7 +262,7 @@ public static partial class ModerationReasonComposer
     private static partial Regex PoliteOrImpersonal();
 
     [GeneratedRegex(
-        @"\b(unterlass\w*|vermeid\w*|beacht\w*|acht\w*|bleib\w*|verzicht\w*|zurückhalt\w*|respekt\w*|befolg\w*|wahr\w*|verwend\w*|formulier\w*)\b",
+        @"\b(künftig|zukünftig|fortan|unterlass\w*|vermeid\w*|beacht\w*|acht\w*|bleib\w*|verzicht\w*|zurückhalt\w*|respekt\w*|befolg\w*|wahr\w*|verwend\w*|formulier\w*)\b",
         RegexOptions.IgnoreCase)]
     private static partial Regex FutureBehavior();
 

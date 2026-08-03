@@ -31,12 +31,30 @@ public sealed record ModerationWireMessageV6(
     int? TwitchEmoteCount = null,
     bool? IsTwitchEmoteOnly = null,
     bool? HasRepeatedPhraseSpam = null,
-    IReadOnlyList<string>? ReplyCandidateIds = null);
+    IReadOnlyList<string>? ReplyCandidateIds = null,
+    IReadOnlyList<ModerationWireLearningMatchV1>? AllowLearningMatches = null,
+    IReadOnlyList<ModerationWirePhraseMatchV1>? EffectivePhraseMatches = null,
+    IReadOnlyList<ModerationWireLearningMatchV1>? EffectiveLearningMatches = null,
+    ModerationWireDecisionConstraintV3? DecisionConstraint = null,
+    EffectiveLearningConsensus? LearningConsensus = null,
+    bool? IsAutoModHeld = null,
+    string? AutoModReason = null,
+    string? AutoModCategory = null,
+    int? AutoModLevel = null);
+
+public sealed record ModerationWireDecisionConstraintV3(
+    string Mode,
+    string? RuleCode,
+    string? Action,
+    int? TimeoutSeconds,
+    string Source);
 
 public sealed record ModerationWirePhraseMatchV1(
     long PhraseId,
     string RuleCode,
-    string Phrase);
+    string Phrase,
+    double Score = 1d,
+    string MatchKind = "manual_phrase");
 
 public sealed record ModerationWireExampleV6(
     string Text,
@@ -46,7 +64,22 @@ public sealed record ModerationWireExampleV6(
     string? Action = null,
     int? TimeoutSeconds = null,
     string? Reason = null,
-    bool? ExactHumanDecision = null);
+    bool? ExactHumanDecision = null,
+    string? MatchedPhrase = null);
+
+public sealed record ModerationWireLearningMatchV1(
+    string Text,
+    string Decision,
+    string PolicySet,
+    string? RuleCode,
+    string? Action,
+    int? TimeoutSeconds,
+    string? Reason,
+    double Score,
+    bool Exact,
+    string Source = "learning",
+    DateTimeOffset? EffectiveAtUtc = null,
+    string? MatchedPhrase = null);
 
 public sealed record ModerationWireReplyTemplateV6(
     string TemplateId,
@@ -86,7 +119,44 @@ public sealed record CompiledModerationPrompt(
     IReadOnlyList<string> MessageIds,
     IReadOnlyList<string> ActiveRuleCodes,
     IReadOnlyList<string> ReplyTemplateIds,
-    ModerationPromptCharacterCounts PromptCharacters);
+    ModerationPromptCharacterCounts PromptCharacters)
+{
+    public ModerationPromptStage Stage { get; init; } = ModerationPromptStage.Combined;
+
+    public string ResponseContractVersion { get; init; } =
+        "twitchai.moderation.response.v3";
+
+    public string? CorrelationId { get; init; }
+
+    public IReadOnlyList<string> ReplyOnlyMessageIds { get; init; } = [];
+}
+
+public sealed record ModerationClassificationWireRequestV1(
+    string EnvelopeVersion,
+    Guid BatchId,
+    string Category,
+    IReadOnlyList<ModerationWireRuleV6> ActiveRules,
+    IReadOnlyList<ModerationWireMessageV6> Messages,
+    IReadOnlyList<ModerationWireExampleV6>? LearningExamples = null,
+    IReadOnlyList<ModerationWireReplyTemplateV6>? ReplyTemplates = null);
+
+public sealed record ModerationConfirmationWireRequestV1(
+    string EnvelopeVersion,
+    Guid BatchId,
+    string Category,
+    IReadOnlyList<ModerationWireRuleV6> ActiveRules,
+    IReadOnlyList<ModerationConfirmationWireCandidateV1> Candidates,
+    IReadOnlyList<ModerationWireExampleV6>? AllowExamples = null);
+
+public sealed record ModerationConfirmationWireCandidateV1(
+    string MessageId,
+    string Text,
+    string Action,
+    int? TimeoutSeconds,
+    string RuleCode,
+    string? InitialEvidenceKind = null,
+    string? InitialSensitiveDataType = null,
+    IReadOnlyList<ModerationWirePhraseMatchV1>? LocalPhraseMatches = null);
 
 public sealed record ModerationWireResponseV6(
     string EnvelopeVersion,

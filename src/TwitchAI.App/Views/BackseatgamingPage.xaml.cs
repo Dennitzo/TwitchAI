@@ -10,8 +10,6 @@ namespace TwitchAI.App.Views;
 public sealed partial class BackseatgamingPage : Page
 {
     private readonly IUniversalDatabaseEditor _databaseEditor;
-    private readonly IConfigurationPageSectionPreferenceStore
-        _sectionPreferenceStore;
     private readonly TableColumnWidthPersistenceController
         _columnWidthPersistence;
 
@@ -19,17 +17,7 @@ public sealed partial class BackseatgamingPage : Page
     {
         ViewModel = App.Current.GetService<PoliciesViewModel>();
         _databaseEditor = App.Current.GetService<IUniversalDatabaseEditor>();
-        _sectionPreferenceStore = App.Current.GetService<
-            IConfigurationPageSectionPreferenceStore>();
         InitializeComponent();
-        LearningPanel.Configure(
-            LearningDatasetViewMode.BackseatgamingModeration);
-        ViewSelector.SelectedItem =
-            _sectionPreferenceStore.GetOrDefault(
-                ConfigurationPageSectionScopes.Backseatgaming)
-            == ConfigurationPageSection.Learning
-                ? LearningSelectorItem
-                : PhraseSelectorItem;
         _columnWidthPersistence =
             new TableColumnWidthPersistenceController(
                 PhraseTable,
@@ -45,30 +33,13 @@ public sealed partial class BackseatgamingPage : Page
         SelectorBar sender,
         SelectorBarSelectionChangedEventArgs args)
     {
-        var showLearning = ReferenceEquals(
-            sender.SelectedItem,
-            LearningSelectorItem);
-        _sectionPreferenceStore.Save(
-            ConfigurationPageSectionScopes.Backseatgaming,
-            showLearning
-                ? ConfigurationPageSection.Learning
-                : ConfigurationPageSection.Phrases);
-        PhraseView.Visibility = showLearning
-            ? Visibility.Collapsed
-            : Visibility.Visible;
-        LearningPanel.Visibility = showLearning
-            ? Visibility.Visible
-            : Visibility.Collapsed;
+        var showLearning = false;
         PageInfoBar.Title = showLearning
             ? "Bestätigtes Backseatgaming-Learning"
             : "Kategorieabhängiges Regelset";
         PageInfoBar.Message = showLearning
             ? "Diese bestätigten Beispiele werden nur bei aktivem Backseatgaming als AI-Kontext verwendet."
             : "Backseatgaming ist bei jeder bekannten Twitch-Kategorie außer Just Chatting und IRL aktiv.";
-        if (showLearning)
-        {
-            await LearningPanel.RefreshAsync();
-        }
     }
 
     private async void Page_Loaded(object sender, RoutedEventArgs e)

@@ -227,6 +227,10 @@ public sealed class ApplicationStateLoader
             TimeoutSeconds = moderationCase.ProposedTimeoutSeconds
                 ?? ModerationActionRules.DefaultTimeoutSeconds,
             Reason = moderationCase.Reason,
+            ReasonGenerationStatus = moderationCase.ProposedAction is ModerationActionKind.Timeout or ModerationActionKind.Ban
+                && string.IsNullOrWhiteSpace(moderationCase.Reason)
+                    ? "Begründung erforderlich · bitte manuell ergänzen."
+                    : string.Empty,
             PolicySet = ToUiPolicySet(moderationCase.PolicySet),
             RuleCode = moderationCase.RuleCode,
             Confidence = moderationCase.Confidence,

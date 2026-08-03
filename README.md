@@ -76,12 +76,14 @@ unter `%LOCALAPPDATA%\TwitchAI`. Der Datenbankpfad ist
 4. General-Regeln gelten immer. Backseatgaming gilt für bekannte Kategorien
    außer Just Chatting und IRL; bei unbekannter Kategorie wird konservativ nur General
    verwendet.
-5. LM Studio liefert ein kompaktes, streng validiertes
-   `twitchai.moderation.response.v7`. Jede temporäre Nachrichten-ID ist genau
-   ein Schlüssel im Ergebnis; `null` bedeutet erlaubt, Moderationen und
-   Chat-Antworten verwenden kompakte Objekte. Bei einem fehlerhaften Einzelergebnis bleiben gültige
-   Entscheidungen erhalten und nur die betroffene Nachricht erhält höchstens
-   einen Reparaturversuch.
+5. LM Studio klassifiziert zunächst mit
+   `twitchai.moderation.classification.response.v1` ohne Begründungstext.
+   Erkannte sowie durch exakte Lerndaten oder aktive Phrasen vorgegebene
+   Kandidaten werden anschließend gemeinsam mit
+   `twitchai.moderation.confirmation.response.v1` bestätigt; erst dort entstehen
+   Begründung und Hinweis. Reines `noAction` benötigt einen Request, ein
+   semantischer Treffer höchstens zwei und eine ungültige Bestätigung niemals
+   einen zusätzlichen Reason-Run.
 6. Ein Mensch kann Aktion, Timeoutdauer, Verstoßkategorie, Begründung und
    ausgewählte Triggerphrasen ändern und danach **Ausführen** oder
    **Verwerfen** wählen. General unterscheidet dabei 19 globale Kategorien;
@@ -141,12 +143,12 @@ startbar. Ein MSIX kann weiterhin explizit mit
 für eine verteilbare Version ist ein vertrauenswürdiges Signaturzertifikat
 erforderlich.
 
-Der keyed Moderationsvertrag v7 ist standardmäßig aktiv. Für einen internen
+Die zweistufigen keyed Moderationsverträge sind standardmäßig aktiv. Für einen internen
 Rollback kann bei geschlossener App in
 `%LOCALAPPDATA%\TwitchAI\settings.json` der Stringwert
 `"UseCompactModerationContractV6": "false"` gesetzt werden; der historische
-Einstellungsname bleibt aus Kompatibilitätsgründen erhalten. Validierungs- und
-Reparaturdiagnosen werden ohne Chattexte oder Modellantworten in
+Einstellungsname bleibt aus Kompatibilitätsgründen erhalten. Klassifikations-,
+Bestätigungs- und Reparaturdiagnosen werden ohne Chattexte oder Modellantworten in
 `ai_validation_attempts` gespeichert.
 
 Weitere technische Details stehen in

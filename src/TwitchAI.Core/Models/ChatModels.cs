@@ -93,4 +93,12 @@ public sealed record ChatMessageSnapshot(
     public int TwitchEmoteCount { get; init; }
 
     public bool IsTwitchEmoteOnly { get; init; }
+
+    public bool IsAutoModHeld { get; init; }
+
+    public string? AutoModReason { get; init; }
+
+    public string? AutoModCategory { get; init; }
+
+    public int? AutoModLevel { get; init; }
 }

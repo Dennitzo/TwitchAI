@@ -57,6 +57,14 @@ public interface IBlacklistMatcher
 
 public interface IModerationEnvelopeValidator
 {
+    ModerationClassificationReport ValidateClassification(
+        string rawJson,
+        ModerationClassificationRequest request);
+
+    ModerationConfirmationReport ValidateConfirmation(
+        string rawJson,
+        ModerationConfirmationRequest request);
+
     EnvelopeValidationResult Validate(
         string rawJson,
         ModerationBatch batch);
@@ -77,6 +85,10 @@ public interface IModerationEnvelopeValidator
         string rawJson,
         ModerationBatch batch);
 
+    ModerationValidationReport ValidateLive(
+        string rawJson,
+        ModerationBatch batch);
+
     ModerationValidationReport ValidateV4(
         string rawJson,
         ModerationBatch batch);
@@ -85,6 +97,16 @@ public interface IModerationEnvelopeValidator
 public interface IModerationPromptCompiler
 {
     CompiledModerationPrompt Compile(ModerationRequestEnvelopeV3 envelope);
+
+    CompiledModerationPrompt CompileClassification(
+        ModerationClassificationRequest request) =>
+        throw new NotSupportedException(
+            "This prompt compiler does not support staged classification.");
+
+    CompiledModerationPrompt CompileConfirmation(
+        ModerationConfirmationRequest request) =>
+        throw new NotSupportedException(
+            "This prompt compiler does not support staged confirmation.");
 }
 
 public interface IModerationBatcher
@@ -189,6 +211,13 @@ public interface ILocalModerationClient
         ModerateAsync(prompt, cancellationToken);
 }
 
+public interface IReviewReasonService
+{
+    ValueTask<ReviewReasonResult> GenerateAsync(
+        ReviewReasonRequest request,
+        CancellationToken cancellationToken = default);
+}
+
 public interface ILearningTestService
 {
     ValueTask<LearningTestResult> AnalyzeAsync(
@@ -201,13 +230,6 @@ public interface ILearningTestService
 
     ValueTask<LearningReasonResult> GenerateReasonAsync(
         LearningReasonRequest request,
-        CancellationToken cancellationToken = default);
-}
-
-public interface IContextualModerationReasonService
-{
-    ValueTask<ContextualModerationReasonResult> GenerateAsync(
-        ContextualModerationReasonRequest request,
         CancellationToken cancellationToken = default);
 }
 
@@ -327,6 +349,7 @@ public interface IDatabaseEditorService
 public enum TwitchChatEventKind
 {
     Message,
+    AutoModMessageHeld,
     MessageDeleted,
     UserMessagesCleared,
     RoomCleared,
@@ -347,4 +370,12 @@ public sealed record TwitchChatEvent(
     public int TwitchEmoteCount { get; init; }
 
     public bool IsTwitchEmoteOnly { get; init; }
+
+    public bool IsAutoModHeld { get; init; }
+
+    public string? AutoModReason { get; init; }
+
+    public string? AutoModCategory { get; init; }
+
+    public int? AutoModLevel { get; init; }
 }

@@ -774,19 +774,19 @@ public sealed class ModerationCoordinatorTests
         var pipelineEvent = await created.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
         Assert.Equal("message-1", pipelineEvent.ChatMessage?.Identity.TwitchMessageId);
-        Assert.Equal(1, harness.LocalModel.CallCount);
+        Assert.Equal(2, harness.LocalModel.CallCount);
         Assert.Equal(1, harness.Repair.CallCount);
         Assert.Equal(1, harness.Cases.AddCallCount);
         var repairEnvelope = Assert.Single(harness.Repair.Requests);
-        var originalEnvelope = Assert.Single(harness.LocalModel.Requests);
+        var originalEnvelope = harness.LocalModel.Requests[0];
         Assert.Equal(
             originalEnvelope.Messages[^1].MessageId,
             Assert.Single(repairEnvelope.Messages).MessageId);
         var attempts = validationAttempts.Attempts.ToArray();
-        Assert.Equal(2, attempts.Length);
+        Assert.Equal(3, attempts.Length);
         Assert.Equal(AiValidationAttemptKind.Initial, attempts[0].AttemptKind);
         Assert.Equal(AiValidationOutcome.Rejected, attempts[0].Outcome);
-        Assert.Equal(["rule_inactive"], attempts[0].ValidationErrorCodes);
+        Assert.Equal(["rule_invalid"], attempts[0].ValidationErrorCodes);
         Assert.Equal(1, attempts[0].AffectedMessageCount);
         Assert.Equal(AiValidationAttemptKind.Repair, attempts[1].AttemptKind);
         Assert.Equal(AiValidationOutcome.Repaired, attempts[1].Outcome);
@@ -796,6 +796,8 @@ public sealed class ModerationCoordinatorTests
         Assert.True(
             attempts[1].PromptCharacters.Messages
             < attempts[0].PromptCharacters.Messages);
+        Assert.Equal(AiValidationAttemptKind.Confirmation, attempts[2].AttemptKind);
+        Assert.Equal(attempts[0].CorrelationId, attempts[2].ParentCorrelationId);
     }
 
     [Fact]
@@ -823,7 +825,327 @@ public sealed class ModerationCoordinatorTests
         var attempt = Assert.Single(validationAttempts.Attempts);
         Assert.Equal(AiValidationAttemptKind.Initial, attempt.AttemptKind);
         Assert.Equal(AiValidationOutcome.Valid, attempt.Outcome);
-        Assert.Equal(ModerationPromptCompiler.ResponseEnvelopeVersion, attempt.SchemaVersion);
+        Assert.Equal(
+            ModerationPromptCompiler.ClassificationResponseEnvelopeVersion,
+            attempt.SchemaVersion);
+    }
+
+    [Fact]
+    public async Task ManualBackseatPhraseUsesOneConfirmationRunWithoutClassification()
+    {
+        var batcher = OneMessageBatcher();
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: BackseatLiveEnvelope,
+            batcher: batcher,
+            useCompactContractV6: true,
+            retrievalExampleStore: new StaticRetrievalExampleStore([]),
+            channelContexts: [GameContext()],
+            policyRules: [BackseatPolicyRule()],
+            phraseRuleSource: new StaticPhraseRuleSource([BackseatPhrase()]));
+        var created = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.CaseCreated);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(MessageEvent(1, "farm auf d4"));
+
+        var pipelineEvent = await created.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(1, harness.LocalModel.CallCount);
+        Assert.Equal(0, harness.Repair.CallCount);
+        Assert.Equal(1, harness.Cases.AddCallCount);
+        Assert.Equal(
+            ModerationPromptCompiler.RequestEnvelopeVersion,
+            Assert.Single(harness.LocalModel.Requests).EnvelopeVersion);
+        Assert.Equal(
+            ModerationRuleCodes.Backseatgaming,
+            pipelineEvent.Decision?.RuleCode);
+        Assert.Contains("Backseatgaming", pipelineEvent.Decision?.Reason);
+    }
+
+    [Fact]
+    public async Task ModerateLearningIsNotSentToLiveAi()
+    {
+        var exactModerate = new RetrievalExample(
+            "farm auf d4",
+            ModerationActionKind.Timeout,
+            600,
+            PolicySetCode.Backseatgaming,
+            "Unaufgefordertes Backseatgaming.",
+            IsPositive: true,
+            ModerationRuleCodes.Backseatgaming)
+        {
+            IsExactHumanDecision = true,
+        };
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: BackseatLiveEnvelope,
+            batcher: OneMessageBatcher(),
+            useCompactContractV6: true,
+            retrievalExampleStore: new StaticRetrievalExampleStore([exactModerate]),
+            channelContexts: [GameContext()],
+            policyRules: [BackseatPolicyRule()]);
+        var created = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.CaseCreated);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(MessageEvent(1, "farm auf d4"));
+
+        var pipelineEvent = await created.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(1, harness.LocalModel.CallCount);
+        Assert.Equal(0, harness.Repair.CallCount);
+        Assert.Equal(1, harness.Cases.AddCallCount);
+        Assert.Equal(
+            ModerationPromptCompiler.RequestEnvelopeVersion,
+            Assert.Single(harness.LocalModel.Requests).EnvelopeVersion);
+        Assert.Empty(Assert.Single(harness.LocalModel.Requests).LearningExamples);
+        Assert.Equal(
+            ModerationRuleCodes.Backseatgaming,
+            pipelineEvent.Decision?.RuleCode);
+    }
+
+    [Fact]
+    public async Task ExactManualPhraseRemainsContextAndDoesNotOverrideAiNoAction()
+    {
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: NoActionLiveEnvelope,
+            batcher: OneMessageBatcher(),
+            useCompactContractV6: true,
+            retrievalExampleStore: new StaticRetrievalExampleStore([]),
+            channelContexts: [GameContext()],
+            policyRules: [BackseatPolicyRule()],
+            phraseRuleSource: new StaticPhraseRuleSource([BackseatPhrase()]));
+        var allowed = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.Allowed);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(MessageEvent(1, "farm auf d4"));
+
+        await allowed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(1, harness.LocalModel.CallCount);
+        Assert.Equal(0, harness.Cases.AddCallCount);
+        var sent = Assert.Single(Assert.Single(harness.LocalModel.Requests).Messages);
+        Assert.Contains(sent.LocalPhraseMatches, match =>
+            match.RuleCode == ModerationRuleCodes.Backseatgaming);
+    }
+
+    [Fact]
+    public async Task ExactAllowLearningIsSentAsPhraseContextWithoutAiBypass()
+    {
+        var exactAllow = new RetrievalExample(
+            "farm auf d4",
+            ModerationActionKind.None,
+            null,
+            PolicySetCode.Backseatgaming,
+            string.Empty,
+            IsPositive: false)
+        {
+            IsExactHumanDecision = true,
+        };
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: NoActionLiveEnvelope,
+            batcher: OneMessageBatcher(),
+            useCompactContractV6: true,
+            retrievalExampleStore: new StaticRetrievalExampleStore([exactAllow]),
+            channelContexts: [GameContext()],
+            policyRules: [BackseatPolicyRule()],
+            phraseRuleSource: new StaticPhraseRuleSource([BackseatPhrase()]));
+        var allowed = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.Allowed);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(MessageEvent(1, "farm auf d4"));
+
+        await allowed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(1, harness.LocalModel.CallCount);
+        Assert.Equal(0, harness.Repair.CallCount);
+        Assert.Equal(0, harness.Cases.AddCallCount);
+        var sent = Assert.Single(Assert.Single(harness.LocalModel.Requests).Messages);
+        var allowMatch = Assert.Single(sent.EffectiveAllowMatches);
+        Assert.True(allowMatch.Exact);
+        Assert.Equal("farm auf d4", allowMatch.MatchedPhrase);
+    }
+
+    [Fact]
+    public async Task InvalidConfirmationCreatesNoCaseAndNoThirdRun()
+    {
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: request => IsClassificationRequest(request)
+                ? ValidClassificationEnvelope(request)
+                : InvalidGuidanceConfirmationEnvelope(request),
+            batcher: OneMessageBatcher(),
+            useCompactContractV6: true);
+        var rejected = CompletionFor(
+            harness.Coordinator,
+            item => item.StatusCode == "confirmation_candidates_rejected");
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(MessageEvent(1, "@foo du bist völlig unfähig"));
+
+        await rejected.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(2, harness.LocalModel.CallCount);
+        Assert.Equal(0, harness.Repair.CallCount);
+        Assert.Equal(0, harness.Cases.AddCallCount);
+    }
+
+    [Fact]
+    public async Task MultipleSemanticCandidatesShareOneConfirmationRun()
+    {
+        var batcher = new ModerationBatcher(
+            new ModerationBatcherOptions(
+                MaximumMessages: 2,
+                MaximumCollectionDelay: TimeSpan.FromSeconds(10),
+                MaximumMessageCharacters: 6_000,
+                MaximumQueuedMessages: 500));
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: request => IsClassificationRequest(request)
+                ? AllValidClassificationEnvelope(request)
+                : ValidConfirmationEnvelope(request),
+            batcher: batcher,
+            useCompactContractV6: true);
+        var created = CompletionAfter(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.CaseCreated,
+            count: 2);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(MessageEvent(1, "@foo du bist völlig unfähig"));
+        harness.EventSub.Publish(MessageEvent(2, "@bar du bist komplett unfähig"));
+
+        await created.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(2, harness.LocalModel.CallCount);
+        Assert.Equal(2, harness.LocalModel.Requests[0].Messages.Count);
+        Assert.Equal(2, harness.LocalModel.Requests[1].Messages.Count);
+        Assert.Equal(
+            ModerationPromptCompiler.ConfirmationRequestEnvelopeVersion,
+            harness.LocalModel.Requests[1].EnvelopeVersion);
+        Assert.Equal(2, harness.Cases.AddCallCount);
+    }
+
+    [Fact]
+    public async Task PolicyChangeBeforeConfirmationSkipsStaleSecondRunAndRequeues()
+    {
+        var policyRevision = 1;
+        var firstClassificationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstClassification = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var classificationAttempt = 0;
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidV6Envelope,
+            asyncModelResponse: async (request, cancellationToken) =>
+            {
+                if (IsClassificationRequest(request)
+                    && Interlocked.Increment(ref classificationAttempt) == 1)
+                {
+                    firstClassificationStarted.TrySetResult();
+                    await releaseFirstClassification.Task.WaitAsync(cancellationToken);
+                }
+
+                return IsClassificationRequest(request)
+                    ? ValidClassificationEnvelope(request)
+                    : ValidConfirmationEnvelope(request);
+            },
+            generalRevisionForCall: _ => Volatile.Read(ref policyRevision),
+            batcher: OneMessageBatcher(),
+            useCompactContractV6: true);
+        var requeued = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.StalePolicyRequeued);
+        var created = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.CaseCreated);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(MessageEvent(1, "@foo du bist vÃ¶llig unfÃ¤hig"));
+        await firstClassificationStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Volatile.Write(ref policyRevision, 2);
+        releaseFirstClassification.TrySetResult();
+
+        await requeued.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await created.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(3, harness.LocalModel.CallCount);
+        Assert.Equal(
+            [
+                ModerationPromptCompiler.ClassificationRequestEnvelopeVersion,
+                ModerationPromptCompiler.ClassificationRequestEnvelopeVersion,
+                ModerationPromptCompiler.ConfirmationRequestEnvelopeVersion,
+            ],
+            harness.LocalModel.Requests.Select(request => request.EnvelopeVersion));
+        Assert.Equal(1, harness.Cases.AddCallCount);
+    }
+
+    [Fact]
+    public async Task LearningChangeAfterConfirmationRequeuesWithoutPersistingStaleCase()
+    {
+        var learningRevision = new LearningContextRevision();
+        var firstConfirmationStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstConfirmation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var confirmationAttempt = 0;
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidV6Envelope,
+            asyncModelResponse: async (request, cancellationToken) =>
+            {
+                if (IsConfirmationRequest(request)
+                    && Interlocked.Increment(ref confirmationAttempt) == 1)
+                {
+                    firstConfirmationStarted.TrySetResult();
+                    await releaseFirstConfirmation.Task.WaitAsync(cancellationToken);
+                }
+
+                return IsClassificationRequest(request)
+                    ? ValidClassificationEnvelope(request)
+                    : ValidConfirmationEnvelope(request);
+            },
+            batcher: OneMessageBatcher(),
+            useCompactContractV6: true,
+            learningContextRevision: learningRevision);
+        var requeued = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.StaleLearningRequeued);
+        var created = CompletionFor(
+            harness.Coordinator,
+            item => item.Kind == ModerationPipelineEventKind.CaseCreated);
+
+        await harness.Coordinator.StartAsync();
+        harness.EventSub.Publish(MessageEvent(1, "@foo du bist vÃ¶llig unfÃ¤hig"));
+        await firstConfirmationStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        learningRevision.Advance();
+        releaseFirstConfirmation.TrySetResult();
+
+        await requeued.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await created.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(4, harness.LocalModel.CallCount);
+        Assert.Equal(
+            [
+                ModerationPromptCompiler.ClassificationRequestEnvelopeVersion,
+                ModerationPromptCompiler.ConfirmationRequestEnvelopeVersion,
+                ModerationPromptCompiler.ClassificationRequestEnvelopeVersion,
+                ModerationPromptCompiler.ConfirmationRequestEnvelopeVersion,
+            ],
+            harness.LocalModel.Requests.Select(request => request.EnvelopeVersion));
+        Assert.Equal(1, harness.Cases.AddCallCount);
     }
 
     [Fact]
@@ -843,40 +1165,43 @@ public sealed class ModerationCoordinatorTests
 
         await created.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
-        Assert.Equal(1, harness.LocalModel.CallCount);
+        Assert.Equal(2, harness.LocalModel.CallCount);
         Assert.Equal(1, harness.Repair.CallCount);
         Assert.Equal(1, harness.Cases.AddCallCount);
         var repaired = Assert.Single(harness.Repair.Requests);
         Assert.Equal(
-            harness.LocalModel.Requests.Single().Messages[^1].MessageId,
+            harness.LocalModel.Requests[0].Messages[^1].MessageId,
             Assert.Single(repaired.Messages).MessageId);
     }
 
     [Fact]
-    public async Task V6MissingRuleLocalFallbackIsDiagnosedWithoutRepair()
+    public async Task ClassificationMissingRuleUsesBoundedRepairWithoutFallback()
     {
         var validationAttempts = new RecordingValidationAttemptStore();
         await using var harness = CoordinatorHarness.Create(
             whitelist: Set(),
             modelResponse: V6MissingRuleEnvelope,
+            repairResponseFactory: V7NoActionEnvelope,
             useCompactContractV6: true,
             validationAttemptStore: validationAttempts);
-        var created = CompletionFor(
+        var allowed = CompletionAfter(
             harness.Coordinator,
-            item => item.Kind == ModerationPipelineEventKind.CaseCreated);
+            item => item.Kind == ModerationPipelineEventKind.Allowed,
+            count: 20);
 
         await harness.Coordinator.StartAsync();
         PublishMessages(harness.EventSub, 20);
 
-        await created.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await allowed.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
-        Assert.Equal(0, harness.Repair.CallCount);
+        Assert.Equal(1, harness.Repair.CallCount);
+        Assert.Equal(0, harness.Cases.AddCallCount);
         var attempts = validationAttempts.Attempts.ToArray();
         Assert.Equal(2, attempts.Length);
         Assert.Equal(AiValidationAttemptKind.Initial, attempts[0].AttemptKind);
-        Assert.Equal(AiValidationAttemptKind.LocalFallback, attempts[1].AttemptKind);
-        Assert.Equal(AiValidationOutcome.Fallback, attempts[1].Outcome);
-        Assert.Equal(1, attempts[1].AffectedMessageCount);
+        Assert.Equal(["property_missing"], attempts[0].ValidationErrorCodes);
+        Assert.Equal(AiValidationAttemptKind.Repair, attempts[1].AttemptKind);
+        Assert.Equal(AiValidationOutcome.Repaired, attempts[1].Outcome);
     }
 
     [Fact]
@@ -896,14 +1221,14 @@ public sealed class ModerationCoordinatorTests
 
         await created.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
-        Assert.Equal(1, harness.LocalModel.CallCount);
+        Assert.Equal(2, harness.LocalModel.CallCount);
         Assert.Equal(0, harness.Repair.CallCount);
         Assert.Equal(1, harness.Cases.AddCallCount);
         Assert.True(harness.Coordinator.IsRunning);
     }
 
     [Fact]
-    public async Task V6FullRepairReplacesInitiallyValidDecisionsWithoutMergeCollision()
+    public async Task V6FullRepairAcrossBatchIsSuppressedWithoutBroadcastingViolation()
     {
         await using var harness = CoordinatorHarness.Create(
             whitelist: Set(),
@@ -921,13 +1246,13 @@ public sealed class ModerationCoordinatorTests
         await allowed.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
         Assert.Equal(1, harness.LocalModel.CallCount);
-        Assert.Equal(1, harness.Repair.CallCount);
-        Assert.Equal(20, Assert.Single(harness.Repair.Requests).Messages.Count);
+        Assert.Equal(0, harness.Repair.CallCount);
+        Assert.Empty(harness.Repair.Requests);
         Assert.Equal(0, harness.Cases.AddCallCount);
     }
 
     [Fact]
-    public async Task V6RuntimeRejectsLegacyResponseEvenAfterSingleRepair()
+    public async Task StagedRuntimeRejectsLegacyResponseAfterSingleRepair()
     {
         await using var harness = CoordinatorHarness.Create(
             whitelist: Set(),
@@ -943,7 +1268,7 @@ public sealed class ModerationCoordinatorTests
 
         var result = await rejected.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
-        Assert.Equal("invalid_ai_envelope", result.StatusCode);
+        Assert.Equal("classification_messages_rejected", result.StatusCode);
         Assert.Equal(1, harness.LocalModel.CallCount);
         Assert.Equal(1, harness.Repair.CallCount);
         Assert.Equal(0, harness.Cases.AddCallCount);
@@ -1622,6 +1947,43 @@ public sealed class ModerationCoordinatorTests
             IsVerified: true);
     }
 
+    private static ChannelContextSnapshot GameContext() =>
+        new(
+            ChannelId,
+            "game-1",
+            "Palworld",
+            Baseline,
+            Revision: 1,
+            IsVerified: true);
+
+    private static BlacklistRuleRecord BackseatPolicyRule() =>
+        new(
+            RuleId: 2,
+            ScopeId: 2,
+            ModerationRuleCodes.Backseatgaming,
+            "Backseatgaming",
+            ModerationRuleCodes.BackseatgamingPromptInstruction,
+            ModerationRuleAction.Timeout,
+            DefaultTimeoutSeconds: 600,
+            "Unaufgefordertes Backseatgaming.",
+            Priority: 10,
+            Enabled: true,
+            RowVersion: 1,
+            Baseline,
+            Baseline,
+            ArchivedAt: null);
+
+    private static PhraseRule BackseatPhrase() =>
+        new(
+            PhraseId: 10,
+            ModerationRuleCodes.Backseatgaming,
+            PolicySetCode.Backseatgaming,
+            "farm auf d4",
+            PhraseManualOverride.Active,
+            PositiveConfirmations: 0,
+            NegativeConfirmations: 0,
+            IsArchived: false);
+
     private static string ValidEnvelope(ModerationRequestEnvelopeV3 request)
     {
         var decisions = request.Messages
@@ -1675,6 +2037,16 @@ public sealed class ModerationCoordinatorTests
     private static string PartiallyInvalidV6Envelope(
         ModerationRequestEnvelopeV3 request)
     {
+        if (IsClassificationRequest(request))
+        {
+            return PartiallyInvalidClassificationEnvelope(request);
+        }
+
+        if (IsConfirmationRequest(request))
+        {
+            return ValidConfirmationEnvelope(request);
+        }
+
         var first = request.Messages[0];
         var invalid = request.Messages[^1];
         return JsonSerializer.Serialize(
@@ -1715,10 +2087,18 @@ public sealed class ModerationCoordinatorTests
     }
 
     private static string ValidV6Envelope(ModerationRequestEnvelopeV3 request) =>
-        CreateV6ModerationEnvelope(request, includeRuleCode: true);
+        IsClassificationRequest(request)
+            ? ValidClassificationEnvelope(request)
+            : IsConfirmationRequest(request)
+                ? ValidConfirmationEnvelope(request)
+                : CreateV6ModerationEnvelope(request, includeRuleCode: true);
 
     private static string V6MissingRuleEnvelope(ModerationRequestEnvelopeV3 request) =>
-        CreateV6ModerationEnvelope(request, includeRuleCode: false);
+        IsClassificationRequest(request)
+            ? MissingRuleClassificationEnvelope(request)
+            : IsConfirmationRequest(request)
+                ? ValidConfirmationEnvelope(request)
+                : CreateV6ModerationEnvelope(request, includeRuleCode: false);
 
     private static string CreateV6ModerationEnvelope(
         ModerationRequestEnvelopeV3 request,
@@ -1755,6 +2135,11 @@ public sealed class ModerationCoordinatorTests
 
     private static string V6NoActionEnvelope(ModerationRequestEnvelopeV3 request)
     {
+        if (IsClassificationRequest(request) || IsConfirmationRequest(request))
+        {
+            return V7NoActionEnvelope(request);
+        }
+
         return JsonSerializer.Serialize(
             new Dictionary<string, object?>
             {
@@ -1773,7 +2158,11 @@ public sealed class ModerationCoordinatorTests
             new Dictionary<string, object?>
             {
                 ["envelopeVersion"] =
-                    ModerationPromptCompiler.ResponseEnvelopeVersion,
+                    IsConfirmationRequest(request)
+                        ? ModerationPromptCompiler.ConfirmationResponseEnvelopeVersion
+                        : IsClassificationRequest(request)
+                            ? ModerationPromptCompiler.ClassificationResponseEnvelopeVersion
+                            : ModerationPromptCompiler.ResponseEnvelopeVersion,
                 ["batchId"] = request.BatchId,
                 ["decisions"] = request.Messages.ToDictionary(
                     message => message.MessageId,
@@ -1784,6 +2173,16 @@ public sealed class ModerationCoordinatorTests
     private static string PartiallyInvalidV7Envelope(
         ModerationRequestEnvelopeV3 request)
     {
+        if (IsClassificationRequest(request))
+        {
+            return PartiallyInvalidClassificationEnvelope(request);
+        }
+
+        if (IsConfirmationRequest(request))
+        {
+            return ValidConfirmationEnvelope(request);
+        }
+
         var decisions = request.Messages.ToDictionary(
             message => message.MessageId,
             _ => (object?)null,
@@ -1821,6 +2220,247 @@ public sealed class ModerationCoordinatorTests
                     ModerationPromptCompiler.ResponseEnvelopeVersion,
                 ["batchId"] = request.BatchId,
                 ["decisions"] = decisions,
+            });
+    }
+
+    private static bool IsClassificationRequest(ModerationRequestEnvelopeV3 request) =>
+        string.Equals(
+            request.EnvelopeVersion,
+            ModerationPromptCompiler.ClassificationRequestEnvelopeVersion,
+            StringComparison.Ordinal);
+
+    private static bool IsConfirmationRequest(ModerationRequestEnvelopeV3 request) =>
+        string.Equals(
+            request.EnvelopeVersion,
+            ModerationPromptCompiler.ConfirmationRequestEnvelopeVersion,
+            StringComparison.Ordinal);
+
+    private static string ValidClassificationEnvelope(
+        ModerationRequestEnvelopeV3 request)
+    {
+        var first = request.Messages[0];
+        var rule = request.ActiveRules[0];
+        var decisions = request.Messages.ToDictionary(
+            message => message.MessageId,
+            _ => (object?)null,
+            StringComparer.Ordinal);
+        decisions[first.MessageId] = new Dictionary<string, object?>
+        {
+            ["action"] = "timeout",
+            ["timeoutSeconds"] = 600,
+            ["ruleCode"] = rule.RuleCode,
+            ["evidenceKind"] = ModerationEvidenceKinds.ForRule(rule.RuleCode)[0],
+            ["confidence"] = 0.95,
+        };
+        return JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["envelopeVersion"] =
+                    ModerationPromptCompiler.ClassificationResponseEnvelopeVersion,
+                ["batchId"] = request.BatchId,
+                ["decisions"] = decisions,
+            });
+    }
+
+    private static string PartiallyInvalidClassificationEnvelope(
+        ModerationRequestEnvelopeV3 request)
+    {
+        var decisions = request.Messages.ToDictionary(
+            message => message.MessageId,
+            _ => (object?)null,
+            StringComparer.Ordinal);
+        var first = request.Messages[0];
+        var rule = request.ActiveRules[0];
+        decisions[first.MessageId] = new Dictionary<string, object?>
+        {
+            ["action"] = "timeout",
+            ["timeoutSeconds"] = 600,
+            ["ruleCode"] = rule.RuleCode,
+            ["evidenceKind"] = ModerationEvidenceKinds.ForRule(rule.RuleCode)[0],
+            ["confidence"] = 0.95,
+        };
+        var invalid = request.Messages[^1];
+        decisions[invalid.MessageId] = new Dictionary<string, object?>
+        {
+            ["action"] = "timeout",
+            ["timeoutSeconds"] = 600,
+            ["ruleCode"] = "UNKNOWN",
+            ["evidenceKind"] = "direct_insult",
+            ["confidence"] = 0.9,
+        };
+        return JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["envelopeVersion"] =
+                    ModerationPromptCompiler.ClassificationResponseEnvelopeVersion,
+                ["batchId"] = request.BatchId,
+                ["decisions"] = decisions,
+            });
+    }
+
+    private static string AllValidClassificationEnvelope(
+        ModerationRequestEnvelopeV3 request)
+    {
+        var rule = request.ActiveRules[0];
+        var evidenceKind = ModerationEvidenceKinds.ForRule(rule.RuleCode)[0];
+        return JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["envelopeVersion"] =
+                    ModerationPromptCompiler.ClassificationResponseEnvelopeVersion,
+                ["batchId"] = request.BatchId,
+                ["decisions"] = request.Messages.ToDictionary(
+                    message => message.MessageId,
+                    _ => (object?)new Dictionary<string, object?>
+                    {
+                        ["action"] = "timeout",
+                        ["timeoutSeconds"] = 600,
+                        ["ruleCode"] = rule.RuleCode,
+                        ["evidenceKind"] = evidenceKind,
+                        ["confidence"] = 0.95,
+                    },
+                    StringComparer.Ordinal),
+            });
+    }
+
+    private static string MissingRuleClassificationEnvelope(
+        ModerationRequestEnvelopeV3 request)
+    {
+        var decisions = request.Messages.ToDictionary(
+            message => message.MessageId,
+            _ => (object?)null,
+            StringComparer.Ordinal);
+        decisions[request.Messages[0].MessageId] = new Dictionary<string, object?>
+        {
+            ["action"] = "timeout",
+            ["timeoutSeconds"] = 600,
+            ["evidenceKind"] = "direct_insult",
+            ["confidence"] = 0.95,
+        };
+        return JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["envelopeVersion"] =
+                    ModerationPromptCompiler.ClassificationResponseEnvelopeVersion,
+                ["batchId"] = request.BatchId,
+                ["decisions"] = decisions,
+            });
+    }
+
+    private static string ValidConfirmationEnvelope(
+        ModerationRequestEnvelopeV3 request)
+    {
+        var rule = request.ActiveRules[0];
+        var evidenceKind = ModerationEvidenceKinds.ForRule(rule.RuleCode)[0];
+        var decisions = request.Messages.ToDictionary(
+            message => message.MessageId,
+            message => (object?)new Dictionary<string, object?>
+            {
+                ["evidenceKind"] = evidenceKind,
+                ["violationReason"] =
+                    "Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.",
+                ["guidance"] = "Abwertungen künftig bitte vermeiden.",
+                ["triggerPhrases"] = new[] { message.LowerText },
+                ["confidence"] = 0.94,
+            },
+            StringComparer.Ordinal);
+        return JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["envelopeVersion"] =
+                    ModerationPromptCompiler.ConfirmationResponseEnvelopeVersion,
+                ["batchId"] = request.BatchId,
+                ["decisions"] = decisions,
+            });
+    }
+
+    private static string BackseatConfirmationEnvelope(
+        ModerationRequestEnvelopeV3 request)
+    {
+        Assert.True(IsConfirmationRequest(request));
+        var decisions = request.Messages.ToDictionary(
+            message => message.MessageId,
+            message => (object?)new Dictionary<string, object?>
+            {
+                ["evidenceKind"] = "instruction",
+                ["violationReason"] =
+                    "Unaufgefordertes Backseatgaming an den Streamer.",
+                ["guidance"] = "Spielhinweise künftig bitte vermeiden.",
+                ["triggerPhrases"] = new[] { message.LowerText },
+                ["confidence"] = 0.95,
+            },
+            StringComparer.Ordinal);
+        return JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["envelopeVersion"] =
+                    ModerationPromptCompiler.ConfirmationResponseEnvelopeVersion,
+                ["batchId"] = request.BatchId,
+                ["decisions"] = decisions,
+            });
+    }
+
+    private static string BackseatLiveEnvelope(
+        ModerationRequestEnvelopeV3 request)
+    {
+        var decisions = request.Messages.ToDictionary(
+            message => message.MessageId,
+            message => (object?)new Dictionary<string, object?>
+            {
+                ["action"] = "timeout",
+                ["timeoutSeconds"] = 600,
+                ["ruleCode"] = ModerationRuleCodes.Backseatgaming,
+                ["evidenceKind"] = "instruction",
+                ["triggerPhrases"] = new[] { message.LowerText },
+                ["reason"] = "Backseatgaming als unaufgeforderter Spielhinweis.",
+                ["confidence"] = 0.95,
+            },
+            StringComparer.Ordinal);
+        return JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["envelopeVersion"] = ModerationPromptCompiler.ResponseEnvelopeVersion,
+                ["batchId"] = request.BatchId,
+                ["decisions"] = decisions,
+            });
+    }
+
+    private static string NoActionLiveEnvelope(ModerationRequestEnvelopeV3 request) =>
+        JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["envelopeVersion"] = ModerationPromptCompiler.ResponseEnvelopeVersion,
+                ["batchId"] = request.BatchId,
+                ["decisions"] = request.Messages.ToDictionary(
+                    message => message.MessageId,
+                    _ => (object?)null,
+                    StringComparer.Ordinal),
+            });
+
+    private static string InvalidGuidanceConfirmationEnvelope(
+        ModerationRequestEnvelopeV3 request)
+    {
+        Assert.True(IsConfirmationRequest(request));
+        var rule = request.ActiveRules[0];
+        var evidenceKind = ModerationEvidenceKinds.ForRule(rule.RuleCode)[0];
+        return JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["envelopeVersion"] =
+                    ModerationPromptCompiler.ConfirmationResponseEnvelopeVersion,
+                ["batchId"] = request.BatchId,
+                ["decisions"] = request.Messages.ToDictionary(
+                    message => message.MessageId,
+                    message => (object?)new Dictionary<string, object?>
+                    {
+                        ["evidenceKind"] = evidenceKind,
+                        ["violationReason"] =
+                            "Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.",
+                        ["guidance"] = "Du sollst Abwertungen vermeiden.",
+                        ["triggerPhrases"] = new[] { message.LowerText },
+                        ["confidence"] = 0.9,
+                    },
+                    StringComparer.Ordinal),
             });
     }
 
@@ -1927,7 +2567,9 @@ public sealed class ModerationCoordinatorTests
             IRetrievalExampleStore? retrievalExampleStore = null,
             bool useCompactContractV6 = false,
             IAiValidationAttemptStore? validationAttemptStore = null,
-            IReadOnlyList<ChannelContextSnapshot>? channelContexts = null)
+            IReadOnlyList<ChannelContextSnapshot>? channelContexts = null,
+            IReadOnlyList<BlacklistRuleRecord>? policyRules = null,
+            IPhraseRuleSource? phraseRuleSource = null)
         {
             var contexts = channelContexts?.ToArray() ?? [Context()];
             var eventSub = new FakeEventSubClient();
@@ -1936,7 +2578,9 @@ public sealed class ModerationCoordinatorTests
                 whitelistedLogins ?? Set());
             var policyStore = new FakePolicyStore(
                 generalRevisionForCall ?? (_ => 1),
-                contexts);
+                contexts,
+                useCompactContractV6,
+                policyRules);
             var localModel = asyncModelResponse is null
                 ? new FakeLocalModerationClient(modelResponse)
                 : new FakeLocalModerationClient(asyncModelResponse);
@@ -1967,7 +2611,7 @@ public sealed class ModerationCoordinatorTests
                 new WhitelistFilterAgent(whitelistSource),
                 policyStore,
                 new EffectivePolicyResolver(),
-                new EmptyPhraseRuleSource(),
+                phraseRuleSource ?? new EmptyPhraseRuleSource(),
                 new BlacklistMatcher(),
                 batcher ?? new ModerationBatcher(),
                 localModel,
@@ -2134,7 +2778,9 @@ public sealed class ModerationCoordinatorTests
 
     private sealed class FakePolicyStore(
         Func<int, long> generalRevisionForCall,
-        IReadOnlyList<ChannelContextSnapshot> contexts)
+        IReadOnlyList<ChannelContextSnapshot> contexts,
+        bool useSemanticRule,
+        IReadOnlyList<BlacklistRuleRecord>? configuredRules)
         : IPolicyStore
     {
         private readonly Dictionary<string, ChannelContextSnapshot> _contexts =
@@ -2164,6 +2810,33 @@ public sealed class ModerationCoordinatorTests
                 categoryId);
             var call = Interlocked.Increment(ref _getCallCount);
             var revision = generalRevisionForCall(call);
+            var ruleCode = useSemanticRule
+                ? ModerationRuleCodes.PersonalAttack
+                : ModerationRuleCodes.GeneralPhrase;
+            var defaultRules = new[]
+            {
+                new BlacklistRuleRecord(
+                    RuleId: 1,
+                    ScopeId: 1,
+                    ruleCode,
+                    useSemanticRule
+                        ? "Persönlicher Angriff"
+                        : "Sonstiger General-Verstoß",
+                    useSemanticRule
+                        ? ModerationRuleCodes.PersonalAttackPromptInstruction
+                        : "Sonstiger Missbrauch.",
+                    ModerationRuleAction.Timeout,
+                    DefaultTimeoutSeconds: 600,
+                    useSemanticRule
+                        ? "Persönlicher Angriff."
+                        : "Sonstiger Verstoß gegen die Chatregeln.",
+                    Priority: 100,
+                    Enabled: true,
+                    RowVersion: 1,
+                    Baseline,
+                    Baseline,
+                    ArchivedAt: null),
+            };
             return Task.FromResult(
                 new StoredEffectivePolicy(
                     broadcasterId,
@@ -2172,23 +2845,7 @@ public sealed class ModerationCoordinatorTests
                     CategoryRevision: 1,
                     $"stored-{revision}",
                     string.Empty,
-                    [
-                        new BlacklistRuleRecord(
-                            RuleId: 1,
-                            ScopeId: 1,
-                            ModerationRuleCodes.GeneralPhrase,
-                            "Sonstiger General-Verstoß",
-                            "Sonstiger Missbrauch.",
-                            ModerationRuleAction.Timeout,
-                            DefaultTimeoutSeconds: 600,
-                            "Sonstiger Verstoß gegen die Chatregeln.",
-                            Priority: 100,
-                            Enabled: true,
-                            RowVersion: 1,
-                            Baseline,
-                            Baseline,
-                            ArchivedAt: null),
-                    ],
+                    configuredRules ?? defaultRules,
                     []));
         }
     }
@@ -2204,6 +2861,21 @@ public sealed class ModerationCoordinatorTests
             Assert.False(string.IsNullOrWhiteSpace(channelId));
             Assert.NotNull(policy);
             return ValueTask.FromResult<IReadOnlyList<PhraseRule>>([]);
+        }
+    }
+
+    private sealed class StaticPhraseRuleSource(
+        IReadOnlyList<PhraseRule> rules) : IPhraseRuleSource
+    {
+        public ValueTask<IReadOnlyList<PhraseRule>> GetRulesAsync(
+            string channelId,
+            CoreEffectivePolicy policy,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Assert.False(string.IsNullOrWhiteSpace(channelId));
+            Assert.NotNull(policy);
+            return ValueTask.FromResult(rules);
         }
     }
 
@@ -2229,7 +2901,7 @@ public sealed class ModerationCoordinatorTests
 
         public int CallCount => Volatile.Read(ref _callCount);
 
-        public IReadOnlyList<ModerationRequestEnvelopeV3> Requests => _requests.ToArray();
+        public ModerationRequestEnvelopeV3[] Requests => _requests.ToArray();
 
         public IReadOnlyList<string> SchedulingKeys => _schedulingKeys
             .Where(key => key is not null)
@@ -2323,6 +2995,64 @@ public sealed class ModerationCoordinatorTests
             Assert.NotNull(policy);
             return ValueTask.FromResult<IReadOnlyList<RetrievalExample>>([]);
         }
+    }
+
+#if false
+    private sealed class LegacyDisabledReasonService
+    {
+        public ValueTask<ContextualModerationReasonResult> GenerateAsync(
+            LegacyDisabledReasonRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var violationReason = string.Equals(
+                request.RuleCode,
+                ModerationRuleCodes.Backseatgaming,
+                StringComparison.Ordinal)
+                ? "Unaufgefordertes Backseatgaming an den Streamer."
+                : "Konkreter Verstoß gegen die ausgewählte Chatregel.";
+            var guidance = string.Equals(
+                request.RuleCode,
+                ModerationRuleCodes.Backseatgaming,
+                StringComparison.Ordinal)
+                ? "Spielhinweise künftig bitte vermeiden."
+                : "Chatregeln künftig bitte beachten.";
+            return ValueTask.FromResult(
+                new ContextualModerationReasonResult(
+                    request.RuleCode,
+                    $"{violationReason} {guidance}",
+                    AiLatencyMilliseconds: 1,
+                    PromptTokens: 1,
+                    CompletionTokens: 1,
+                    TotalTokens: 2)
+                {
+                    ViolationReason = violationReason,
+                    Guidance = guidance,
+                });
+        }
+    }
+#endif
+
+    private sealed class StaticRetrievalExampleStore(
+        IReadOnlyList<RetrievalExample> examples) : IRetrievalExampleStore
+    {
+        public ValueTask<IReadOnlyList<RetrievalExample>> GetRelevantAsync(
+            string channelId,
+            string? categoryId,
+            CoreEffectivePolicy policy,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(examples);
+        }
+
+        public ValueTask<IReadOnlyList<RetrievalExample>> GetRelevantAsync(
+            string channelId,
+            string? categoryId,
+            CoreEffectivePolicy policy,
+            IReadOnlyList<string> queryLowerTexts,
+            CancellationToken cancellationToken = default) =>
+            GetRelevantAsync(channelId, categoryId, policy, cancellationToken);
     }
 
     private sealed class RecordingRetrievalExampleStore : IRetrievalExampleStore

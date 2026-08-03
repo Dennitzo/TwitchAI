@@ -10,6 +10,37 @@ namespace TwitchAI.Tests.Infrastructure;
 public sealed class CoreTwitchEventSubClientTests
 {
     [Fact]
+    public async Task ReadEventsAsync_MapsAutoModHoldAsModerationInput()
+    {
+        var client = CreateClient(
+            new TwitchAutoModMessageHeldEvent(
+                "eventsub-automod-1",
+                "channel-1",
+                DateTimeOffset.UtcNow,
+                "held-message-1",
+                "viewer-1",
+                "viewer",
+                "Viewer",
+                "you are an idiot",
+                "automod",
+                "aggressive",
+                3),
+            new ThrowingAvailabilityStore(AvailabilityFailure.None),
+            new RecordingDedupeStore(),
+            new ThrowingChannelStateRepository());
+
+        var chatEvent = await ReadSingleAsync(client);
+
+        Assert.Equal(TwitchChatEventKind.AutoModMessageHeld, chatEvent.Kind);
+        Assert.True(chatEvent.IsAutoModHeld);
+        Assert.Equal("held-message-1", chatEvent.Message?.TwitchMessageId);
+        Assert.Equal("viewer-1", chatEvent.Message?.TwitchUserId);
+        Assert.Equal("automod", chatEvent.AutoModReason);
+        Assert.Equal("aggressive", chatEvent.AutoModCategory);
+        Assert.Equal(3, chatEvent.AutoModLevel);
+    }
+
+    [Fact]
     public async Task ReadEventsAsync_PreservesModeratorRole_WhenBadgesAreMissing()
     {
         var client = CreateClient(

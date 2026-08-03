@@ -641,50 +641,55 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         switch (chatEvent.Kind)
         {
             case TwitchChatEventKind.Message when chatEvent.Message is not null:
+            case TwitchChatEventKind.AutoModMessageHeld when chatEvent.Message is not null:
                 await ProcessMessageAsync(
                         chatEvent.Message,
                         chatEvent.TwitchEmoteCount,
                         chatEvent.IsTwitchEmoteOnly,
+                        chatEvent.IsAutoModHeld,
+                        chatEvent.AutoModReason,
+                        chatEvent.AutoModCategory,
+                        chatEvent.AutoModLevel,
                         cancellationToken)
                     .ConfigureAwait(false);
                 break;
             case TwitchChatEventKind.ChannelUpdated when chatEvent.ChannelContext is not null:
-            {
-                var previousContext = GetCurrentContext(chatEvent.ChannelId);
-                var batchingContextChanged = previousContext is null
-                    || !HasSameBatchingCategory(
-                        previousContext,
-                        chatEvent.ChannelContext);
-                if (previousContext is not null && batchingContextChanged)
                 {
-                    var flushed = _batcher.FlushChannel(
-                        chatEvent.ChannelId,
-                        _timeProvider.GetUtcNow());
-                    if (flushed is not null)
+                    var previousContext = GetCurrentContext(chatEvent.ChannelId);
+                    var batchingContextChanged = previousContext is null
+                        || !HasSameBatchingCategory(
+                            previousContext,
+                            chatEvent.ChannelContext);
+                    if (previousContext is not null && batchingContextChanged)
                     {
-                        SignalSealedBatch(flushed);
+                        var flushed = _batcher.FlushChannel(
+                            chatEvent.ChannelId,
+                            _timeProvider.GetUtcNow());
+                        if (flushed is not null)
+                        {
+                            SignalSealedBatch(flushed);
+                        }
                     }
-                }
 
-                SetCurrentContext(chatEvent.ChannelContext);
-                var activePolicy = await ResolvePolicyAsync(
-                    chatEvent.ChannelContext,
-                    cancellationToken).ConfigureAwait(false);
-                Publish(
-                    new(
-                        ModerationPipelineEventKind.CategoryChanged,
-                        batchingContextChanged
-                            ? "category_changed"
-                            : "category_reconciled",
-                        batchingContextChanged
-                            ? "The Twitch category or verification state changed."
-                            : "The Twitch category snapshot was reconciled without changing the batching context.",
-                        channelContext: chatEvent.ChannelContext,
-                        activePolicySets: activePolicy.ActivePolicySets
-                            .Select(item => item.Code)
-                            .ToArray()));
-                break;
-            }
+                    SetCurrentContext(chatEvent.ChannelContext);
+                    var activePolicy = await ResolvePolicyAsync(
+                        chatEvent.ChannelContext,
+                        cancellationToken).ConfigureAwait(false);
+                    Publish(
+                        new(
+                            ModerationPipelineEventKind.CategoryChanged,
+                            batchingContextChanged
+                                ? "category_changed"
+                                : "category_reconciled",
+                            batchingContextChanged
+                                ? "The Twitch category or verification state changed."
+                                : "The Twitch category snapshot was reconciled without changing the batching context.",
+                            channelContext: chatEvent.ChannelContext,
+                            activePolicySets: activePolicy.ActivePolicySets
+                                .Select(item => item.Code)
+                                .ToArray()));
+                    break;
+                }
             case TwitchChatEventKind.MessageDeleted
                 when chatEvent.TargetMessageId is not null
                      && chatEvent.TargetUserId is not null:
@@ -713,40 +718,40 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 PublishAvailability(chatEvent, "room_cleared");
                 break;
             case TwitchChatEventKind.EventGap:
-            {
-                _availabilityRegistry.MarkUnknownGap(
-                    chatEvent.ChannelId,
-                    chatEvent.ReceivedAtUtc);
-                var currentContext = GetCurrentContext(chatEvent.ChannelId);
-                if (currentContext is not null)
                 {
-                    var flushed = _batcher.FlushChannel(
+                    _availabilityRegistry.MarkUnknownGap(
                         chatEvent.ChannelId,
-                        _timeProvider.GetUtcNow());
-                    if (flushed is not null)
+                        chatEvent.ReceivedAtUtc);
+                    var currentContext = GetCurrentContext(chatEvent.ChannelId);
+                    if (currentContext is not null)
                     {
-                        SignalSealedBatch(flushed);
+                        var flushed = _batcher.FlushChannel(
+                            chatEvent.ChannelId,
+                            _timeProvider.GetUtcNow());
+                        if (flushed is not null)
+                        {
+                            SignalSealedBatch(flushed);
+                        }
+
+                        var unverified = currentContext with
+                        {
+                            ObservedAtUtc = chatEvent.ReceivedAtUtc,
+                            Revision = currentContext.Revision + 1,
+                            IsVerified = false,
+                        };
+                        SetCurrentContext(unverified);
+                        Publish(
+                            new(
+                                ModerationPipelineEventKind.CategoryChanged,
+                                "category_unverified_after_eventsub_gap",
+                                "The category could not be verified after an EventSub gap; only General remains active.",
+                                channelContext: unverified,
+                                activePolicySets: [PolicySetCode.General]));
                     }
 
-                    var unverified = currentContext with
-                    {
-                        ObservedAtUtc = chatEvent.ReceivedAtUtc,
-                        Revision = currentContext.Revision + 1,
-                        IsVerified = false,
-                    };
-                    SetCurrentContext(unverified);
-                    Publish(
-                        new(
-                            ModerationPipelineEventKind.CategoryChanged,
-                            "category_unverified_after_eventsub_gap",
-                            "The category could not be verified after an EventSub gap; only General remains active.",
-                            channelContext: unverified,
-                            activePolicySets: [PolicySetCode.General]));
+                    PublishAvailability(chatEvent, "eventsub_gap");
+                    break;
                 }
-
-                PublishAvailability(chatEvent, "eventsub_gap");
-                break;
-            }
         }
     }
 
@@ -754,6 +759,10 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         ChatMessageIdentityV1 identity,
         int twitchEmoteCount,
         bool isTwitchEmoteOnly,
+        bool isAutoModHeld,
+        string? autoModReason,
+        string? autoModCategory,
+        int? autoModLevel,
         CancellationToken cancellationToken)
     {
         var context = GetCurrentContext(identity.ChannelId);
@@ -773,6 +782,10 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         {
             TwitchEmoteCount = twitchEmoteCount,
             IsTwitchEmoteOnly = isTwitchEmoteOnly,
+            IsAutoModHeld = isAutoModHeld,
+            AutoModReason = autoModReason,
+            AutoModCategory = autoModCategory,
+            AutoModLevel = autoModLevel,
         };
         _availabilityRegistry.Observe(snapshot);
 
@@ -833,8 +846,10 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         Publish(
             new(
                 ModerationPipelineEventKind.ChatQueued,
-                "queued_for_ai",
-                "The lowercase message was queued for local moderation.",
+                isAutoModHeld ? "automod_held_queued_for_ai" : "queued_for_ai",
+                isAutoModHeld
+                    ? "An AutoMod-held message was queued for timeout-or-ban classification."
+                    : "The lowercase message was queued for local moderation.",
                 snapshot));
         PublishBatchIngressUpdates(ingress);
     }
@@ -971,16 +986,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         }
 
         var learningRevision = _learningContextRevision.Current;
-        var retrievalExamples = await _retrievalExampleStore
-            .GetRelevantAsync(
-                batch.Context.Channel.ChannelId,
-                batch.Context.Channel.CategoryId,
-                batch.Context.EffectivePolicy,
-                batch.Messages
-                    .Select(item => item.Message.Text.LowerText)
-                    .ToArray(),
-                cancellationToken)
-            .ConfigureAwait(false);
+        IReadOnlyList<RetrievalExample> retrievalExamples = [];
         if (_learningContextRevision.Current != learningRevision)
         {
             await RequeueForLearningAsync(batch, latestPolicy, cancellationToken)
@@ -1000,121 +1006,146 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     item.Value.NormalizedExample))
                 .ToArray(),
         };
-        var prompt = ModerationRequestFactory.Create(
-            analysisBatch,
-            retrievalExamples,
-            _promptCompiler);
         var inferenceStarted = Stopwatch.GetTimestamp();
-        var rawResponse = await _localModerationClient
-            .ModerateAsync(
-                prompt.CompiledPrompt,
-                batch.Context.Channel.ChannelId,
-                cancellationToken)
-            .ConfigureAwait(false);
-        var validation = ValidateRuntimeResponse(rawResponse, analysisBatch);
-        await RecordValidationAttemptAsync(
-                correlationId: batch.BatchId.ToString("D"),
-                parentCorrelationId: null,
-                AiValidationAttemptKind.Initial,
-                prompt.CompiledPrompt,
-                rawResponse,
-                validation,
-                validation.IsValid
-                    ? AiValidationOutcome.Valid
-                    : AiValidationOutcome.Rejected,
-                validation.RepairMessageIds.Count,
-                cancellationToken)
-            .ConfigureAwait(false);
-        await RecordLocalFallbackAttemptAsync(
-                batch.BatchId.ToString("D"),
-                AiValidationAttemptKind.Initial,
-                prompt.CompiledPrompt,
-                validation.LocalFallbackMessageIds,
-                cancellationToken)
-            .ConfigureAwait(false);
-        if (!validation.IsValid)
+        ModerationValidationReport validation;
+        // Live moderation has one canonical request/response path. The legacy
+        // staged branch remains below only as temporary source compatibility;
+        // persisted settings can no longer select it.
+        if (_options.LmStudio.UseCompactModerationContractV6 ||
+            !_options.LmStudio.UseCompactModerationContractV6)
         {
-            // Preserve decisions which passed identity and semantic validation.
-            // The one bounded repair request contains only affected messages;
-            // malformed root envelopes deliberately fall back to the full batch.
-            var repairBatch = CreateRepairBatch(
-                analysisBatch,
-                validation.RepairMessageIds);
-            var repairResult = await _repairClient
-                .RepairWithDiagnosticsAsync(
-                    new ModerationRepairRequest(
-                        prompt.CompiledPrompt,
-                        validation.RepairMessageIds,
-                        validation.Issues,
-                        validation.RequiresFullRepair,
-                        batch.Context.Channel.ChannelId),
+            var stagedValidation = await AnalyzeStagedBatchAsync(
+                    batch,
+                    analysisBatch,
+                    retrievalExamples,
+                    latestPolicy,
+                    learningRevision,
                     cancellationToken)
                 .ConfigureAwait(false);
-            var repairedResponse = repairResult.RawResponse;
-            var repairedValidation = ValidateRuntimeResponse(
-                repairedResponse,
-                repairBatch);
-            var diagnosticRepairPrompt = repairResult.Prompt
-                ?? _promptCompiler.Compile(
-                    prompt.Envelope with
-                    {
-                        Messages = prompt.Envelope.Messages
-                            .Where(message => validation.RepairMessageIds.Contains(
-                                message.MessageId,
-                                StringComparer.Ordinal))
-                            .ToArray(),
-                    });
+            if (stagedValidation is null)
+            {
+                return;
+            }
+
+            validation = stagedValidation;
+        }
+        else
+        {
+            var prompt = ModerationRequestFactory.Create(
+                analysisBatch,
+                retrievalExamples,
+                _promptCompiler);
+            var rawResponse = await _localModerationClient
+                .ModerateAsync(
+                    prompt.CompiledPrompt,
+                    batch.Context.Channel.ChannelId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            validation = ValidateRuntimeResponse(rawResponse, analysisBatch);
             await RecordValidationAttemptAsync(
-                    correlationId: $"{batch.BatchId:D}-repair",
-                    parentCorrelationId: batch.BatchId.ToString("D"),
-                    AiValidationAttemptKind.Repair,
-                    diagnosticRepairPrompt,
-                    repairedResponse,
-                    repairedValidation,
-                    repairedValidation.IsValid
-                        ? AiValidationOutcome.Repaired
+                    correlationId: batch.BatchId.ToString("D"),
+                    parentCorrelationId: null,
+                    AiValidationAttemptKind.Initial,
+                    prompt.CompiledPrompt,
+                    rawResponse,
+                    validation,
+                    validation.IsValid
+                        ? AiValidationOutcome.Valid
                         : AiValidationOutcome.Rejected,
                     validation.RepairMessageIds.Count,
                     cancellationToken)
                 .ConfigureAwait(false);
             await RecordLocalFallbackAttemptAsync(
                     batch.BatchId.ToString("D"),
-                    AiValidationAttemptKind.Repair,
-                    diagnosticRepairPrompt,
-                    repairedValidation.LocalFallbackMessageIds,
+                    AiValidationAttemptKind.Initial,
+                    prompt.CompiledPrompt,
+                    validation.LocalFallbackMessageIds,
                     cancellationToken)
                 .ConfigureAwait(false);
-            validation = repairedValidation.IsValid
-                ? validation.RequiresFullRepair
-                    ? repairedValidation
-                    : MergeRepairResult(
-                        analysisBatch,
-                        validation,
-                        repairedValidation)
-                : repairedValidation;
-        }
+            if (!validation.IsValid)
+            {
+                // Preserve decisions which passed identity and semantic validation.
+                // The one bounded repair request contains only affected messages;
+                // malformed root envelopes deliberately fall back to the full batch.
+                var repairBatch = CreateRepairBatch(
+                    analysisBatch,
+                    validation.RepairMessageIds);
+                var repairResult = await _repairClient
+                    .RepairWithDiagnosticsAsync(
+                        new ModerationRepairRequest(
+                            prompt.CompiledPrompt,
+                            validation.RepairMessageIds,
+                            validation.Issues,
+                            validation.RequiresFullRepair,
+                            batch.Context.Channel.ChannelId),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                var repairedResponse = repairResult.RawResponse;
+                var repairedValidation = ValidateRuntimeResponse(
+                    repairedResponse,
+                    repairBatch);
+                var diagnosticRepairPrompt = repairResult.Prompt
+                    ?? _promptCompiler.Compile(
+                        prompt.Envelope with
+                        {
+                            Messages = prompt.Envelope.Messages
+                                .Where(message => validation.RepairMessageIds.Contains(
+                                    message.MessageId,
+                                    StringComparer.Ordinal))
+                                .ToArray(),
+                        });
+                await RecordValidationAttemptAsync(
+                        correlationId: $"{batch.BatchId:D}-repair",
+                        parentCorrelationId: batch.BatchId.ToString("D"),
+                        AiValidationAttemptKind.Repair,
+                        diagnosticRepairPrompt,
+                        repairedResponse,
+                        repairedValidation,
+                        repairedValidation.IsValid
+                            ? AiValidationOutcome.Repaired
+                            : AiValidationOutcome.Rejected,
+                        validation.RepairMessageIds.Count,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                await RecordLocalFallbackAttemptAsync(
+                        batch.BatchId.ToString("D"),
+                        AiValidationAttemptKind.Repair,
+                        diagnosticRepairPrompt,
+                        repairedValidation.LocalFallbackMessageIds,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                validation = repairedValidation.IsValid
+                    ? validation.RequiresFullRepair
+                        ? repairedValidation
+                        : MergeRepairResult(
+                            analysisBatch,
+                            validation,
+                            repairedValidation)
+                    : repairedValidation;
+            }
 
-        // A changed learning set always requires a fresh request, even when the
-        // old response happened to be invalid. Otherwise that whole batch would
-        // be discarded instead of being evaluated with the corrected examples.
-        if (_learningContextRevision.Current != learningRevision)
-        {
-            await RequeueForLearningAsync(batch, latestPolicy, cancellationToken)
+            // A changed learning set always requires a fresh request, even when the
+            // old response happened to be invalid. Otherwise that whole batch would
+            // be discarded instead of being evaluated with the corrected examples.
+            if (_learningContextRevision.Current != learningRevision)
+            {
+                await RequeueForLearningAsync(batch, latestPolicy, cancellationToken)
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            validation = await VerifyActionableDecisionsAsync(
+                    analysisBatch,
+                    validation,
+                    retrievalExamples,
+                    cancellationToken)
                 .ConfigureAwait(false);
-            return;
-        }
 
-        validation = await VerifyActionableDecisionsAsync(
+            validation = ApplyHumanPriorityDecisions(
                 analysisBatch,
                 validation,
-                retrievalExamples,
-                cancellationToken)
-            .ConfigureAwait(false);
-
-        validation = ApplyHumanPriorityDecisions(
-            analysisBatch,
-            validation,
-            retrievalExamples);
+                retrievalExamples);
+        }
 
         if (!validation.IsValid)
         {
@@ -1154,8 +1185,9 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         var messageById = batch.Messages.ToDictionary(
             item => item.TemporaryMessageId,
             StringComparer.Ordinal);
-        foreach (var decision in validation.Envelope!.Decisions)
+        foreach (var envelopeDecision in validation.Envelope!.Decisions)
         {
+            var decision = envelopeDecision;
             var batchMessage = messageById[decision.TemporaryMessageId];
             var message = batchMessage.Message;
             var localMatchCodes = batchMessage.LocalMatches
@@ -1402,6 +1434,599 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         }
     }
 
+    private async Task<ModerationValidationReport?> AnalyzeStagedBatchAsync(
+        ModerationBatch originalBatch,
+        ModerationBatch analysisBatch,
+        IReadOnlyList<RetrievalExample> retrievalExamples,
+        CoreEffectivePolicySnapshot expectedPolicy,
+        long learningRevision,
+        CancellationToken cancellationToken)
+    {
+        return await AnalyzeSingleLiveRunAsync(
+                originalBatch,
+                analysisBatch,
+                retrievalExamples,
+                expectedPolicy,
+                learningRevision,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+#pragma warning disable CS0162
+        var fullEnvelope = ModerationRequestFactory.CreateEnvelope(
+            analysisBatch,
+            retrievalExamples);
+        var humanPriorityById = analysisBatch.Messages.ToDictionary(
+            message => message.TemporaryMessageId,
+            message => HumanModerationPriority.Resolve(
+                message.Message.Text.LowerText,
+                analysisBatch.Context.EffectivePolicy,
+                message.LocalMatches,
+                retrievalExamples),
+            StringComparer.Ordinal);
+        var candidates = new List<ModerationConfirmationCandidate>();
+        var classificationIds = new HashSet<string>(StringComparer.Ordinal);
+        var replyOnlyIds = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var message in analysisBatch.Messages)
+        {
+            var priority = humanPriorityById[message.TemporaryMessageId];
+            if (priority is null)
+            {
+                classificationIds.Add(message.TemporaryMessageId);
+                continue;
+            }
+
+            if (priority.IsAllow)
+            {
+                if (analysisBatch.ReplyTemplates.Count > 0)
+                {
+                    classificationIds.Add(message.TemporaryMessageId);
+                    replyOnlyIds.Add(message.TemporaryMessageId);
+                }
+
+                continue;
+            }
+
+            var rule = priority.Rule
+                ?? throw new InvalidOperationException(
+                    "An actionable human-priority decision requires an active rule.");
+            candidates.Add(
+                new ModerationConfirmationCandidate(
+                    message.TemporaryMessageId,
+                    priority.Action,
+                    priority.TimeoutSeconds,
+                    rule.PolicySet,
+                    rule.RuleCode,
+                    priority.EvidenceKind,
+                    SensitiveDataType: null,
+                    priority.TriggerPhrases,
+                    Confidence: 1d,
+                    string.Equals(
+                        priority.Source,
+                        "exact_moderate_learning",
+                        StringComparison.Ordinal)
+                        ? ModerationCandidateSource.ExactModerateLearning
+                        : ModerationCandidateSource.ManualBlacklistPhrase));
+        }
+
+        var classificationDecisions = Array.Empty<ModerationClassificationDecision>();
+        if (classificationIds.Count > 0)
+        {
+            var classificationEnvelope = fullEnvelope with
+            {
+                EnvelopeVersion =
+                    ModerationPromptCompiler.ClassificationRequestEnvelopeVersion,
+                Messages = fullEnvelope.Messages
+                    .Where(message => classificationIds.Contains(message.MessageId))
+                    .ToArray(),
+            };
+            var classificationRequest = new ModerationClassificationRequest(
+                classificationEnvelope,
+                classificationEnvelope.Messages
+                    .Select(message => message.MessageId)
+                    .Where(replyOnlyIds.Contains)
+                    .ToArray());
+            var classificationPrompt = _promptCompiler.CompileClassification(
+                classificationRequest);
+            var rawClassification = await _localModerationClient
+                .ModerateAsync(
+                    classificationPrompt,
+                    originalBatch.Context.Channel.ChannelId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var classification = _envelopeValidator.ValidateClassification(
+                rawClassification,
+                classificationRequest);
+            await RecordClassificationValidationAttemptAsync(
+                    originalBatch.BatchId.ToString("D"),
+                    parentCorrelationId: null,
+                    AiValidationAttemptKind.Initial,
+                    classificationPrompt,
+                    rawClassification,
+                    classification,
+                    classification.IsValid
+                        ? AiValidationOutcome.Valid
+                        : AiValidationOutcome.Rejected,
+                    classification.RepairMessageIds.Count,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            var usableClassifications = classification.ValidDecisions.ToList();
+            if (!classification.IsValid && classification.RepairMessageIds.Count > 0)
+            {
+                var repairIds = classification.RepairMessageIds
+                    .ToHashSet(StringComparer.Ordinal);
+                var repairResult = await _repairClient
+                    .RepairWithDiagnosticsAsync(
+                        new ModerationRepairRequest(
+                            classificationPrompt,
+                            classification.RepairMessageIds,
+                            classification.Issues,
+                            classification.RequiresFullRepair,
+                            originalBatch.Context.Channel.ChannelId),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                var repairEnvelope = (repairResult.Prompt?.Envelope
+                        ?? classificationEnvelope with
+                        {
+                            Messages = classificationEnvelope.Messages
+                                .Where(message => repairIds.Contains(message.MessageId))
+                                .ToArray(),
+                        }) with
+                {
+                    EnvelopeVersion =
+                        ModerationPromptCompiler.ClassificationRequestEnvelopeVersion,
+                };
+                var repairRequest = new ModerationClassificationRequest(
+                    repairEnvelope,
+                    repairEnvelope.Messages
+                        .Select(message => message.MessageId)
+                        .Where(replyOnlyIds.Contains)
+                        .ToArray());
+                var repairedClassification = _envelopeValidator
+                    .ValidateClassification(
+                        repairResult.RawResponse,
+                        repairRequest);
+                var diagnosticRepairPrompt = repairResult.Prompt
+                    ?? _promptCompiler.CompileClassification(repairRequest);
+                await RecordClassificationValidationAttemptAsync(
+                        $"{originalBatch.BatchId:D}-repair",
+                        originalBatch.BatchId.ToString("D"),
+                        AiValidationAttemptKind.Repair,
+                        diagnosticRepairPrompt,
+                        repairResult.RawResponse,
+                        repairedClassification,
+                        repairedClassification.IsValid
+                            ? AiValidationOutcome.Repaired
+                            : AiValidationOutcome.Rejected,
+                        classification.RepairMessageIds.Count,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                usableClassifications = MergeClassificationDecisions(
+                    classification.ValidDecisions,
+                    repairedClassification.ValidDecisions,
+                    repairIds,
+                    classificationEnvelope.Messages);
+
+                var unresolvedIds = repairIds
+                    .Where(id => usableClassifications.All(decision =>
+                        !string.Equals(
+                            decision.TemporaryMessageId,
+                            id,
+                            StringComparison.Ordinal)))
+                    .ToArray();
+                if (unresolvedIds.Length > 0)
+                {
+                    Publish(
+                        new(
+                            ModerationPipelineEventKind.BatchRejected,
+                            "classification_messages_rejected",
+                            $"{unresolvedIds.Length} classification result(s) remained invalid after the bounded repair."));
+                }
+            }
+
+            classificationDecisions = usableClassifications.ToArray();
+        }
+
+        foreach (var classification in classificationDecisions.Where(
+                     decision => decision.Action != ModerationActionKind.None))
+        {
+            var rule = analysisBatch.Context.EffectivePolicy.FindRule(
+                classification.RuleCode!);
+            if (rule is null)
+            {
+                continue;
+            }
+
+            candidates.Add(
+                new ModerationConfirmationCandidate(
+                    classification.TemporaryMessageId,
+                    classification.Action,
+                    classification.TimeoutSeconds,
+                    rule.PolicySet,
+                    rule.RuleCode,
+                    classification.EvidenceKind,
+                    classification.SensitiveDataType,
+                    TriggerPhrases: [],
+                    classification.Confidence,
+                    ModerationCandidateSource.SemanticClassification));
+        }
+
+        if (candidates.Count > 0)
+        {
+            if (_learningContextRevision.Current != learningRevision)
+            {
+                await RequeueForLearningAsync(
+                        originalBatch,
+                        expectedPolicy,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                return null;
+            }
+
+            var currentPolicy = await ResolvePolicyAsync(
+                    originalBatch.Context.Channel,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (!string.Equals(
+                    currentPolicy.RevisionFingerprint,
+                    originalBatch.Context.EffectivePolicy.RevisionFingerprint,
+                    StringComparison.Ordinal))
+            {
+                await RequeueForPolicyAsync(
+                        originalBatch,
+                        currentPolicy,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                return null;
+            }
+
+            var candidateIds = candidates
+                .Select(candidate => candidate.TemporaryMessageId)
+                .ToHashSet(StringComparer.Ordinal);
+            var confirmationEnvelope = fullEnvelope with
+            {
+                EnvelopeVersion =
+                    ModerationPromptCompiler.ConfirmationRequestEnvelopeVersion,
+                Messages = fullEnvelope.Messages
+                    .Where(message => candidateIds.Contains(message.MessageId))
+                    .ToArray(),
+                ReplyTemplates = [],
+            };
+            var confirmationRequest = new ModerationConfirmationRequest(
+                confirmationEnvelope,
+                candidates);
+            var confirmationPrompt = _promptCompiler.CompileConfirmation(
+                confirmationRequest);
+            var rawConfirmation = await _localModerationClient
+                .ModerateAsync(
+                    confirmationPrompt,
+                    originalBatch.Context.Channel.ChannelId,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var confirmation = _envelopeValidator.ValidateConfirmation(
+                rawConfirmation,
+                confirmationRequest);
+            await RecordConfirmationValidationAttemptAsync(
+                    $"{originalBatch.BatchId:D}-confirm",
+                    originalBatch.BatchId.ToString("D"),
+                    confirmationPrompt,
+                    rawConfirmation,
+                    confirmation,
+                    confirmation.IsEnvelopeValid && confirmation.Issues.Count == 0
+                        ? AiValidationOutcome.Valid
+                        : AiValidationOutcome.Rejected,
+                    confirmation.RejectedMessageIds.Count,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            if (confirmation.Issues.Count > 0)
+            {
+                Publish(
+                    new(
+                        ModerationPipelineEventKind.BatchRejected,
+                        "confirmation_candidates_rejected",
+                        string.Join(
+                            "; ",
+                            confirmation.Issues.Select(issue =>
+                                $"{issue.Code}: {issue.Message}"))));
+            }
+
+            var confirmedById = confirmation.ConfirmedDecisions.ToDictionary(
+                decision => decision.TemporaryMessageId,
+                StringComparer.Ordinal);
+            return BuildStagedFinalReport(
+                analysisBatch,
+                humanPriorityById,
+                classificationDecisions,
+                confirmedById);
+        }
+
+        return BuildStagedFinalReport(
+            analysisBatch,
+            humanPriorityById,
+            classificationDecisions,
+            new Dictionary<string, ValidatedModerationDecision>(StringComparer.Ordinal));
+#pragma warning restore CS0162
+    }
+
+    private async Task<ModerationValidationReport?> AnalyzeSingleLiveRunAsync(
+        ModerationBatch originalBatch,
+        ModerationBatch analysisBatch,
+        IReadOnlyList<RetrievalExample> initialExamples,
+        CoreEffectivePolicySnapshot expectedPolicy,
+        long learningRevision,
+        CancellationToken cancellationToken)
+    {
+        _ = initialExamples;
+        var enrichedMessages = new List<ModerationBatchMessage>(analysisBatch.Messages.Count);
+        var examplesByText = await _retrievalExampleStore
+            .GetRelevantPerMessageAsync(
+                originalBatch.Context.Channel.ChannelId,
+                originalBatch.Context.Channel.CategoryId,
+                analysisBatch.Context.EffectivePolicy,
+                analysisBatch.Messages
+                    .Select(message => message.Message.Text.LowerText)
+                    .ToArray(),
+                cancellationToken)
+            .ConfigureAwait(false);
+        foreach (var message in analysisBatch.Messages)
+        {
+            var examples = examplesByText.GetValueOrDefault(
+                message.Message.Text.LowerText) ?? [];
+            var allowMatches = examples
+                .Where(example => !example.IsPositive)
+                .Select(example => AllowLearningPhraseMatcher.TryMatch(
+                        message.Message.Text.LowerText,
+                        example,
+                        out var match)
+                    ? match
+                    : null)
+                .Where(match => match is not null)
+                .Cast<EffectiveAllowMatch>()
+                .OrderByDescending(match => match.Score)
+                .ThenByDescending(match => match.MatchedPhrase.Length)
+                .Take(4)
+                .ToArray();
+            var phraseMatches = message.LocalMatches
+                .Select(match => new EffectivePhraseMatch(
+                    match.PhraseId,
+                    match.RuleCode,
+                    match.PolicySet,
+                    match.MatchedPhrase,
+                    match.Score,
+                    match.MatchKind))
+                .ToArray();
+            enrichedMessages.Add(message with
+            {
+                EffectiveAllowMatches = allowMatches,
+                EffectivePhraseMatches = phraseMatches,
+                EffectiveLearningMatches = [],
+                DecisionConstraint = ModerationDecisionConstraint.Free,
+                LearningConsensus = null,
+            });
+        }
+
+        var effectiveBatch = analysisBatch with
+        {
+            Messages = enrichedMessages,
+        };
+        var prompt = ModerationRequestFactory.Create(
+            effectiveBatch,
+            [],
+            _promptCompiler);
+        var rawResponse = await _localModerationClient
+            .ModerateAsync(
+                prompt.CompiledPrompt,
+                originalBatch.Context.Channel.ChannelId,
+                cancellationToken)
+            .ConfigureAwait(false);
+        var validation = _envelopeValidator.ValidateLive(
+            rawResponse,
+            effectiveBatch);
+        await RecordValidationAttemptAsync(
+                originalBatch.BatchId.ToString("D"),
+                parentCorrelationId: null,
+                AiValidationAttemptKind.Initial,
+                prompt.CompiledPrompt,
+                rawResponse,
+                validation,
+                validation.Issues.Count == 0
+                    ? AiValidationOutcome.Valid
+                    : AiValidationOutcome.Rejected,
+                validation.Issues.Count,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        var canRunRepair = validation.RepairMessageIds.Count > 0
+            && (!validation.RequiresFullRepair
+                || validation.RepairMessageIds.Count == 1);
+        if (!validation.IsValid && canRunRepair)
+        {
+            var repairBatch = CreateRepairBatch(
+                effectiveBatch,
+                validation.RepairMessageIds);
+            var repairResult = await _repairClient
+                .RepairWithDiagnosticsAsync(
+                    new ModerationRepairRequest(
+                        prompt.CompiledPrompt,
+                        validation.RepairMessageIds,
+                        validation.Issues,
+                        validation.RequiresFullRepair,
+                        originalBatch.Context.Channel.ChannelId),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            var repairedValidation = _envelopeValidator.ValidateLive(
+                repairResult.RawResponse,
+                repairBatch);
+            var repairPrompt = repairResult.Prompt
+                ?? _promptCompiler.Compile(
+                    prompt.Envelope with
+                    {
+                        Messages = prompt.Envelope.Messages
+                            .Where(message => validation.RepairMessageIds.Contains(
+                                message.MessageId,
+                                StringComparer.Ordinal))
+                            .ToArray(),
+                    });
+            await RecordValidationAttemptAsync(
+                    $"{originalBatch.BatchId:D}-repair",
+                    originalBatch.BatchId.ToString("D"),
+                    AiValidationAttemptKind.Repair,
+                    repairPrompt,
+                    repairResult.RawResponse,
+                    repairedValidation,
+                    repairedValidation.IsValid
+                        ? AiValidationOutcome.Repaired
+                        : AiValidationOutcome.Rejected,
+                    validation.RepairMessageIds.Count,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            validation = repairedValidation.IsValid
+                ? validation.RequiresFullRepair
+                    ? repairedValidation
+                    : MergeRepairResult(
+                        effectiveBatch,
+                        validation,
+                        repairedValidation)
+                : validation;
+        }
+        if (_learningContextRevision.Current != learningRevision)
+        {
+            await RequeueForLearningAsync(
+                    originalBatch,
+                    expectedPolicy,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return null;
+        }
+
+        var currentPolicy = await ResolvePolicyAsync(
+                originalBatch.Context.Channel,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (!string.Equals(
+                currentPolicy.RevisionFingerprint,
+                originalBatch.Context.EffectivePolicy.RevisionFingerprint,
+                StringComparison.Ordinal))
+        {
+            await RequeueForPolicyAsync(
+                    originalBatch,
+                    currentPolicy,
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return null;
+        }
+
+        var decisionsById = validation.ValidDecisions
+            .ToDictionary(item => item.TemporaryMessageId, StringComparer.Ordinal);
+        var completeDecisions = analysisBatch.Messages
+            .Select(message => decisionsById.TryGetValue(
+                    message.TemporaryMessageId,
+                    out var decision)
+                ? decision
+                : NoActionDecision(message.TemporaryMessageId))
+            .ToArray();
+        if (validation.Issues.Count > 0)
+        {
+            Publish(
+                new(
+                    ModerationPipelineEventKind.BatchRejected,
+                    "invalid_ai_messages",
+                    $"{validation.Issues.Count} AI decision(s) were discarded individually."));
+        }
+
+        return validation with
+        {
+            Envelope = new ValidatedModerationEnvelope(
+                originalBatch.BatchId,
+                completeDecisions),
+            ValidDecisions = completeDecisions,
+            Issues = [],
+            RepairMessageIds = [],
+            RequiresFullRepair = false,
+        };
+    }
+
+    private static ValidatedModerationDecision NoActionDecision(string messageId) =>
+        new(messageId, ModerationActionKind.None, null, null, string.Empty, [], 0d);
+
+    private static List<ModerationClassificationDecision> MergeClassificationDecisions(
+        IReadOnlyList<ModerationClassificationDecision> initial,
+        IReadOnlyList<ModerationClassificationDecision> repaired,
+        HashSet<string> repairIds,
+        IReadOnlyList<ModerationRequestMessageV3> sourceMessages)
+    {
+        var byId = initial
+            .Where(decision => !repairIds.Contains(decision.TemporaryMessageId))
+            .ToDictionary(
+                decision => decision.TemporaryMessageId,
+                StringComparer.Ordinal);
+        foreach (var decision in repaired)
+        {
+            byId[decision.TemporaryMessageId] = decision;
+        }
+
+        return sourceMessages
+            .Where(message => byId.ContainsKey(message.MessageId))
+            .Select(message => byId[message.MessageId])
+            .ToList();
+    }
+
+    private static ModerationValidationReport BuildStagedFinalReport(
+        ModerationBatch batch,
+        Dictionary<string, HumanPriorityDecision?> humanPriorityById,
+        IReadOnlyList<ModerationClassificationDecision> classifications,
+        Dictionary<string, ValidatedModerationDecision> confirmedById)
+    {
+        var classificationById = classifications.ToDictionary(
+            decision => decision.TemporaryMessageId,
+            StringComparer.Ordinal);
+        var decisions = batch.Messages.Select(message =>
+        {
+            var messageId = message.TemporaryMessageId;
+            if (confirmedById.TryGetValue(messageId, out var confirmed))
+            {
+                return confirmed;
+            }
+
+            if (classificationById.TryGetValue(messageId, out var classification)
+                && classification.Action == ModerationActionKind.None)
+            {
+                return new ValidatedModerationDecision(
+                    messageId,
+                    ModerationActionKind.None,
+                    null,
+                    null,
+                    string.Empty,
+                    [],
+                    classification.Confidence,
+                    ReplyTemplateId: classification.ReplyTemplateId,
+                    ReplyConfidence: classification.ReplyConfidence);
+            }
+
+            var confidence = humanPriorityById.TryGetValue(messageId, out var priority)
+                && priority?.IsAllow == true
+                    ? 1d
+                    : classificationById.TryGetValue(messageId, out classification)
+                        ? classification.Confidence
+                        : 0d;
+            return new ValidatedModerationDecision(
+                messageId,
+                ModerationActionKind.None,
+                null,
+                null,
+                string.Empty,
+                [],
+                confidence);
+        }).ToArray();
+        return new ModerationValidationReport(
+            new ValidatedModerationEnvelope(batch.BatchId, decisions),
+            decisions,
+            [],
+            [],
+            RequiresFullRepair: false);
+    }
+
     private async Task<ModerationValidationReport> VerifyActionableDecisionsAsync(
         ModerationBatch batch,
         ModerationValidationReport initial,
@@ -1600,12 +2225,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             return;
         }
 
-        var contractVersion = _options.LmStudio.UseCompactModerationContractV6
-            ? prompt.ContractVersion
-            : ModerationRequestFactory.LegacyRequestEnvelopeVersion;
-        var schemaVersion = _options.LmStudio.UseCompactModerationContractV6
-            ? ModerationPromptCompiler.ResponseEnvelopeVersion
-            : ModerationEnvelopeValidator.ResponseEnvelopeVersion;
+        var contractVersion = prompt.ContractVersion;
+        var schemaVersion = ModerationPromptCompiler.ResponseEnvelopeVersion;
         var attempt = new AiValidationAttempt(
             correlationId,
             parentCorrelationId,
@@ -1620,9 +2241,86 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 .Distinct(StringComparer.Ordinal)
                 .ToArray(),
             affectedMessageCount,
-            _options.LmStudio.UseCompactModerationContractV6
-                ? prompt.PromptCharacters
-                : new ModerationPromptCharacterCounts(0, 0, 0, 0, 0, 0),
+            prompt.PromptCharacters,
+            AiValidationResponseFingerprint.FromRawResponse(rawResponse),
+            outcome,
+            _timeProvider.GetUtcNow());
+        await TryRecordValidationAttemptAsync(attempt, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private ValueTask RecordClassificationValidationAttemptAsync(
+        string correlationId,
+        string? parentCorrelationId,
+        AiValidationAttemptKind attemptKind,
+        CompiledModerationPrompt prompt,
+        string rawResponse,
+        ModerationClassificationReport validation,
+        AiValidationOutcome outcome,
+        int affectedMessageCount,
+        CancellationToken cancellationToken) =>
+        RecordStageValidationAttemptAsync(
+            correlationId,
+            parentCorrelationId,
+            attemptKind,
+            prompt,
+            rawResponse,
+            validation.Issues,
+            outcome,
+            affectedMessageCount,
+            cancellationToken);
+
+    private ValueTask RecordConfirmationValidationAttemptAsync(
+        string correlationId,
+        string? parentCorrelationId,
+        CompiledModerationPrompt prompt,
+        string rawResponse,
+        ModerationConfirmationReport validation,
+        AiValidationOutcome outcome,
+        int affectedMessageCount,
+        CancellationToken cancellationToken) =>
+        RecordStageValidationAttemptAsync(
+            correlationId,
+            parentCorrelationId,
+            AiValidationAttemptKind.Confirmation,
+            prompt,
+            rawResponse,
+            validation.Issues,
+            outcome,
+            affectedMessageCount,
+            cancellationToken);
+
+    private async ValueTask RecordStageValidationAttemptAsync(
+        string correlationId,
+        string? parentCorrelationId,
+        AiValidationAttemptKind attemptKind,
+        CompiledModerationPrompt prompt,
+        string rawResponse,
+        IReadOnlyList<ModerationValidationIssue> issues,
+        AiValidationOutcome outcome,
+        int affectedMessageCount,
+        CancellationToken cancellationToken)
+    {
+        if (_validationAttemptStore is null)
+        {
+            return;
+        }
+
+        var attempt = new AiValidationAttempt(
+            correlationId,
+            parentCorrelationId,
+            attemptKind,
+            AiValidationWorkloadKind.LiveModeration,
+            prompt.ContractVersion,
+            prompt.ResponseContractVersion,
+            prompt.MessageIds.Count,
+            prompt.PolicyHash,
+            issues
+                .Select(issue => issue.Code)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray(),
+            affectedMessageCount,
+            prompt.PromptCharacters,
             AiValidationResponseFingerprint.FromRawResponse(rawResponse),
             outcome,
             _timeProvider.GetUtcNow());
@@ -1653,19 +2351,13 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             parentCorrelationId,
             AiValidationAttemptKind.LocalFallback,
             AiValidationWorkloadKind.LiveModeration,
-            _options.LmStudio.UseCompactModerationContractV6
-                ? prompt.ContractVersion
-                : ModerationRequestFactory.LegacyRequestEnvelopeVersion,
-            _options.LmStudio.UseCompactModerationContractV6
-                ? ModerationPromptCompiler.ResponseEnvelopeVersion
-                : ModerationEnvelopeValidator.ResponseEnvelopeVersion,
+            prompt.ContractVersion,
+            ModerationPromptCompiler.ResponseEnvelopeVersion,
             prompt.MessageIds.Count,
             prompt.PolicyHash,
             ["rule_missing_local_fallback"],
             fallbackMessageIds.Count,
-            _options.LmStudio.UseCompactModerationContractV6
-                ? prompt.PromptCharacters
-                : new ModerationPromptCharacterCounts(0, 0, 0, 0, 0, 0),
+            prompt.PromptCharacters,
             AiValidationResponseFingerprint.None,
             AiValidationOutcome.Fallback,
             _timeProvider.GetUtcNow());

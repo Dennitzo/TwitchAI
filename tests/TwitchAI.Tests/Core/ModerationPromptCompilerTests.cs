@@ -7,6 +7,74 @@ namespace TwitchAI.Tests.Core;
 public sealed class ModerationPromptCompilerTests
 {
     [Fact]
+    public void Compile_AutoModHeldMessageAllowsOnlyTimeoutOrBan()
+    {
+        var message = new ModerationRequestMessageV3(
+            "m1",
+            "you are an idiot",
+            [])
+        {
+            IsAutoModHeld = true,
+            AutoModReason = "automod",
+            AutoModCategory = "aggressive",
+            AutoModLevel = 3,
+        };
+
+        var compiled = new ModerationPromptCompiler().Compile(
+            Envelope(Guid.NewGuid(), [message]));
+        using var request = JsonDocument.Parse(compiled.UserPrompt);
+        var wireMessage = request.RootElement.GetProperty("messages")[0];
+        Assert.True(wireMessage.GetProperty("isAutoModHeld").GetBoolean());
+        Assert.Equal("automod", wireMessage.GetProperty("autoModReason").GetString());
+        Assert.Equal("aggressive", wireMessage.GetProperty("autoModCategory").GetString());
+        Assert.Equal(3, wireMessage.GetProperty("autoModLevel").GetInt32());
+
+        var variants = compiled.ResponseFormat
+            .GetProperty("json_schema")
+            .GetProperty("schema")
+            .GetProperty("$defs")
+            .GetProperty("decision1")
+            .GetProperty("oneOf")
+            .EnumerateArray()
+            .ToArray();
+        Assert.Equal(
+            ["timeout", "ban"],
+            variants.Select(variant => variant.GetProperty("properties")
+                .GetProperty("action").GetProperty("const").GetString()!));
+        Assert.Contains("never return null, delete, or a reply", compiled.SystemPrompt);
+    }
+
+    [Fact]
+    public void Compile_IgnoresLegacyLearningConstraintAndLeavesDecisionToAi()
+    {
+        var message = new ModerationRequestMessageV3("m1", "farm auf d4", [])
+        {
+            DecisionConstraint = new ModerationDecisionConstraint(
+                ModerationDecisionConstraintKind.LearnedModeration,
+                ModerationRuleCodes.Backseatgaming,
+                ModerationActionKind.Timeout,
+                600,
+                "exact_moderate_learning"),
+        };
+        var compiled = new ModerationPromptCompiler().Compile(
+            Envelope(Guid.NewGuid(), [message]));
+        var variants = compiled.ResponseFormat
+            .GetProperty("json_schema")
+            .GetProperty("schema")
+            .GetProperty("$defs")
+            .GetProperty("decision1")
+            .GetProperty("oneOf")
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal("null", variants[0].GetProperty("type").GetString());
+        Assert.Contains(
+            variants.Skip(1),
+            variant => variant.GetProperty("properties")
+                .GetProperty("action").GetProperty("const").GetString() == "timeout");
+    }
+
+    [Fact]
     public void Compile_ProducesCompactUnicodeRequestAndBatchBoundSparseSchema()
     {
         var batchId = Guid.Parse("3bd98ea4-51f6-4ef0-8f2f-bc212d84528e");
@@ -81,40 +149,17 @@ public sealed class ModerationPromptCompilerTests
         Assert.True(variants[2].GetProperty("properties").TryGetProperty(
             "timeoutSeconds",
             out _));
-        Assert.Equal(
-            string.Empty,
-            variants[1].GetProperty("properties")
-                .GetProperty("violationReason")
-                .GetProperty("const")
-                .GetString());
-        Assert.Equal(
-            string.Empty,
-            variants[1].GetProperty("properties")
-                .GetProperty("guidance")
-                .GetProperty("const")
-                .GetString());
-        Assert.Equal(
-            ModerationReasonComposer.MaximumViolationReasonLength,
-            variants[2].GetProperty("properties")
-                .GetProperty("violationReason")
-                .GetProperty("maxLength")
-                .GetInt32());
-        Assert.Equal(
-            ModerationReasonComposer.MaximumGuidanceLength,
-            variants[2].GetProperty("properties")
-                .GetProperty("guidance")
-                .GetProperty("maxLength")
-                .GetInt32());
-        Assert.Contains(
-            "violationReason",
-            variants[2].GetProperty("required")
-                .EnumerateArray()
-                .Select(item => item.GetString()));
-        Assert.Contains(
-            "guidance",
-            variants[2].GetProperty("required")
-                .EnumerateArray()
-                .Select(item => item.GetString()));
+        Assert.All(
+            variants.Skip(1),
+            item =>
+            {
+                Assert.False(item.GetProperty("properties").TryGetProperty(
+                    "violationReason", out _));
+                Assert.False(item.GetProperty("properties").TryGetProperty(
+                    "guidance", out _));
+                Assert.True(item.GetProperty("properties").TryGetProperty(
+                    "reason", out _));
+            });
         Assert.Equal(1, variants[2].GetProperty("properties")
             .GetProperty("triggerPhrases")
             .GetProperty("maxItems")
@@ -161,10 +206,7 @@ public sealed class ModerationPromptCompilerTests
                 .EnumerateArray()
                 .Select(item => item.GetString()!));
         Assert.Equal(
-            [
-                ModerationRuleCodes.Backseatgaming,
-                ModerationRuleCodes.Spam,
-            ],
+            [ModerationRuleCodes.Spam],
             message.GetProperty("excludedRuleCodes")
                 .EnumerateArray()
                 .Select(item => item.GetString()!));
@@ -214,7 +256,7 @@ public sealed class ModerationPromptCompilerTests
             .Distinct(StringComparer.Ordinal)
             .ToArray();
         Assert.Contains(ModerationRuleCodes.PersonalAttack, allowedRuleCodes);
-        Assert.DoesNotContain(ModerationRuleCodes.Backseatgaming, allowedRuleCodes);
+        Assert.Contains(ModerationRuleCodes.Backseatgaming, allowedRuleCodes);
         Assert.DoesNotContain(ModerationRuleCodes.Spam, allowedRuleCodes);
     }
 
@@ -257,7 +299,7 @@ public sealed class ModerationPromptCompilerTests
     }
 
     [Fact]
-    public void Compile_ProjectsLearningExamplesWithoutNullActionFields()
+    public void Compile_ProjectsOnlyAllowLearningExamples()
     {
         var envelope = Envelope(
             Guid.Parse("24d3e350-3f35-4d3b-8b74-f6db5cb07a14"),
@@ -291,9 +333,11 @@ public sealed class ModerationPromptCompilerTests
         Assert.Equal("allow", examples[0].GetProperty("decision").GetString());
         Assert.False(examples[0].TryGetProperty("action", out _));
         Assert.False(examples[0].TryGetProperty("timeoutSeconds", out _));
-        Assert.Equal("moderate", examples[1].GetProperty("decision").GetString());
-        Assert.Equal("timeout", examples[1].GetProperty("action").GetString());
-        Assert.Equal(600, examples[1].GetProperty("timeoutSeconds").GetInt32());
+        Assert.Equal(1, examples.GetArrayLength());
+        Assert.DoesNotContain(
+            "beleidigung",
+            compiled.UserPrompt,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -488,7 +532,7 @@ public sealed class ModerationPromptCompilerTests
     }
 
     [Fact]
-    public void Compile_PhraseGatedRulesExposeOnlyActualMatchAndExcludeUnmatchedRule()
+    public void Compile_ManualPhraseIsContextWithoutExcludingOtherAiRules()
     {
         var source = Envelope(
             Guid.Parse("c3432580-eaa9-43ae-9786-727a1cd7e9cd"),
@@ -545,14 +589,10 @@ public sealed class ModerationPromptCompilerTests
         Assert.Equal(ModerationRuleCodes.SelfPromotion,
             phraseMatch.GetProperty("ruleCode").GetString());
         Assert.Equal("check me out", phraseMatch.GetProperty("phrase").GetString());
-        Assert.Contains(
-            ModerationRuleCodes.BotScam,
-            message.GetProperty("excludedRuleCodes").EnumerateArray()
-                .Select(item => item.GetString()));
-        Assert.DoesNotContain(
-            ModerationRuleCodes.SelfPromotion,
-            message.GetProperty("excludedRuleCodes").EnumerateArray()
-                .Select(item => item.GetString()));
+        Assert.False(message.TryGetProperty("excludedRuleCodes", out _));
+        var schemaText = compiled.ResponseFormat.GetRawText();
+        Assert.Contains(ModerationRuleCodes.SelfPromotion, schemaText, StringComparison.Ordinal);
+        Assert.Contains(ModerationRuleCodes.BotScam, schemaText, StringComparison.Ordinal);
     }
 
     private static ModerationRequestEnvelopeV3 Envelope(

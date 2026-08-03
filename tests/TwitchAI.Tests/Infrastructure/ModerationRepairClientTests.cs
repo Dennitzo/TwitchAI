@@ -56,6 +56,10 @@ public sealed class ModerationRepairClientTests
         Assert.Contains("\"messageId\":\"m2\"", sent.UserPrompt, StringComparison.Ordinal);
         Assert.DoesNotContain("\"messageId\":\"m1\"", sent.UserPrompt, StringComparison.Ordinal);
         Assert.Contains("rule_inactive", sent.SystemPrompt, StringComparison.Ordinal);
+        Assert.Contains(
+            "A violation in one message never applies to another message",
+            sent.SystemPrompt,
+            StringComparison.Ordinal);
         Assert.DoesNotContain(
             "human-readable detail must not be sent",
             sent.SystemPrompt,
@@ -64,7 +68,81 @@ public sealed class ModerationRepairClientTests
     }
 
     [Fact]
-    public async Task RepairAsync_RollbackOptionUsesLegacyRepairContract()
+    public async Task RepairAsync_RejectsFullRepairAcrossMultipleMessages()
+    {
+        var compiled = new ModerationPromptCompiler().Compile(
+            RequestWithMessages("m1", "m2"));
+        var client = new RecordingLmStudioClient();
+        var sut = new ModerationRepairClient(client);
+
+        var exception = await Assert.ThrowsAsync<ArgumentException>(
+            () => sut.RepairAsync(
+                    new ModerationRepairRequest(
+                        compiled,
+                        ["m1", "m2"],
+                        [new ModerationValidationIssue(
+                            "envelope_invalid",
+                            "invalid")],
+                        RequiresFullBatchRepair: true,
+                        SchedulingKey: "channel-1"))
+                .AsTask());
+
+        Assert.Contains(
+            "must not reclassify multiple batch messages",
+            exception.Message,
+            StringComparison.Ordinal);
+        Assert.Null(client.Request);
+    }
+
+    [Fact]
+    public async Task RepairAsync_ClassificationKeepsReasonFieldsOutOfRepairContract()
+    {
+        var envelope = RequestWithMessages("m1", "m2") with
+        {
+            ActiveRules =
+            [
+                new ModerationRuleDefinition(
+                    ModerationRuleCodes.PersonalAttack,
+                    PolicySetCode.General,
+                    "Persönlicher Angriff",
+                    ModerationRuleCodes.PersonalAttackPromptInstruction,
+                    ModerationActionKind.Timeout,
+                    600,
+                    "Persönlicher Angriff."),
+            ],
+        };
+        var compiler = new ModerationPromptCompiler();
+        var compiled = compiler.CompileClassification(
+            new ModerationClassificationRequest(envelope, []));
+        var client = new RecordingLmStudioClient();
+        var sut = new ModerationRepairClient(client, compiler);
+
+        var result = await sut.RepairWithDiagnosticsAsync(
+            new ModerationRepairRequest(
+                compiled,
+                ["m2"],
+                [new ModerationValidationIssue(
+                    "rule_invalid",
+                    "invalid",
+                    "m2")],
+                RequiresFullBatchRepair: false,
+                SchedulingKey: "channel-1"));
+
+        var sent = Assert.IsType<LmStudioModerationRequest>(client.Request);
+        Assert.Equal(ModerationPromptStage.Classification, result.Prompt?.Stage);
+        Assert.Contains(
+            ModerationPromptCompiler.ClassificationResponseEnvelopeVersion,
+            sent.SystemPrompt,
+            StringComparison.Ordinal);
+        var responseSchema = sent.ResponseFormat?.GetRawText();
+        Assert.NotNull(responseSchema);
+        Assert.DoesNotContain("violationReason", responseSchema, StringComparison.Ordinal);
+        Assert.DoesNotContain("guidance", responseSchema, StringComparison.Ordinal);
+        Assert.Equal("channel-1", sent.SchedulingKey);
+    }
+
+    [Fact]
+    public async Task RepairAsync_RollbackOptionCannotReenableLegacyRepairContract()
     {
         var envelope = RequestWithMessages("m1", "m2");
         var compiled = new ModerationPromptCompiler().Compile(envelope);
@@ -85,15 +163,15 @@ public sealed class ModerationRepairClientTests
 
         var sent = Assert.IsType<LmStudioModerationRequest>(client.Request);
         Assert.Equal(1, sent.MessageCount);
-        Assert.Equal(LmStudioResponseSchemaKind.Moderation, sent.ResponseSchema);
-        Assert.Null(sent.ResponseFormat);
-        Assert.Contains("validationErrors", sent.UserPrompt, StringComparison.Ordinal);
+        Assert.Equal(LmStudioResponseSchemaKind.ModerationV6, sent.ResponseSchema);
+        Assert.NotNull(sent.ResponseFormat);
+        Assert.DoesNotContain("validationErrors", sent.UserPrompt, StringComparison.Ordinal);
         Assert.Contains(
-            $"\"envelopeVersion\":\"{ModerationRequestFactory.LegacyRequestEnvelopeVersion}\"",
+            $"\"envelopeVersion\":\"{ModerationPromptCompiler.RequestEnvelopeVersion}\"",
             sent.UserPrompt,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
-            ModerationPromptCompiler.RequestEnvelopeVersion,
+            ModerationRequestFactory.LegacyRequestEnvelopeVersion,
             sent.UserPrompt,
             StringComparison.Ordinal);
         Assert.Contains("\"messageId\":\"m2\"", sent.UserPrompt, StringComparison.Ordinal);
@@ -280,21 +358,21 @@ public sealed class ModerationRepairClientTests
             sent.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "ban for unambiguously extreme abuse",
+            "Never ban for an unnecessary message, spam, begging, or backseatgaming alone",
             sent.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Every actionable G_ADVERTISING decision must use ban",
+            "G_SELF_PROMOTION permits timeout 86400 or ban",
             sent.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "Every actionable G_BEGGING decision must use a 86400-second timeout",
+            "G_BEGGING requires a 86400-second timeout",
             sent.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "delete only for a single low-context, unnecessary nuisance message",
+            "never use delete for missing context, irrelevance, or nuisance",
             sent.SystemPrompt,
-            StringComparison.Ordinal);
+            StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
             "Never use delete merely because a message is short or unwanted",
             sent.SystemPrompt,

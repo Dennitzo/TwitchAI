@@ -86,6 +86,23 @@ public sealed class BlacklistMatcherTests
         Assert.Equal(2, Assert.Single(complete).PhraseId);
     }
 
+    [Fact]
+    public void Match_RecognizesLongPhraseWithSmallTypoAndReportsFuzzyScore()
+    {
+        var text = new ChatTextNormalizer().Process("du musss links fahren");
+        var policy = new EffectivePolicySnapshot(
+            [new PolicySetRevision(PolicySetCode.Backseatgaming, 1)],
+            "policy");
+
+        var match = Assert.Single(new BlacklistMatcher().Match(
+            text,
+            policy,
+            [Rule(1, ModerationRuleCodes.Backseatgaming, PolicySetCode.Backseatgaming, "musst links", 1)]));
+
+        Assert.Equal("fuzzy_phrase", match.MatchKind);
+        Assert.InRange(match.Score, 0.78d, 0.92d);
+    }
+
     [Theory]
     [InlineData(PhraseManualOverride.Auto, 1, 0, true)]
     [InlineData(PhraseManualOverride.Auto, 3, 2, true)]

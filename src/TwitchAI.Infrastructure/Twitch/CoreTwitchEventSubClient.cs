@@ -92,6 +92,35 @@ public sealed class CoreTwitchEventSubClient : ITwitchEventSubClient
                         break;
                     }
 
+                    case TwitchAutoModMessageHeldEvent held:
+                    {
+                        var identity = ChatMessageIdentityV1.Create(
+                            held.EventMessageId,
+                            held.MessageId,
+                            held.BroadcasterId,
+                            held.UserId,
+                            held.UserLogin,
+                            held.UserDisplayName,
+                            held.MessageText,
+                            held.ObservedAt);
+                        outgoing = new TwitchChatEvent(
+                            TwitchChatEventKind.AutoModMessageHeld,
+                            held.EventMessageId,
+                            held.ObservedAt,
+                            identity,
+                            held.BroadcasterId,
+                            null,
+                            null,
+                            null)
+                        {
+                            IsAutoModHeld = true,
+                            AutoModReason = held.Reason,
+                            AutoModCategory = held.Category,
+                            AutoModLevel = held.Level,
+                        };
+                        break;
+                    }
+
                     case TwitchCategoryChangedEvent category:
                     {
                         var context = await _channelContextService.ObserveCategoryAsync(
@@ -277,6 +306,7 @@ public sealed class CoreTwitchEventSubClient : ITwitchEventSubClient
         {
             TwitchCategoryChangedEvent category => !category.IsHelixReconciliation,
             TwitchChatMessageEvent => true,
+            TwitchAutoModMessageHeldEvent => true,
             TwitchMessageDeletedEvent => true,
             TwitchUserMessagesClearedEvent => true,
             TwitchRoomClearedEvent => true,

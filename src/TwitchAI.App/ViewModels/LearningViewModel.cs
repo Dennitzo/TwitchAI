@@ -106,44 +106,6 @@ public sealed partial class LearningViewModel : ObservableObject
         }
     }
 
-    public async Task ConfirmViolationAsync(
-        CancellationToken cancellationToken = default)
-    {
-        if (!CanReview)
-        {
-            throw new InvalidOperationException(
-                "Der Lerntest wird bereits verarbeitet.");
-        }
-
-        var review = RequireReview();
-        var learningReview = review.CreateReview();
-        IsBusy = true;
-        StatusMessage = "Bestätigung wird lokal gespeichert …";
-        try
-        {
-            await EnsurePolicyIsCurrentAsync(
-                learningReview.TestResult,
-                cancellationToken);
-            var result = await _feedbackService.SaveAsync(
-                learningReview,
-                LearningFeedbackDecision.ConfirmedViolation,
-                cancellationToken);
-            if (!result.Saved)
-            {
-                throw new InvalidOperationException(result.Message);
-            }
-
-            Reset(
-                string.IsNullOrWhiteSpace(result.Message)
-                    ? "Als Verstoß für das lokale Lernen gespeichert."
-                    : result.Message);
-        }
-        finally
-        {
-            IsBusy = false;
-        }
-    }
-
     public async Task MarkAllowedAsync(
         CancellationToken cancellationToken = default)
     {

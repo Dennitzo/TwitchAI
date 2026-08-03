@@ -244,6 +244,7 @@ public sealed class ModerationUiBridge : IDisposable
             MessageId = message.Identity.TwitchMessageId,
             IdentityFingerprint = message.Identity.IdentityFingerprint,
             OriginalMessage = message.Text.OriginalText,
+            IsAutoModHeld = message.IsAutoModHeld,
             CategoryName = message.ChannelContext.CategoryDisplayName,
             CategoryId = message.ChannelContext.CategoryId,
             ReceivedAt = message.Identity.ReceivedAtUtc,
@@ -259,6 +260,10 @@ public sealed class ModerationUiBridge : IDisposable
             TimeoutSeconds = decision.TimeoutSeconds
                 ?? ModerationActionRules.DefaultTimeoutSeconds,
             Reason = decision.Reason,
+            ReasonGenerationStatus = decision.Action is ModerationActionKind.Timeout or ModerationActionKind.Ban
+                && string.IsNullOrWhiteSpace(decision.Reason)
+                    ? "Begründung erforderlich · bitte manuell ergänzen."
+                    : string.Empty,
             PolicySet = decision.PolicySet == PolicySetCode.Backseatgaming
                 ? "Backseatgaming"
                 : "General",
@@ -273,7 +278,9 @@ public sealed class ModerationUiBridge : IDisposable
                 ModerationRuleCodes.LocalBlacklist,
                 StringComparison.Ordinal)
                 ? "Lokaler Blacklist-Treffer"
-                : string.Empty,
+                : message.IsAutoModHeld
+                    ? "Twitch AutoMod"
+                    : string.Empty,
         };
         foreach (var phrase in decision.TriggerPhrases)
         {

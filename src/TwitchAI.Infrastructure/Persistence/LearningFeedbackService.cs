@@ -52,6 +52,15 @@ public sealed class SqliteLearningFeedbackService : ILearningFeedbackService
                 "Der Lerntest wurde ohne Lernsignal abgebrochen.");
         }
 
+        if (decision == LearningFeedbackDecision.ConfirmedViolation)
+        {
+            return new LearningFeedbackResult(
+                ManualExampleId: null,
+                Saved: false,
+                decision,
+                "Moderations-Learnings sind deaktiviert. Gespeichert werden ausschließlich Allow-Learnings.");
+        }
+
         ValidateReview(review, decision);
         var currentPolicy = await _policyStore
             .GetLearningPolicyAsync(cancellationToken)

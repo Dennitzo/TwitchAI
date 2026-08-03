@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using TwitchAI.Core.Models;
+using TwitchAI.Core.Services;
 using TwitchAI.Infrastructure.Persistence;
 using TwitchAI.Infrastructure.Pipeline;
 
@@ -92,7 +93,7 @@ public sealed class DatabaseMigrationTests
         var journalMode = await ScalarAsync<string>(connection, "PRAGMA journal_mode;");
         var foreignKeys = await ScalarAsync<long>(connection, "PRAGMA foreign_keys;");
 
-        Assert.Equal(33, migrationCount);
+        Assert.Equal(34, migrationCount);
         Assert.Equal("wal", journalMode, ignoreCase: true);
         Assert.Equal(1, foreignKeys);
     }
@@ -238,7 +239,7 @@ public sealed class DatabaseMigrationTests
                   AND name = 'trg_v26_local_blacklist_feedback';
                 """));
         Assert.Equal(
-            29L,
+            34L,
             await ScalarAsync<long>(
                 connection,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -383,7 +384,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            32L,
+            34L,
             await ScalarAsync<long>(
                 migrated,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -439,7 +440,7 @@ public sealed class DatabaseMigrationTests
         Assert.Equal(["509658|1", "509672|1"], exclusionCounts);
         Assert.Empty(foreignKeyViolations);
         Assert.Equal(
-            25L,
+            34L,
             await ScalarAsync<long>(
                 connection,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -521,7 +522,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            25L,
+            34L,
             await ScalarAsync<long>(
                 verify,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -629,7 +630,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            25L,
+            34L,
             await ScalarAsync<long>(
                 verify,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -695,7 +696,7 @@ public sealed class DatabaseMigrationTests
                 connection,
                 "SELECT COUNT(*) FROM schema_migrations WHERE version = 19;"));
         Assert.Equal(
-            25L,
+            34L,
             await ScalarAsync<long>(
                 connection,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -708,6 +709,88 @@ public sealed class DatabaseMigrationTests
             await ScalarAsync<long>(
                 connection,
                 "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+    }
+
+    [Fact]
+    public async Task Version34_PreservesDiagnosticsAndAcceptsConfirmationAttempts()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(33);
+        await using (var before = await database.OpenConnectionAsync())
+        await using (var insert = before.CreateCommand())
+        {
+            insert.CommandText =
+                """
+                INSERT INTO ai_validation_attempts(
+                    correlation_id, parent_correlation_id,
+                    attempt_kind, workload_kind,
+                    contract_version, schema_version,
+                    message_count, policy_hash,
+                    validation_error_codes_json, affected_message_count,
+                    system_prompt_character_count, rules_character_count,
+                    messages_character_count, examples_character_count,
+                    templates_character_count, schema_character_count,
+                    response_character_count, response_sha256,
+                    outcome, recorded_utc)
+                VALUES(
+                    'before-v34', NULL,
+                    'initial', 'live_moderation',
+                    'old-contract', 'old-schema',
+                    1, 'policy',
+                    '[]', 0,
+                    1, 1, 1, 0, 0, 1,
+                    0, NULL,
+                    'valid', '2026-08-02T10:00:00.0000000+00:00');
+                """;
+            await insert.ExecuteNonQueryAsync();
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+        var store = new SqliteAiValidationAttemptStore(database.ConnectionFactory);
+        await store.RecordAsync(
+            new AiValidationAttempt(
+                "batch-confirm",
+                "batch",
+                AiValidationAttemptKind.Confirmation,
+                AiValidationWorkloadKind.LiveModeration,
+                ModerationPromptCompiler.ConfirmationRequestEnvelopeVersion,
+                ModerationPromptCompiler.ConfirmationResponseEnvelopeVersion,
+                1,
+                "policy",
+                [],
+                0,
+                new ModerationPromptCharacterCounts(1, 1, 1, 0, 0, 1),
+                AiValidationResponseFingerprint.None,
+                AiValidationOutcome.Valid,
+                DateTimeOffset.UtcNow));
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            2L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM ai_validation_attempts;"));
+        Assert.Equal(
+            "initial|confirmation",
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT group_concat(attempt_kind, '|')
+                FROM (
+                    SELECT attempt_kind
+                    FROM ai_validation_attempts
+                    ORDER BY validation_attempt_id
+                );
+                """));
+        Assert.Equal(
+            34L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT MAX(version) FROM schema_migrations;"));
+        Assert.Equal(
+            "ok",
+            await ScalarAsync<string>(verify, "PRAGMA integrity_check;"),
+            ignoreCase: true);
     }
 
     [Fact]
@@ -2284,7 +2367,7 @@ public sealed class DatabaseMigrationTests
             ORDER BY name;
             """);
 
-        Assert.Equal(25, migrationVersion);
+        Assert.Equal(34, migrationVersion);
         Assert.Equal(
             ["chat_reply_proposals", "chat_reply_templates"],
             tables);
@@ -2538,7 +2621,7 @@ public sealed class DatabaseMigrationTests
                 WHERE change_reason = 'historical reason fixture';
                 """));
         Assert.Equal(
-            25L,
+            34L,
             await ScalarAsync<long>(
                 verify,
                 "SELECT MAX(version) FROM schema_migrations;"));

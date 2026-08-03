@@ -43,7 +43,7 @@ public static class ModerationRuleCodes
     public const string BotScam = "G_BOT_SCAM";
 
     public const string PersonalAttackPromptInstruction =
-        "Nur bei identifizierbarer Zielperson und direkter, unmissverständlicher persönlicher Beschimpfung, Herabsetzung, Einschüchterung oder unerwünschter intimer/persönlicher Annäherung. Eine manuell aktive G_PERSONAL_ATTACK-Phrase für eine direkte intime Ansprache, etwa 'ich liebe dich', ist ein menschlich gesetzter Belästigungsbeleg und kein bloßes Stichwort. Kritik an Handlung, Spiel, Inhalt, Entscheidung oder Leistung, zielloser Fluch, neutrale Anweisung, freundschaftliche Neckerei, Selbstbezug sowie Zitat/Bericht über Liebe ohne direkte Annäherung sind none. Wiederholte Belästigung ohne manuellen Phrasenbeleg nur annehmen, wenn lokale Verlaufsdaten die Wiederholung belegen.";
+        "Nur bei identifizierbarer Zielperson und direkter, unmissverständlicher persönlicher Beschimpfung, Herabsetzung, Einschüchterung oder unerwünschter intimer/persönlicher Annäherung. Manuelle Phrasen sind zusätzlicher Kontext, aber keine automatische Entscheidung. Kritik an Handlung, Spiel, Inhalt, Entscheidung oder Leistung, zielloser Fluch, neutrale Anweisung, freundschaftliche Neckerei, Selbstbezug sowie Zitat/Bericht ohne direkte Annäherung sind none. Wiederholte Belästigung nur annehmen, wenn der übergebene Kontext die Wiederholung belegt.";
 
     public const string SexualContentPromptInstruction =
         "Nur bei sexueller oder intimer Bewertung, Objektifizierung oder Zuschreibung über eine Person, sexueller Aufforderung oder Anmache, eindeutig expliziter sexueller Beschreibung oder klarer Abwertung beziehungsweise feindseliger Generalisierung wegen Frau-/Mannsein oder Geschlechterrolle. Neutrale Körper-, Kleidungs-, Fitness-, Medizin-, Beziehungs- oder Aufklärungsbezüge, bloße Genre-/Adult-Content-Nennung, neutrale oder positive Geschlechtsnennung und mehrdeutige Begriffe sind none. Abwertung wegen sexueller Orientierung oder Transidentität gehört G_HATE.";
@@ -77,12 +77,12 @@ public static class ModerationRuleCodes
         These criteria override local phrase matches and learning examples. When twitchEmoteCount is supplied, treat it as authoritative for native Twitch emotes.
         """;
     public const string BackseatgamingPromptInstruction =
-        "BACKSEATGAMING nur bei klarer, unaufgeforderter Spielinformation: konkrete Handlungsanweisung, Missions-/Rätsellösung, Spoiler zu kommendem Ereignis/versteckter Gefahr oder taktische Zustandsinformation, die dem Streamer unmittelbar vorgibt, was er tun oder beachten soll. Dazu gehören zum Beispiel 'geh nach hinten', 'du hast noch eine Waffe' und 'du musst nachladen'. Handlungsrelevante Inventar-, Ressourcen- und Spielzustandshinweise verwenden evidenceKind instruction. Sonst none: einzelne Wörter/Fragmente (z. B. zorro, nichts), allgemeine Reaktionen, Fragen, Scherze, Meinungen, Zustimmung/Ablehnung, Streamer-/Chat-Meta oder Text ohne klaren spielbezogenen Handlungs-/Informationsgehalt; Zitat, Verneinung und Kontext beachten.";
+        "BACKSEATGAMING: unaufgeforderte konkrete Spielhilfe an den Streamer, etwa Befehl/Empfehlung, Route, nächster Schritt, Build, Item, Inventar, Ressource, Kampf/Taktik, Lösung, Spoiler oder versteckte Gefahr. Auch kurze, englische oder fehlerhafte Befehle zählen bei klarem Spielbezug. Eine Aussage ohne Imperativ zählt, wenn sie unmittelbar verrät, was zu tun oder zu beachten ist. Manuelle Phrasen sind Kontextsignale und werden zusammen mit Sprechakt und Spielkontext bewertet. None: echte Informationsfrage, Zitat, Verneinung, Selbstbeschreibung, Drittbericht, allgemeine Diskussion/Meinung ohne konkrete Hilfe oder isoliertes mehrdeutiges Fragment.";
 
     public const string SelfPromotionPromptInstruction =
-        "Nur auswählbar, wenn diese Nachricht einen lokalen Phrasentreffer für G_SELF_PROMOTION besitzt. Nur klare unaufgeforderte Werbung für den eigenen Kanal, Stream, Content oder die eigene Reichweite. Ein Link, Channelname, Zitat, eine Warnung oder eine mehrdeutige Verwendung wie 'check me out' ohne tatsächliche Eigenwerbung ist none. Gewöhnliche klare Eigenwerbung erfordert 86400 Sekunden Timeout; Ban nur bei aggressiver, massenhafter, automatisiert wirkender oder kommerziell-bösartiger Bewerbung.";
+        "Nur klare unaufgeforderte Werbung für den eigenen Kanal, Stream, Content oder die eigene Reichweite. Manuelle Phrasen sind Kontextsignale, aber keine Voraussetzung und kein automatisches Urteil. Ein Link, Channelname, Zitat, eine Warnung oder eine mehrdeutige Verwendung ohne tatsächliche Eigenwerbung ist none. Gewöhnliche klare Eigenwerbung erfordert 86400 Sekunden Timeout; Ban nur bei aggressiver, massenhafter, automatisiert wirkender oder kommerziell-bösartiger Bewerbung.";
     public const string BotScamPromptInstruction =
-        "Nur auswählbar, wenn diese Nachricht einen lokalen Phrasentreffer für G_BOT_SCAM besitzt. Nur klar automatisierte, betrügerische oder kommerzielle Werbung, insbesondere Viewer-/Follower-/Sub-Manipulation oder Phishing. URL, Channelname, Zitat, Bericht oder Warnung allein ist none. Bei eindeutig bestätigtem Bot-/Scam-Kontext Ban, bei Unsicherheit none.";
+        "Nur klar automatisierte, betrügerische oder kommerzielle Werbung, insbesondere Viewer-/Follower-/Sub-Manipulation oder Phishing. Manuelle Phrasen sind Kontextsignale, aber keine Voraussetzung und kein automatisches Urteil. URL, Channelname, Zitat, Bericht oder Warnung allein ist none. Bei eindeutig bestätigtem Bot-/Scam-Kontext Ban, bei Unsicherheit none.";
 
     public static bool AllowsTriggerLearning(string? ruleCode) =>
         !string.Equals(ruleCode, PersonalData, StringComparison.Ordinal);
@@ -91,8 +91,7 @@ public static class ModerationRuleCodes
         PersonalData or Harm or Hate or SexualContent or PersonalAttack
         or Begging or Spam or Backseatgaming or SelfPromotion or BotScam;
 
-    public static bool RequiresLocalPhraseMatch(string? ruleCode) => ruleCode is
-        SelfPromotion or BotScam;
+    public static bool RequiresLocalPhraseMatch(string? ruleCode) => false;
 }
 
 public sealed record ModerationRuleDefinition(
@@ -159,4 +158,9 @@ public sealed record BlacklistMatch(
     long PhraseId,
     string RuleCode,
     PolicySetCode PolicySet,
-    string MatchedPhrase);
+    string MatchedPhrase)
+{
+    public double Score { get; init; } = 1d;
+
+    public string MatchKind { get; init; } = "manual_phrase";
+}

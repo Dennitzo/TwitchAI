@@ -6,6 +6,52 @@ namespace TwitchAI.Tests.Core;
 
 public sealed class ModerationEnvelopeValidatorTests
 {
+    [Theory]
+    [InlineData(null, "automod_action_required")]
+    [InlineData("delete", "automod_action_invalid")]
+    public void ValidateLive_AutoModHeldMessageRejectsNonPunitiveDecision(
+        string? action,
+        string expectedError)
+    {
+        var baseBatch = Batch(1, includeBackseat: false, firstMessage: "spam spam spam spam spam");
+        var source = baseBatch.Messages[0];
+        var batch = baseBatch with
+        {
+            Messages =
+            [
+                source with
+                {
+                    Message = source.Message with { IsAutoModHeld = true },
+                },
+            ],
+        };
+        object? decision = action is null
+            ? null
+            : new Dictionary<string, object?>
+            {
+                ["action"] = action,
+                ["ruleCode"] = ModerationRuleCodes.Spam,
+                ["evidenceKind"] = ModerationEvidenceKinds.ForRule(
+                    ModerationRuleCodes.Spam)[0],
+                ["triggerPhrases"] = new[] { "spam spam spam spam spam" },
+                ["reason"] = "Wiederholter Spam im Chat.",
+                ["confidence"] = 0.95,
+            };
+        var response = JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["envelopeVersion"] = ModerationEnvelopeValidator.KeyedResponseEnvelopeVersion,
+                ["batchId"] = batch.BatchId,
+                ["decisions"] = new Dictionary<string, object?> { ["m1"] = decision },
+            });
+
+        var result = new ModerationEnvelopeValidator().ValidateLive(response, batch);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Issues, issue => issue.Code == expectedError);
+        Assert.Equal(["m1"], result.RepairMessageIds);
+    }
+
     [Fact]
     public void Validate_ValidOneToOneEnvelopeReturnsTypedDecisions()
     {

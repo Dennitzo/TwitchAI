@@ -27,29 +27,6 @@ public sealed record LearningReasonResult(
     public string Guidance { get; init; } = string.Empty;
 }
 
-public sealed record ContextualModerationReasonRequest(
-    string OriginalText,
-    string BroadcasterId,
-    string? CategoryId,
-    string RuleCode,
-    ModerationActionKind Action,
-    int? TimeoutSeconds,
-    IReadOnlyList<string> TriggerPhrases,
-    string CorrelationId);
-
-public sealed record ContextualModerationReasonResult(
-    string RuleCode,
-    string Reason,
-    long AiLatencyMilliseconds,
-    int? PromptTokens,
-    int? CompletionTokens,
-    int? TotalTokens)
-{
-    public string ViolationReason { get; init; } = Reason;
-
-    public string Guidance { get; init; } = string.Empty;
-}
-
 public sealed record LearningTestRequestEnvelopeV1(
     string EnvelopeVersion,
     Guid TestId,

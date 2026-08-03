@@ -112,11 +112,7 @@ public sealed class LearningTestService : ILearningTestService
                         processed.LowerText,
                         cancellationToken)
                     .ConfigureAwait(false);
-            var humanPriority = HumanModerationPriority.Resolve(
-                processed.LowerText,
-                policy,
-                localMatches,
-                retrievalExamples);
+            HumanPriorityDecision? humanPriority = null;
             ThrowIfLearningChanged(learningRevision);
             var testId = Guid.NewGuid();
             var correlationId = $"learning-test:{testId:D}";
@@ -285,6 +281,34 @@ public sealed class LearningTestService : ILearningTestService
                             repaired.CorrelationId,
                             storedPolicy.PolicyHash,
                             rawRepairErrors,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+
+            if (!validation.IsValid
+                && validation.Errors.All(error => string.Equals(
+                    error.Code,
+                    "guidance_invalid",
+                    StringComparison.Ordinal))
+                && TryNormalizeLearningGuidance(
+                    completion.RawEnvelope,
+                    out var normalizedGuidanceEnvelope))
+            {
+                var fallbackValidation = LearningEnvelopeValidator.Validate(
+                    normalizedGuidanceEnvelope,
+                    prompt.Envelope,
+                    policy,
+                    allowMissingRuleFallback: false);
+                if (fallbackValidation.IsValid)
+                {
+                    validation = fallbackValidation;
+                    await RecordLocalFallbackAsync(
+                            correlationId,
+                            storedPolicy.PolicyHash,
+                            [new LearningEnvelopeValidationError(
+                                "guidance_invalid",
+                                "The AI guidance was normalized locally.")],
                             cancellationToken)
                         .ConfigureAwait(false);
                 }
@@ -798,6 +822,8 @@ public sealed class LearningTestService : ILearningTestService
             + "For evidence_kind_invalid, keep the applicable ruleCode and select evidenceKind only "
             + "from that ruleCode's allowedEvidenceKindsByRule entry. "
             + "invalidDecisionSummary is diagnostic data only; preserve its selectedRuleCode when present. "
+            + "For guidance_invalid, preserve violationReason and return one neutral German future-behavior guidance sentence without du/ihr/Sie, names, targets, quotes, trigger text, rule codes, actions, duration, threats, or the words die Nachricht. "
+            + "The guidance must contain bitte, künftig, zukünftig, fortan, respektvoll, or rücksichtsvoll and remain within 45 characters. "
             + "Do not repeat or discuss the errors.";
         var completion = await CompleteAsync(
                 repairCorrelationId,
@@ -829,6 +855,48 @@ public sealed class LearningTestService : ILearningTestService
                         .Select(item => item.RuleCode))),
             errors,
             requiredRuleCode);
+    }
+
+    private static bool TryNormalizeLearningGuidance(
+        string rawEnvelope,
+        out string normalizedEnvelope)
+    {
+        normalizedEnvelope = string.Empty;
+        try
+        {
+            var root = JsonNode.Parse(rawEnvelope)?.AsObject();
+            var decision = root?["decision"]?.AsObject();
+            var ruleCode = decision?["ruleCode"]?.GetValue<string>();
+            if (root is null || decision is null || string.IsNullOrWhiteSpace(ruleCode))
+            {
+                return false;
+            }
+
+            decision["guidance"] = ruleCode switch
+            {
+                ModerationRuleCodes.Backseatgaming =>
+                    "Spielhinweise künftig bitte vermeiden.",
+                ModerationRuleCodes.Spam =>
+                    "Chatregeln künftig bitte beachten.",
+                ModerationRuleCodes.PersonalData =>
+                    "Privatsphäre künftig bitte respektieren.",
+                ModerationRuleCodes.SelfPromotion =>
+                    "Eigenwerbung künftig bitte vermeiden.",
+                ModerationRuleCodes.BotScam =>
+                    "Verdächtige Werbung künftig bitte vermeiden.",
+                ModerationRuleCodes.Begging =>
+                    "Bettelei künftig bitte vermeiden.",
+                _ => "Respekt künftig bitte wahren.",
+            };
+            normalizedEnvelope = root.ToJsonString();
+            return true;
+        }
+        catch (Exception exception) when (exception is JsonException
+            or InvalidOperationException
+            or FormatException)
+        {
+            return false;
+        }
     }
 
     private static LearningInvalidDecisionSummary? TryReadInvalidDecisionSummary(

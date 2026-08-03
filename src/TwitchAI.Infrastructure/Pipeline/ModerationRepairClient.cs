@@ -62,7 +62,6 @@ public sealed class ModerationRepairClient : IModerationRepairClient
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
     private readonly ILmStudioClient _client;
     private readonly IModerationPromptCompiler _promptCompiler;
-    private readonly InfrastructureOptions _options;
 
     public ModerationRepairClient(ILmStudioClient client)
         : this(client, new ModerationPromptCompiler(), new InfrastructureOptions())
@@ -83,7 +82,6 @@ public sealed class ModerationRepairClient : IModerationRepairClient
     {
         _client = client;
         _promptCompiler = promptCompiler;
-        _options = options;
     }
 
     public async ValueTask<string> RepairAsync(
@@ -113,24 +111,22 @@ public sealed class ModerationRepairClient : IModerationRepairClient
                 nameof(request));
         }
 
-        var subsetEnvelope = CreateRepairEnvelope(request, targetIds);
-        if (!_options.LmStudio.UseCompactModerationContractV6)
+        if (request.RequiresFullBatchRepair && targetIds.Count > 1)
         {
-            var legacyResponse = await RepairLegacyAsync(
-                    subsetEnvelope,
-                    string.Empty,
-                    request.ValidationIssues
-                        .Select(issue => new EnvelopeValidationError(
-                            issue.Code,
-                            issue.Message))
-                        .ToArray(),
-                    request.SchedulingKey,
-                    cancellationToken)
-                .ConfigureAwait(false);
-            return new(legacyResponse, Prompt: null);
+            throw new ArgumentException(
+                "A full repair must not reclassify multiple batch messages.",
+                nameof(request));
         }
 
-        var compiled = _promptCompiler.Compile(subsetEnvelope);
+        var subsetEnvelope = CreateRepairEnvelope(request, targetIds);
+        var compiled = request.OriginalPrompt.Stage == ModerationPromptStage.Classification
+            ? _promptCompiler.CompileClassification(
+                new ModerationClassificationRequest(
+                    subsetEnvelope,
+                    request.OriginalPrompt.ReplyOnlyMessageIds
+                        .Where(targetIds.Contains)
+                        .ToArray()))
+            : _promptCompiler.Compile(subsetEnvelope);
         var validationCodes = request.ValidationIssues
             .Select(issue => issue.Code)
             .Where(code => !string.IsNullOrWhiteSpace(code))
@@ -140,9 +136,11 @@ public sealed class ModerationRepairClient : IModerationRepairClient
         var repairDirective =
             "This is the single repair attempt for only the supplied message IDs. "
             + "Classify them again from the trusted compact request; do not recreate omitted batch messages. "
+            + "Evaluate every supplied message independently. A violation in one message never applies to another message. "
+            + "Never copy a rule, action, reason, trigger, evidence, or confidence between message IDs. "
             + "Previous local validation codes: "
             + string.Join(",", validationCodes)
-            + ". Return only the required response.v9 JSON.";
+            + $". Return only the required {compiled.ResponseContractVersion} JSON.";
         var repairSystemPrompt = compiled.SystemPrompt + "\n" + repairDirective;
         compiled = compiled with
         {

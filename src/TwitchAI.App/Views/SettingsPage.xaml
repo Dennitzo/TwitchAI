@@ -118,7 +118,7 @@
           <TextBlock
             FontSize="12"
             Foreground="{ThemeResource MutedTextBrush}"
-            Text="Scopes: user:read:chat · user:write:chat · user:read:moderated_channels · moderator:manage:chat_messages · moderator:manage:banned_users"
+            Text="Scopes: user:read:chat · user:write:chat · user:read:moderated_channels · moderator:manage:chat_messages · moderator:manage:banned_users · moderator:manage:automod"
             TextWrapping="Wrap" />
           <ToggleSwitch
             x:Name="ReadOnlyModeToggle"

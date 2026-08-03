@@ -66,6 +66,42 @@ public sealed class CoreLocalModerationClientTests
         Assert.Contains("\"activePolicySets\"", request.UserPrompt, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ModerateAsync_ConfirmationUsesStageCorrelationAndChannelKey()
+    {
+        var envelope = Envelope();
+        var candidate = new ModerationConfirmationCandidate(
+            "m1",
+            ModerationActionKind.Timeout,
+            600,
+            PolicySetCode.General,
+            ModerationRuleCodes.PersonalAttack,
+            "direct_insult",
+            null,
+            [],
+            0.9,
+            ModerationCandidateSource.SemanticClassification);
+        var prompt = new ModerationPromptCompiler().CompileConfirmation(
+            new ModerationConfirmationRequest(envelope, [candidate]));
+        var lmStudio = new RecordingLmStudioClient();
+        var sut = new CoreLocalModerationClient(
+            lmStudio,
+            new InfrastructureOptions
+            {
+                LmStudio = new LmStudioOptions
+                {
+                    UseCompactModerationContractV6 = true,
+                },
+            });
+
+        await sut.ModerateAsync(prompt, "channel-1");
+
+        var request = Assert.IsType<LmStudioModerationRequest>(lmStudio.Request);
+        Assert.Equal($"{envelope.BatchId:D}-confirm", request.CorrelationId);
+        Assert.Equal("channel-1", request.SchedulingKey);
+        Assert.Equal(prompt.ResponseFormat.GetRawText(), request.ResponseFormat?.GetRawText());
+    }
+
     private static ModerationRequestEnvelopeV3 Envelope() =>
         new(
             ModerationPromptCompiler.RequestEnvelopeVersion,
@@ -75,7 +111,7 @@ public sealed class CoreLocalModerationClientTests
             [new PolicySetRevision(PolicySetCode.General, 1)],
             [
                 new ModerationRuleDefinition(
-                    "G_INSULT",
+                    ModerationRuleCodes.PersonalAttack,
                     PolicySetCode.General,
                     "Beleidigung",
                     "Direkte Beleidigungen erkennen.",

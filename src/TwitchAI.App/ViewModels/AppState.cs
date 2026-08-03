@@ -136,6 +136,14 @@ public sealed partial class ModerationCaseItem : ObservableObject
 
     public required string OriginalMessage { get; init; }
 
+    public bool IsAutoModHeld { get; init; }
+
+    public Visibility DeleteActionVisibility =>
+        IsAutoModHeld ? Visibility.Collapsed : Visibility.Visible;
+
+    public Visibility AllowActionVisibility =>
+        IsAutoModHeld ? Visibility.Collapsed : Visibility.Visible;
+
     public required string CategoryName { get; init; }
 
     public string? CategoryId { get; init; }
@@ -299,6 +307,7 @@ public sealed partial class ModerationCaseItem : ObservableObject
     public bool CanExecute =>
         !IsBusy
         && !IsReasonGenerating
+        && (!IsAutoModHeld || Action is "timeout" or "ban")
         && (IsChatReply || HasUsableViolationRule)
         && (IsChatReply
             || Action is not ("timeout" or "ban")
@@ -307,6 +316,7 @@ public sealed partial class ModerationCaseItem : ObservableObject
 
     public bool CanAllow =>
         !IsChatReply
+        && !IsAutoModHeld
         && !IsBusy
         && HasUsableViolationRule
         && Status == "Pending";
@@ -440,11 +450,14 @@ public sealed partial class ModerationCaseItem : ObservableObject
             "ban" => ModerationActionKind.Ban,
             _ => ModerationActionKind.Timeout,
         };
-        var normalized =
-            ModerationActionRules.NormalizeAiSuggestionForRule(
-                sourceAction,
-                rule.DefaultTimeoutSeconds,
-                rule.Code);
+        var normalized = ModerationActionRules.NormalizeAiSuggestionForRule(
+            IsAutoModHeld && sourceAction == ModerationActionKind.Delete
+                ? ModerationActionKind.Timeout
+                : sourceAction,
+            IsAutoModHeld && sourceAction == ModerationActionKind.Delete
+                ? ModerationActionRules.DefaultTimeoutSeconds
+                : rule.DefaultTimeoutSeconds,
+            rule.Code);
         Action = normalized.Action switch
         {
             ModerationActionKind.Delete => "delete",

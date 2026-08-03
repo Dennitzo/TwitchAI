@@ -141,19 +141,6 @@ public sealed partial class LearningPage : Page
         }
     }
 
-    private async void OnExecuteClicked(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            await ViewModel.ConfirmViolationAsync();
-        }
-        catch (Exception exception)
-        {
-            ViewModel.StatusMessage = "Learning konnte nicht gespeichert werden.";
-            await ShowErrorAsync(exception.Message, "Learning nicht möglich");
-        }
-    }
-
     private async void OnAllowClicked(object sender, RoutedEventArgs e)
     {
         try
@@ -169,34 +156,6 @@ public sealed partial class LearningPage : Page
 
     private void OnDiscardClicked(object sender, RoutedEventArgs e) =>
         ViewModel.Abort();
-
-    private void OnLearningActionButtonsSizeChanged(
-        object sender,
-        SizeChangedEventArgs e)
-    {
-        if (sender is not Grid actionGrid
-            || actionGrid.ColumnDefinitions.Count < 3)
-        {
-            return;
-        }
-
-        var useSingleRow = e.NewSize.Width >= 280;
-        actionGrid.ColumnDefinitions[0].Width =
-            new GridLength(1, GridUnitType.Star);
-        actionGrid.ColumnDefinitions[1].Width =
-            new GridLength(1, GridUnitType.Star);
-        actionGrid.ColumnDefinitions[2].Width = useSingleRow
-            ? new GridLength(1, GridUnitType.Star)
-            : new GridLength(0);
-
-        PlaceReviewElement(AllowButton, row: 0, column: 0);
-        PlaceReviewElement(DiscardButton, row: 0, column: 1);
-        PlaceReviewElement(
-            ExecuteButton,
-            row: useSingleRow ? 0 : 1,
-            column: useSingleRow ? 2 : 0,
-            columnSpan: useSingleRow ? 1 : 2);
-    }
 
     private static void SetReviewColumnWidths(
         Grid reviewGrid,

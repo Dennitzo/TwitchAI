@@ -43,8 +43,6 @@ public sealed partial class MainWindow : Window
         ["backseatgaming"] = typeof(BackseatgamingPage),
         ["whitelist"] = typeof(WhitelistPage),
         ["chat"] = typeof(ChatPage),
-        ["learning"] = typeof(LearningPage),
-        ["database"] = typeof(DatabasePage),
         ["audit"] = typeof(AuditPage),
         ["settings"] = typeof(SettingsPage),
     };
@@ -63,8 +61,6 @@ public sealed partial class MainWindow : Window
     private object? _committedNavigationItem;
     private bool _suppressNavigationSelection;
     private bool _navigationConfirmationPending;
-    private bool _closeConfirmationPending;
-    private bool _allowClose;
     private bool _isPaneResizePointerActive;
     private uint _paneResizePointerId;
 
@@ -316,13 +312,6 @@ public sealed partial class MainWindow : Window
         _navigationConfirmationPending = true;
         try
         {
-            if (ContentFrame.Content is DatabasePage databasePage
-                && !await databasePage.ConfirmNavigationAwayAsync())
-            {
-                RestoreCommittedNavigationItem(sender);
-                return;
-            }
-
             SetSelectedNavigationItem(sender, requestedNavigationItem);
             if (ContentFrame.Navigate(
                     pageType,
@@ -351,44 +340,16 @@ public sealed partial class MainWindow : Window
             nameof(BackseatgamingPage) => "Backseatgaming",
             nameof(WhitelistPage) => "Whitelist",
             nameof(ChatPage) => "Chat",
-            nameof(LearningPage) => "Lernen",
-            nameof(DatabasePage) => "Datenbank",
             nameof(AuditPage) => "Ausführungslog",
             nameof(SettingsPage) => "Einstellungen",
             _ => "TwitchAI",
         };
     }
 
-    private async void OnAppWindowClosing(
+    private void OnAppWindowClosing(
         AppWindow sender,
         AppWindowClosingEventArgs args)
     {
-        if (_allowClose
-            || ContentFrame.Content is not DatabasePage databasePage
-            || !databasePage.ViewModel.HasPendingChanges)
-        {
-            return;
-        }
-
-        args.Cancel = true;
-        if (_closeConfirmationPending)
-        {
-            return;
-        }
-
-        _closeConfirmationPending = true;
-        try
-        {
-            if (await databasePage.ConfirmNavigationAwayAsync())
-            {
-                _allowClose = true;
-                Close();
-            }
-        }
-        finally
-        {
-            _closeConfirmationPending = false;
-        }
     }
 
     private void OnAppWindowChanged(

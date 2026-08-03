@@ -7,19 +7,15 @@ namespace TwitchAI.Tests.Infrastructure;
 
 public sealed class LearningFeedbackServiceTests
 {
-    [Theory]
-    [InlineData(ModerationRuleCodes.OtherAbuse, PolicySetCode.General)]
-    [InlineData(ModerationRuleCodes.Backseatgaming, PolicySetCode.Backseatgaming)]
-    public async Task ConfirmedViolationStoresOnlyMeaningfulTriggerInManualDataset(
-        string ruleCode,
-        PolicySetCode policySet)
+    [Fact]
+    public async Task ConfirmedViolationIsNotStoredBecauseLearningIsAllowOnly()
     {
         await using var database = await TestDatabase.CreateAsync();
         var fixture = await CreateFixtureAsync(
             database,
             "eindeutiges lernsignal",
-            ruleCode,
-            policySet,
+            ModerationRuleCodes.Backseatgaming,
+            PolicySetCode.Backseatgaming,
             ["eindeutiges", "eindeutiges lernsignal"]);
         var phraseStateBefore = await ReadPhraseStateAsync(database);
         var policyStateBefore = await ReadPolicyStateAsync(database);
@@ -29,44 +25,11 @@ public sealed class LearningFeedbackServiceTests
             fixture.Review,
             LearningFeedbackDecision.ConfirmedViolation);
 
-        Assert.True(saved.Saved);
-        Assert.NotNull(saved.ManualExampleId);
-        Assert.Equal(2, fixture.LearningRevision.Current);
-        var duplicate = await fixture.Service.SaveAsync(
-            fixture.Review,
-            LearningFeedbackDecision.ConfirmedViolation);
-        Assert.Equal(saved.ManualExampleId, duplicate.ManualExampleId);
-        Assert.Equal(2, fixture.LearningRevision.Current);
-        await using var connection = await database.OpenConnectionAsync();
-        await using var command = connection.CreateCommand();
-        command.CommandText =
-            """
-            SELECT
-                example.final_decision,
-                example.actual_action,
-                example.actual_timeout_seconds,
-                example.actual_rule_code,
-                (SELECT COUNT(*) FROM moderation_cases),
-                (SELECT COUNT(*) FROM action_attempts),
-                (SELECT COUNT(*) FROM message_availability_events),
-                actual_trigger_phrases_json
-            FROM manual_learning_examples example
-            WHERE example.manual_example_id = @manual_example_id
-            ;
-            """;
-        command.Parameters.AddWithValue(
-            "@manual_example_id",
-            saved.ManualExampleId!.Value);
-        await using var reader = await command.ExecuteReaderAsync();
-        Assert.True(await reader.ReadAsync());
-        Assert.Equal("confirmed_violation", reader.GetString(0));
-        Assert.Equal("timeout", reader.GetString(1));
-        Assert.Equal(600, reader.GetInt32(2));
-        Assert.Equal(ruleCode, reader.GetString(3));
-        Assert.Equal(0, reader.GetInt32(4));
-        Assert.Equal(0, reader.GetInt32(5));
-        Assert.Equal(0, reader.GetInt32(6));
-        Assert.Equal("""["eindeutiges lernsignal"]""", reader.GetString(7));
+        Assert.False(saved.Saved);
+        Assert.Null(saved.ManualExampleId);
+        Assert.Contains("Allow-Learnings", saved.Message, StringComparison.Ordinal);
+        Assert.Equal(1, fixture.LearningRevision.Current);
+        Assert.Equal(0, await ReadCountAsync(database, "manual_learning_examples"));
         Assert.Equal(feedbackCountBefore, await ReadCountAsync(database, "phrase_feedback"));
         Assert.Equal(phraseStateBefore, await ReadPhraseStateAsync(database));
         Assert.Equal(policyStateBefore, await ReadPolicyStateAsync(database));
@@ -219,7 +182,7 @@ public sealed class LearningFeedbackServiceTests
     private static async Task<Fixture> CreateFixtureAsync(
         TestDatabase database,
         string trigger,
-        string ruleCode = ModerationRuleCodes.OtherAbuse,
+        string ruleCode = ModerationRuleCodes.PersonalAttack,
         PolicySetCode policySet = PolicySetCode.General,
         IReadOnlyList<string>? selectedTriggers = null)
     {

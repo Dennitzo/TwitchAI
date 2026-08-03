@@ -28,7 +28,7 @@
         Text="Lernen" />
       <TextBlock
         Foreground="{ThemeResource MutedTextBrush}"
-        Text="Prüfe einzelne Testnachrichten und gib der lokalen Moderation gezieltes Feedback."
+        Text="Prüfe einzelne Testnachrichten. Nur als erlaubt bestätigte Nachrichten werden als Allow-Kontext gelernt."
         TextWrapping="Wrap" />
     </StackPanel>
 
@@ -392,15 +392,11 @@
                   Text="Aktionen" />
                 <Grid
                   x:Name="LearningActionButtonsGrid"
-                  ColumnSpacing="8"
-                  RowSpacing="8"
-                  SizeChanged="OnLearningActionButtonsSizeChanged">
+                  ColumnSpacing="8">
                   <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                   </Grid.RowDefinitions>
                   <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="*" />
                   </Grid.ColumnDefinitions>
@@ -427,19 +423,6 @@
                     Padding="8"
                     ToolTipService.ToolTip="Ohne Learning verwerfen"
                     Style="{StaticResource SubtleButtonStyle}" />
-                  <Button
-                    x:Name="ExecuteButton"
-                    Grid.Column="2"
-                    HorizontalAlignment="Stretch"
-                    AutomationProperties.Name="Lernvorschlag ausführen"
-                    AutomationProperties.HelpText="Speichert nur lokales Learning und führt niemals eine Twitch-Aktion aus."
-                    Click="OnExecuteClicked"
-                    Content="Ausführen"
-                    IsEnabled="{x:Bind ViewModel.CanReview, Mode=OneWay}"
-                    MinWidth="0"
-                    Padding="8"
-                    ToolTipService.ToolTip="Als Moderationsverstoß lernen"
-                    Style="{StaticResource AccentButtonStyle}" />
                 </Grid>
               </StackPanel>
             </Grid>

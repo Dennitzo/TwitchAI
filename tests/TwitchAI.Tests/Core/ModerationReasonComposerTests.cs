@@ -35,6 +35,28 @@ public sealed class ModerationReasonComposerTests
         Assert.True(composition.Reason.Length <= 120);
     }
 
+    [Theory]
+    [InlineData("Künftig bitte respektvoll kommunizieren.")]
+    [InlineData("Zukünftig auf einen höflichen Umgang achten.")]
+    [InlineData("Fortan bitte sachlich kommunizieren.")]
+    public void TryComposeAiReason_AcceptsNeutralFutureGuidance(
+        string guidance)
+    {
+        var valid = ModerationReasonComposer.TryComposeAiReason(
+            "Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.",
+            guidance,
+            ModerationActionKind.Timeout,
+            PersonalAttackRule(),
+            "@mayvo du bist völlig unfähig",
+            ["du bist völlig unfähig"],
+            out var composition,
+            out var errorCode);
+
+        Assert.True(valid);
+        Assert.Empty(errorCode);
+        Assert.Equal(guidance, composition.Guidance);
+    }
+
     [Fact]
     public void TryComposeAiReason_DeleteRequiresEmptyParts()
     {

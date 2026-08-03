@@ -76,11 +76,11 @@ public sealed class ModerationRequestFactoryTests
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
-            "violationReason names only the violation",
+            "allowLearningMatches contains only earlier human-approved messages",
             prompt.SystemPrompt,
             StringComparison.Ordinal);
-        Assert.Contains(
-            "say \"Nutzer oder Streamer\", never only \"Nutzer\"",
+        Assert.DoesNotContain(
+            "violationReason",
             prompt.SystemPrompt,
             StringComparison.Ordinal);
         Assert.Contains(
@@ -134,14 +134,10 @@ public sealed class ModerationRequestFactoryTests
         Assert.Equal(
             ModerationRuleCodes.BackseatgamingPromptInstruction,
             backseatRule.PromptInstruction);
-        Assert.Equal(
-            1,
-            CountOccurrences(
-                prompt.UserPrompt,
-                "Sonst none:",
-                StringComparison.Ordinal));
-        Assert.Contains("zorro", prompt.UserPrompt, StringComparison.Ordinal);
-        Assert.Contains("nichts", prompt.UserPrompt, StringComparison.Ordinal);
+        Assert.Contains(
+            "Manuelle Phrasen sind Kontextsignale",
+            prompt.UserPrompt,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -166,11 +162,18 @@ public sealed class ModerationRequestFactoryTests
         var examples = Enumerable.Range(1, 10)
             .Select(index => new RetrievalExample(
                 $"EXAMPLE {index}",
-                ModerationActionKind.Delete,
+                ModerationActionKind.None,
                 null,
                 PolicySetCode.General,
+                string.Empty,
+                IsPositive: false))
+            .Append(new RetrievalExample(
+                "MODERATE EXAMPLE",
+                ModerationActionKind.Timeout,
+                600,
+                PolicySetCode.General,
                 "reason",
-                IsPositive: index % 2 == 0));
+                IsPositive: true));
 
         var prompt = ModerationRequestFactory.Create(
             Batch(PolicySetCode.General),
@@ -180,6 +183,7 @@ public sealed class ModerationRequestFactoryTests
         Assert.All(
             prompt.Envelope.LearningExamples,
             item => Assert.Equal(item.LowerText.ToLowerInvariant(), item.LowerText));
+        Assert.DoesNotContain(prompt.Envelope.LearningExamples, item => item.IsPositive);
     }
 
     [Fact]

@@ -265,6 +265,7 @@ public sealed class SqliteAiValidationAttemptStore : IAiValidationAttemptStore
         {
             AiValidationAttemptKind.Initial => "initial",
             AiValidationAttemptKind.Repair => "repair",
+            AiValidationAttemptKind.Confirmation => "confirmation",
             AiValidationAttemptKind.LocalFallback => "local_fallback",
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null),
         };

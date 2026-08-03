@@ -123,13 +123,10 @@ public partial class App : Application
                 services.AddSingleton<ITwitchEventSubClient, CoreTwitchEventSubClient>();
                 services.AddSingleton<ILocalModerationClient, CoreLocalModerationClient>();
                 services.AddSingleton<IModerationRepairClient, ModerationRepairClient>();
+                services.AddSingleton<IReviewReasonService, ReviewReasonService>();
                 services.AddSingleton<IRetrievalExampleStore, SqliteRetrievalExampleStore>();
                 services.AddSingleton<IModerationCaseRepository, CoreModerationCaseRepository>();
                 services.AddSingleton<IModerationCoordinator, ModerationCoordinator>();
-                services.AddSingleton<ILearningTestService, LearningTestService>();
-                services.AddSingleton<
-                    IContextualModerationReasonService,
-                    ContextualModerationReasonService>();
                 services.AddSingleton<ModerationUiBridge>();
                 services.AddSingleton(
                     provider => new AppState
@@ -147,9 +144,7 @@ public partial class App : Application
                 services.AddTransient<PoliciesViewModel>();
                 services.AddSingleton<WhitelistViewModel>();
                 services.AddSingleton<ChatViewModel>();
-                services.AddSingleton<LearningViewModel>();
                 services.AddTransient<LearningDatasetViewModel>();
-                services.AddSingleton<DatabaseViewModel>();
                 services.AddSingleton<AuditViewModel>();
                 services.AddSingleton<SettingsViewModel>();
             })

@@ -86,6 +86,38 @@ public sealed class LearningTestServiceTests
     }
 
     [Fact]
+    public async Task AnalyzeAsync_NormalizesGuidanceAfterRepairRepeatsInvalidDirectAddress()
+    {
+        var calls = 0;
+        var lmStudio = new FakeLmStudioClient(request =>
+        {
+            calls++;
+            return Completion(Response(
+                ReadTestId(request.UserPrompt),
+                "moderate",
+                "timeout",
+                600,
+                "B",
+                ModerationRuleCodes.Backseatgaming,
+                "Der Streamer wurde ungefragt zum Nachladen angewiesen.",
+                ["du musst nachladen"],
+                0.94,
+                evidenceKind: "instruction",
+                guidanceOverride: "Du solltest Spielhinweise vermeiden."));
+        });
+        var sut = CreateService(lmStudio);
+
+        var result = await sut.AnalyzeAsync(
+            new LearningTestRequest("Du musst nachladen"));
+
+        Assert.Equal(2, calls);
+        Assert.Equal(LearningVerdict.Moderate, result.Verdict);
+        Assert.Equal(
+            "Der Streamer wurde ungefragt zum Nachladen angewiesen. Spielhinweise künftig bitte vermeiden.",
+            result.ProposedReason);
+    }
+
+    [Fact]
     public async Task AnalyzeAsync_PersonalAttackPreservesTenMinuteTimeout()
     {
         var lmStudio = new FakeLmStudioClient(request =>
@@ -770,24 +802,25 @@ public sealed class LearningTestServiceTests
         var retrieval = new StaticRetrievalStore(
         [
             new RetrievalExample(
-                "SPAM SPAM",
-                ModerationActionKind.Timeout,
-                120,
+                "DAS IST HARMLOS",
+                ModerationActionKind.None,
+                null,
                 PolicySetCode.General,
-                "Wiederholter Spam.",
-                IsPositive: true,
+                string.Empty,
+                IsPositive: false,
                 "G_SPAM"),
         ]);
         var lmStudio = new FakeLmStudioClient(request =>
             Completion(Allow(ReadTestId(request.UserPrompt), "G_OTHER_ABUSE")));
         var sut = CreateService(lmStudio, retrieval: retrieval);
 
-        await sut.AnalyzeAsync(new LearningTestRequest("harmlos"));
+        await sut.AnalyzeAsync(new LearningTestRequest("das ist harmlos"));
 
         var sent = Assert.Single(lmStudio.Requests);
         Assert.Contains("\"learningExamples\":[", sent.UserPrompt, StringComparison.Ordinal);
-        Assert.Contains("\"text\":\"spam spam\"", sent.UserPrompt, StringComparison.Ordinal);
-        Assert.DoesNotContain("SPAM SPAM", sent.UserPrompt, StringComparison.Ordinal);
+        Assert.Contains("\"text\":\"das ist harmlos\"", sent.UserPrompt, StringComparison.Ordinal);
+        Assert.Contains("\"matchedPhrase\":\"das ist harmlos\"", sent.UserPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("DAS IST HARMLOS", sent.UserPrompt, StringComparison.Ordinal);
         Assert.Equal(1, retrieval.CallCount);
     }
 
@@ -1195,7 +1228,8 @@ public sealed class LearningTestServiceTests
         IReadOnlyList<string> triggerPhrases,
         double confidence,
         string? evidenceKind = null,
-        string? sensitiveDataType = null)
+        string? sensitiveDataType = null,
+        string? guidanceOverride = null)
     {
         var resolvedEvidenceKind = evidenceKind;
         if (string.Equals(verdict, "moderate", StringComparison.Ordinal)
@@ -1235,7 +1269,7 @@ public sealed class LearningTestServiceTests
                             "moderate",
                             StringComparison.Ordinal)
                         && action is "timeout" or "ban"
-                            ? "Chatregeln künftig bitte beachten."
+                            ? guidanceOverride ?? "Chatregeln künftig bitte beachten."
                             : string.Empty,
                     triggerPhrases,
                     confidence,

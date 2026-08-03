@@ -36,13 +36,6 @@
         Severity="Informational"
         Title="Allgemeines Regelset" />
 
-      <SelectorBar
-        x:Name="ViewSelector"
-        SelectionChanged="OnViewSelectorSelectionChanged">
-        <SelectorBarItem x:Name="PhraseSelectorItem" Text="Phrasen" />
-        <SelectorBarItem x:Name="LearningSelectorItem" Text="Learning" />
-      </SelectorBar>
-
       <StackPanel x:Name="PhraseView" Spacing="18">
       <Border Style="{StaticResource CardStyle}">
         <StackPanel Spacing="12">
@@ -274,9 +267,6 @@
       </Border>
       </StackPanel>
 
-      <local:LearningDatasetPanel
-        x:Name="LearningPanel"
-        Visibility="Collapsed" />
     </StackPanel>
   </ScrollViewer>
 </Page>
