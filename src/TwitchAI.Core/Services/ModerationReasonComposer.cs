@@ -143,6 +143,16 @@ public static partial class ModerationReasonComposer
             return false;
         }
 
+        if (string.Equals(
+                rule?.RuleCode,
+                ModerationRuleCodes.AutoModHeld,
+                StringComparison.OrdinalIgnoreCase)
+            && !normalized.Contains("AutoMod", StringComparison.OrdinalIgnoreCase))
+        {
+            errorCode = "reason_category_missing";
+            return false;
+        }
+
         if (normalized.Length > ModerationReasonNormalizer.MaximumLength
             || ModerationReasonNormalizer.ContainsTriggerPhraseExcerpt(
                 normalized,

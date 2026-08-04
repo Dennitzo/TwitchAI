@@ -54,6 +54,18 @@ public sealed class ModerationReasonNormalizerTests
             reason);
     }
 
+    [Fact]
+    public void TryNormalizeContextualAiReason_RejectsObservedContextFreeReason()
+    {
+        var valid = ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+            "Text ohne Kontext.",
+            PersonalAttackRule(),
+            out var reason);
+
+        Assert.False(valid);
+        Assert.Empty(reason);
+    }
+
     [Theory]
     [InlineData("Du hast jemanden beleidigt.")]
     [InlineData("Die Nachricht hat jemanden beleidigt.")]

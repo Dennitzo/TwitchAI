@@ -363,12 +363,13 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
 
                 if (property.Value.ValueKind == JsonValueKind.Null)
                 {
-                    if (sourceById[messageId].Message.IsAutoModHeld)
+                    if (sourceById[messageId].Message.IsAutoModHeld
+                        && sourceById[messageId].EffectiveAllowMatches.Count == 0)
                     {
                         MarkMessageInvalid(
                             messageId,
                             "automod_action_required",
-                            $"Decision '{messageId}': an AutoMod-held message requires timeout or ban.",
+                            $"Decision '{messageId}': an AutoMod-held message without an effective allow match requires timeout or ban.",
                             invalidIds,
                             validatedById,
                             issues);
@@ -688,12 +689,13 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
                     continue;
                 }
 
-                if (sourceById[messageId].Message.IsAutoModHeld)
+                if (sourceById[messageId].Message.IsAutoModHeld
+                    && sourceById[messageId].EffectiveAllowMatches.Count == 0)
                 {
                     MarkMessageInvalid(
                         messageId,
                         "automod_action_required",
-                        $"Decision '{messageId}': an AutoMod-held message requires timeout or ban.",
+                        $"Decision '{messageId}': an AutoMod-held message without an effective allow match requires timeout or ban.",
                         invalidIds,
                         validatedById,
                         issues);
@@ -1069,6 +1071,50 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
                 $"Decision '{messageId}' requires a rule-compatible evidenceKind.");
         }
 
+        if (string.Equals(
+                rule.RuleCode,
+                ModerationRuleCodes.AutoModHeld,
+                StringComparison.Ordinal))
+        {
+            if (!source.Message.IsAutoModHeld)
+            {
+                return SparseDecisionValidationResult.Invalid(
+                    messageId,
+                    "automod_rule_without_hold",
+                    $"Decision '{messageId}': TWITCH_AUTOMOD_HELD requires an actual AutoMod hold for this message.");
+            }
+
+            var expectedEvidenceKind = string.Equals(
+                    source.Message.AutoModReason,
+                    "blocked_term",
+                    StringComparison.OrdinalIgnoreCase)
+                ? ModerationEvidenceKinds.BlockedTermHold
+                : ModerationEvidenceKinds.AutoModHold;
+            if (!string.Equals(
+                    evidenceKind,
+                    expectedEvidenceKind,
+                    StringComparison.Ordinal))
+            {
+                return SparseDecisionValidationResult.Invalid(
+                    messageId,
+                    "automod_evidence_mismatch",
+                    $"Decision '{messageId}': the AutoMod evidenceKind must match autoModReason.");
+            }
+        }
+
+        if (detectionOnly
+            && string.Equals(
+                rule.RuleCode,
+                ModerationRuleCodes.Spam,
+                StringComparison.Ordinal)
+            && !HasSupportedSpamEvidence(source, evidenceKind))
+        {
+            return SparseDecisionValidationResult.Invalid(
+                messageId,
+                "spam_signal_missing",
+                $"Decision '{messageId}': G_SPAM requires matching emote, repeated-phrase, symbol, or structured manual-phrase evidence from this message.");
+        }
+
         var sensitiveDataType = element.TryGetProperty(
                 "sensitiveDataType",
                 out var sensitiveElement)
@@ -1098,7 +1144,8 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
                 $"Decision '{messageId}': Emote-only spam requires at least {ModerationRuleCodes.MinimumEmoteSpamCount} Twitch emotes; the message contains {source.Message.TwitchEmoteCount}.");
         }
 
-        if (source.Message.IsTwitchEmoteOnly
+        if (!source.Message.IsAutoModHeld
+            && source.Message.IsTwitchEmoteOnly
             && source.Message.TwitchEmoteCount is > 0
                 and < ModerationRuleCodes.MinimumEmoteSpamCount)
         {
@@ -1253,10 +1300,9 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
                 $"Decision '{messageId}': reason must summarize the violation and must not repeat triggerPhrases.");
         }
 
-        var evidenceMissing = !string.Equals(
-                rule.RuleCode,
-                ModerationRuleCodes.PersonalData,
-                StringComparison.Ordinal)
+        var evidenceMissing = rule.RuleCode is not (
+                ModerationRuleCodes.PersonalData
+                or ModerationRuleCodes.AutoModHeld)
             && triggerResult.TriggerPhrases!.Count != 1;
 
         var confidenceElement = element.GetProperty("confidence");
@@ -1295,6 +1341,43 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
             },
             usedLocalFallback);
     }
+
+    private static bool HasSupportedSpamEvidence(
+        ModerationBatchMessage source,
+        string? evidenceKind)
+    {
+        var hasStructuredPhraseMatch = HasStructuredSpamPhraseMatch(source);
+
+        return evidenceKind switch
+        {
+            "emote_flood" => ModerationSpamSignalDetector.IsEmoteFlood(
+                source.Message.TwitchEmoteCount),
+            "text_flood" => hasStructuredPhraseMatch
+                || ModerationSpamSignalDetector.IsRepeatedPhraseFlood(
+                    source.Message.Text.LowerText),
+            "symbol_flood" => ModerationSpamSignalDetector.IsSymbolFlood(
+                source.Message.Text.LowerText),
+            _ => false,
+        };
+    }
+
+    private static bool HasAnySupportedSpamEvidence(
+        ModerationBatchMessage source) =>
+        ModerationSpamSignalDetector.HasDeterministicSignal(
+            source.Message.Text.LowerText,
+            source.Message.TwitchEmoteCount)
+        || HasStructuredSpamPhraseMatch(source);
+
+    private static bool HasStructuredSpamPhraseMatch(
+        ModerationBatchMessage source) =>
+        source.LocalMatches.Any(match => string.Equals(
+            match.RuleCode,
+            ModerationRuleCodes.Spam,
+            StringComparison.Ordinal))
+        || source.EffectivePhraseMatches.Any(match => string.Equals(
+            match.RuleCode,
+            ModerationRuleCodes.Spam,
+            StringComparison.Ordinal));
 
     private static SparseDecisionValidationResult ValidateV6Reply(
         JsonElement element,
@@ -1762,6 +1845,17 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
             return DecisionValidationResult.Invalid(
                 "backseat_context_insufficient",
                 $"Decision '{messageId}': Backseatgaming requires a concrete multi-word statement and cannot be inferred from a question or fragment.");
+        }
+        if (action != ModerationActionKind.None
+            && string.Equals(
+                ruleResult.Rule?.RuleCode,
+                ModerationRuleCodes.Spam,
+                StringComparison.Ordinal)
+            && !HasAnySupportedSpamEvidence(source))
+        {
+            return DecisionValidationResult.Invalid(
+                "spam_signal_missing",
+                $"Decision '{messageId}': G_SPAM requires deterministic or structured phrase evidence from this message.");
         }
         if (action != ModerationActionKind.None
             && string.Equals(

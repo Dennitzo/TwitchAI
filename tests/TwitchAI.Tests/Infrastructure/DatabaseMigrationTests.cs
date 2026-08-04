@@ -93,9 +93,177 @@ public sealed class DatabaseMigrationTests
         var journalMode = await ScalarAsync<string>(connection, "PRAGMA journal_mode;");
         var foreignKeys = await ScalarAsync<long>(connection, "PRAGMA foreign_keys;");
 
-        Assert.Equal(34, migrationCount);
+        Assert.Equal(36, migrationCount);
         Assert.Equal("wal", journalMode, ignoreCase: true);
         Assert.Equal(1, foreignKeys);
+    }
+
+    [Fact]
+    public async Task Version36_RepairsShippedSpamGuidanceMissedByVersion33()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(35);
+        const string missedShippedPrompt =
+            "Nur lokal belegtes Flooding: mindestens 20 Twitch-Emotes; Text mit mindestens acht Tokens, vier Wiederholungen und 70 Prozent Wiederholungsanteil; oder mindestens 20 Sonderzeichen bei 70 Prozent Symbolanteil. Belanglosigkeit, Off-topic und Chatstörung sind none.";
+
+        long revisionBefore;
+        long ruleRowVersionBefore;
+        await using (var connection = await database.OpenConnectionAsync())
+        {
+            await using var restoreMissedPrompt = connection.CreateCommand();
+            restoreMissedPrompt.CommandText =
+                """
+                UPDATE blacklist_rules
+                SET prompt_instruction = @prompt
+                WHERE rule_code = 'G_SPAM'
+                  AND enabled = 1
+                  AND archived_utc IS NULL;
+                """;
+            restoreMissedPrompt.Parameters.AddWithValue(
+                "@prompt",
+                missedShippedPrompt);
+            Assert.Equal(1, await restoreMissedPrompt.ExecuteNonQueryAsync());
+
+            revisionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT revision FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            ruleRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """);
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            ModerationRuleCodes.SpamPromptInstruction,
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT rule.prompt_instruction
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            revisionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            ruleRowVersionBefore + 1,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT rule.row_version
+                FROM blacklist_rules rule
+                INNER JOIN policy_sets policy ON policy.scope_id = rule.scope_id
+                WHERE policy.broadcaster_id = '*'
+                  AND policy.set_code = 'general'
+                  AND rule.rule_code = 'G_SPAM'
+                  AND rule.archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 36;"));
+    }
+
+    [Fact]
+    public async Task Version36_PreservesCurrentCustomizedSpamGuidance()
+    {
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(35);
+        const string customizedPrompt =
+            "Eigene aktuelle Spamregel mit bewusst angepasster Erkennung.";
+
+        long revisionBefore;
+        long ruleRowVersionBefore;
+        await using (var connection = await database.OpenConnectionAsync())
+        {
+            await using var customize = connection.CreateCommand();
+            customize.CommandText =
+                """
+                UPDATE blacklist_rules
+                SET prompt_instruction = @prompt
+                WHERE rule_code = 'G_SPAM'
+                  AND enabled = 1
+                  AND archived_utc IS NULL;
+                """;
+            customize.Parameters.AddWithValue("@prompt", customizedPrompt);
+            Assert.Equal(1, await customize.ExecuteNonQueryAsync());
+            revisionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT revision FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """);
+            ruleRowVersionBefore = await ScalarAsync<long>(
+                connection,
+                """
+                SELECT row_version FROM blacklist_rules
+                WHERE rule_code = 'G_SPAM'
+                  AND enabled = 1
+                  AND archived_utc IS NULL;
+                """);
+        }
+
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+        Assert.Equal(
+            customizedPrompt,
+            await ScalarAsync<string>(
+                verify,
+                """
+                SELECT prompt_instruction FROM blacklist_rules
+                WHERE rule_code = 'G_SPAM'
+                  AND enabled = 1
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            revisionBefore,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT revision FROM policy_sets
+                WHERE broadcaster_id = '*'
+                  AND set_code = 'general'
+                  AND archived_utc IS NULL;
+                """));
+        Assert.Equal(
+            ruleRowVersionBefore,
+            await ScalarAsync<long>(
+                verify,
+                """
+                SELECT row_version FROM blacklist_rules
+                WHERE rule_code = 'G_SPAM'
+                  AND enabled = 1
+                  AND archived_utc IS NULL;
+                """));
     }
 
     [Fact]
@@ -239,7 +407,7 @@ public sealed class DatabaseMigrationTests
                   AND name = 'trg_v26_local_blacklist_feedback';
                 """));
         Assert.Equal(
-            34L,
+            36L,
             await ScalarAsync<long>(
                 connection,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -384,7 +552,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            34L,
+            36L,
             await ScalarAsync<long>(
                 migrated,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -440,7 +608,7 @@ public sealed class DatabaseMigrationTests
         Assert.Equal(["509658|1", "509672|1"], exclusionCounts);
         Assert.Empty(foreignKeyViolations);
         Assert.Equal(
-            34L,
+            36L,
             await ScalarAsync<long>(
                 connection,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -522,7 +690,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            34L,
+            36L,
             await ScalarAsync<long>(
                 verify,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -630,7 +798,7 @@ public sealed class DatabaseMigrationTests
                   AND archived_utc IS NULL;
                 """));
         Assert.Equal(
-            34L,
+            36L,
             await ScalarAsync<long>(
                 verify,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -696,7 +864,7 @@ public sealed class DatabaseMigrationTests
                 connection,
                 "SELECT COUNT(*) FROM schema_migrations WHERE version = 19;"));
         Assert.Equal(
-            34L,
+            36L,
             await ScalarAsync<long>(
                 connection,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -783,7 +951,7 @@ public sealed class DatabaseMigrationTests
                 );
                 """));
         Assert.Equal(
-            34L,
+            36L,
             await ScalarAsync<long>(
                 verify,
                 "SELECT MAX(version) FROM schema_migrations;"));
@@ -2367,7 +2535,7 @@ public sealed class DatabaseMigrationTests
             ORDER BY name;
             """);
 
-        Assert.Equal(34, migrationVersion);
+        Assert.Equal(36, migrationVersion);
         Assert.Equal(
             ["chat_reply_proposals", "chat_reply_templates"],
             tables);
@@ -2621,7 +2789,7 @@ public sealed class DatabaseMigrationTests
                 WHERE change_reason = 'historical reason fixture';
                 """));
         Assert.Equal(
-            34L,
+            36L,
             await ScalarAsync<long>(
                 verify,
                 "SELECT MAX(version) FROM schema_migrations;"));

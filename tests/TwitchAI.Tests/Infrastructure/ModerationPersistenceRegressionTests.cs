@@ -869,6 +869,79 @@ public sealed class ModerationPersistenceRegressionTests
             await ReadPhraseFeedbackCountAsync(database));
     }
 
+    [Fact]
+    public async Task AllowingAutoModFallbackCreatesRetrievableAllowLearning()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        const string channelId = "automod-allow-channel";
+        const string originalText = "Friendly blocked phrase";
+        var fixture = await CreateFixtureAsync(
+            database,
+            channelId,
+            originalText);
+        var heldMessage = fixture.Message with
+        {
+            IsAutoModHeld = true,
+            AutoModReason = "blocked_term",
+        };
+        var caseId = await fixture.Repository.AddAsync(
+            heldMessage,
+            new ValidatedModerationDecision(
+                "m1",
+                ModerationActionKind.Timeout,
+                ModerationActionRules.DefaultTimeoutSeconds,
+                PolicySetCode.General,
+                "Twitch AutoMod hielt einen gesperrten Ausdruck zurück.",
+                [],
+                Confidence: 0.9,
+                RuleCode: ModerationRuleCodes.AutoModHeld)
+            {
+                EvidenceKind = ModerationEvidenceKinds.BlockedTermHold,
+            },
+            fixture.Policy.RevisionFingerprint);
+        var learningRevision = new LearningContextRevision();
+        var revisionBefore = learningRevision.Current;
+        var service = new SqliteModerationReviewFeedbackService(
+            fixture.Repository,
+            database.ConnectionFactory,
+            fixture.InfrastructureNormalizer,
+            learningContextRevision: learningRevision);
+
+        var result = await service.DiscardAsync(
+            caseId,
+            expectedRowVersion: 1,
+            discardReason: "Als erlaubt markiert",
+            feedbackPolicySet: PolicySetCode.General,
+            feedbackRuleCode: ModerationRuleCodes.AutoModHeld,
+            feedbackTriggerPhrases: [],
+            learnAsAllowed: true);
+
+        Assert.Equal(ModerationExecutionOutcome.Succeeded, result.Outcome);
+        Assert.True(result.LearningAccepted);
+        Assert.Equal(revisionBefore + 1, learningRevision.Current);
+
+        var retrievalPolicy = AutoModModerationPolicy.EnsureFallbackRule(
+            fixture.Policy);
+        var examples = await new SqliteRetrievalExampleStore(
+                database.ConnectionFactory)
+            .GetRelevantAsync(
+                channelId,
+                fixture.Context.CategoryId,
+                retrievalPolicy,
+                [originalText.ToLowerInvariant()]);
+        var allowed = Assert.Single(examples, example =>
+            !example.IsPositive
+            && example.Action == ModerationActionKind.None
+            && example.RuleCode == ModerationRuleCodes.AutoModHeld);
+        Assert.Equal(originalText.ToLowerInvariant(), allowed.LowerText);
+        Assert.True(AllowLearningPhraseMatcher.TryMatch(
+            originalText.ToLowerInvariant(),
+            allowed,
+            out var effectiveMatch));
+        Assert.True(effectiveMatch.IsExact);
+        Assert.Equal(ModerationRuleCodes.AutoModHeld, effectiveMatch.RuleCode);
+    }
+
     private static async Task<Fixture> CreateFixtureAsync(
         TestDatabase database,
         string channelId,

@@ -378,7 +378,7 @@
                           MinWidth="0"
                           Padding="8"
                           Tag="{x:Bind}"
-                          ToolTipService.ToolTip="Als erlaubt lernen und Vorschlag schließen"
+                          ToolTipService.ToolTip="Als erlaubt lernen und Vorschlag schließen; ein aktueller AutoMod-Hold wird nicht bei Twitch freigegeben"
                           Visibility="{x:Bind AllowActionVisibility, Mode=OneWay}"
                           Style="{StaticResource SubtleButtonStyle}" />
                         <Button

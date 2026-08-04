@@ -247,6 +247,10 @@ public sealed record ValidatedModerationDecision(
 
 public static class ModerationEvidenceKinds
 {
+    public const string AutoModHold = "automod_hold";
+
+    public const string BlockedTermHold = "blocked_term_hold";
+
     private static readonly Dictionary<string, IReadOnlySet<string>> Allowed =
         new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
         {
@@ -263,6 +267,7 @@ public static class ModerationEvidenceKinds
             [ModerationRuleCodes.Backseatgaming] = Set("instruction", "solution", "spoiler", "hidden_danger"),
             [ModerationRuleCodes.SelfPromotion] = Set("self_channel_promotion", "automated_self_promotion", "malicious_self_promotion"),
             [ModerationRuleCodes.BotScam] = Set("bot_advertising", "scam_service", "phishing"),
+            [ModerationRuleCodes.AutoModHeld] = Set(AutoModHold, BlockedTermHold),
         };
 
     public static IReadOnlyList<string> ForRule(string? ruleCode) =>

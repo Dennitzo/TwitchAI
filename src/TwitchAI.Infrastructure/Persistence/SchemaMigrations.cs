@@ -3720,5 +3720,49 @@ internal static class SchemaMigrations
             WHERE final_decision = 'confirmed_violation';
             """,
             RequiresBackup: true),
+        new(
+            36,
+            "Canonicalize shipped spam guidance missed by the ten-emote migration",
+            """
+            CREATE TEMP TABLE twitchai_v36_affected_policy_scopes (
+                scope_id INTEGER PRIMARY KEY
+            ) STRICT;
+
+            INSERT INTO twitchai_v36_affected_policy_scopes(scope_id)
+            SELECT DISTINCT scope_id
+            FROM blacklist_rules
+            WHERE rule_code = 'G_SPAM'
+              AND enabled = 1
+              AND archived_utc IS NULL
+              AND prompt_instruction IN (
+                  'Nur lokal belegtes Flooding: mindestens 20 Twitch-Emotes; Text mit mindestens acht Tokens, vier Wiederholungen und 70 Prozent Wiederholungsanteil; oder mindestens 20 Sonderzeichen bei 70 Prozent Symbolanteil. Belanglosigkeit, Off-topic und Chatstörung sind none.',
+                  'G_SPAM nur bei lokal belegtem Flooding: mindestens 20 Emotes in einer Nachricht, mindestens vier Wiederholungen bei mindestens acht Tokens und 70 Prozent Wiederholungsanteil oder mindestens 20 Sonderzeichen bei 70 Prozent Symbolanteil. Ein bis neunzehn Emotes, normale Wiederholungen, Satzzeichen, Reaktionen, belanglose und themenfremde Kommentare sind none. Nachrichten verschiedener User niemals zusammenzählen.'
+              );
+
+            UPDATE blacklist_rules
+            SET prompt_instruction = 'G_SPAM nur bei lokal belegtem Flooding: mindestens 10 Emotes in einer Nachricht; eine direkt wiederholte Wortfolge oder kurze Textphrase mindestens fünfmal in derselben Nachricht; oder mindestens 20 Sonderzeichen bei 70 Prozent Symbolanteil. Ein bis neun Emotes, normale Wiederholungen, Satzzeichen, Reaktionen, belanglose und themenfremde Kommentare sind none. Nachrichten verschiedener User niemals zusammenzählen.',
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE rule_code = 'G_SPAM'
+              AND enabled = 1
+              AND archived_utc IS NULL
+              AND prompt_instruction IN (
+                  'Nur lokal belegtes Flooding: mindestens 20 Twitch-Emotes; Text mit mindestens acht Tokens, vier Wiederholungen und 70 Prozent Wiederholungsanteil; oder mindestens 20 Sonderzeichen bei 70 Prozent Symbolanteil. Belanglosigkeit, Off-topic und Chatstörung sind none.',
+                  'G_SPAM nur bei lokal belegtem Flooding: mindestens 20 Emotes in einer Nachricht, mindestens vier Wiederholungen bei mindestens acht Tokens und 70 Prozent Wiederholungsanteil oder mindestens 20 Sonderzeichen bei 70 Prozent Symbolanteil. Ein bis neunzehn Emotes, normale Wiederholungen, Satzzeichen, Reaktionen, belanglose und themenfremde Kommentare sind none. Nachrichten verschiedener User niemals zusammenzählen.'
+              )
+              AND scope_id IN (
+                  SELECT scope_id FROM twitchai_v36_affected_policy_scopes
+              );
+
+            UPDATE policy_sets
+            SET revision = revision + 1,
+                row_version = row_version + 1,
+                updated_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            WHERE scope_id IN (
+                SELECT scope_id FROM twitchai_v36_affected_policy_scopes
+            );
+
+            DROP TABLE twitchai_v36_affected_policy_scopes;
+            """),
     ];
 }

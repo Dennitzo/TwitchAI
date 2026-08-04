@@ -53,6 +53,268 @@ public sealed class ModerationEnvelopeValidatorTests
     }
 
     [Fact]
+    public void ValidateLive_AutoModHeldMessageAcceptsNoActionWithEffectiveAllowMatch()
+    {
+        var baseBatch = AutoModBatch("friendly blocked phrase", "blocked_term");
+        var source = baseBatch.Messages[0];
+        var batch = baseBatch with
+        {
+            Messages =
+            [
+                source with
+                {
+                    EffectiveAllowMatches =
+                    [
+                        new EffectiveAllowMatch(
+                            "friendly blocked phrase",
+                            1d,
+                            IsExact: true,
+                            Source: "TwitchModeration",
+                            MatchedPhrase: "friendly blocked phrase",
+                            RuleCode: ModerationRuleCodes.AutoModHeld,
+                            PolicySet: PolicySetCode.General),
+                    ],
+                },
+            ],
+        };
+        var response = V7Response(
+            batch,
+            new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["m1"] = null,
+            });
+
+        var result = new ModerationEnvelopeValidator().ValidateLive(
+            response,
+            batch);
+
+        Assert.True(result.IsValid);
+        Assert.Equal(
+            ModerationActionKind.None,
+            Assert.Single(result.ValidDecisions).Action);
+    }
+
+    [Fact]
+    public void ValidateLive_AutoModBlockedTermCannotBypassSpamEvidence()
+    {
+        var batch = AutoModBatch(
+            "Ich krieg momentan nicht mal 15 am Stück hin, Respekt",
+            "blocked_term");
+        var response = V7Response(
+            batch,
+            new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["m1"] = V11Moderation(
+                    "timeout",
+                    120,
+                    ModerationRuleCodes.Spam,
+                    "emote_flood",
+                    "Unbelegtes Flooding im Chat.",
+                    [batch.Messages[0].Message.Text.LowerText],
+                    0.98),
+            });
+
+        var result = new ModerationEnvelopeValidator().ValidateLive(
+            response,
+            batch);
+
+        Assert.False(result.IsValid);
+        Assert.Empty(result.ValidDecisions);
+        Assert.Contains(
+            result.Issues,
+            issue => issue.Code == "spam_signal_missing");
+        Assert.Equal(["m1"], result.RepairMessageIds);
+    }
+
+    [Fact]
+    public void ValidateLive_AcceptsDedicatedBlockedTermAutoModFallback()
+    {
+        const string text = "dieser begriff ist auf der sperrliste";
+        var batch = AutoModBatch(text, "blocked_term");
+        var response = V7Response(
+            batch,
+            new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["m1"] = V11Moderation(
+                    "timeout",
+                    ModerationActionRules.DefaultTimeoutSeconds,
+                    ModerationRuleCodes.AutoModHeld,
+                    ModerationEvidenceKinds.BlockedTermHold,
+                    "Twitch AutoMod hielt einen kanalweit gesperrten Ausdruck zurück.",
+                    [],
+                    0.98),
+            });
+
+        var result = new ModerationEnvelopeValidator().ValidateLive(
+            response,
+            batch);
+
+        Assert.True(result.IsValid);
+        var decision = Assert.Single(result.ValidDecisions);
+        Assert.Equal(ModerationRuleCodes.AutoModHeld, decision.RuleCode);
+        Assert.Equal(ModerationActionKind.Timeout, decision.Action);
+        Assert.Equal(
+            ModerationActionRules.DefaultTimeoutSeconds,
+            decision.TimeoutSeconds);
+        Assert.Empty(decision.TriggerPhrases);
+    }
+
+    [Fact]
+    public void ValidateLive_RejectsAutoModFallbackForOrdinaryMessage()
+    {
+        var baseBatch = SpamBatch("ordinary chat message");
+        var batch = baseBatch with
+        {
+            Context = baseBatch.Context with
+            {
+                EffectivePolicy = AutoModModerationPolicy.EnsureFallbackRule(
+                    baseBatch.Context.EffectivePolicy),
+            },
+        };
+        var response = V7Response(
+            batch,
+            new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["m1"] = V11Moderation(
+                    "timeout",
+                    ModerationActionRules.DefaultTimeoutSeconds,
+                    ModerationRuleCodes.AutoModHeld,
+                    ModerationEvidenceKinds.AutoModHold,
+                    "Twitch AutoMod hielt einen problematischen Inhalt zurück.",
+                    ["ordinary chat message"],
+                    0.95),
+            });
+
+        var result = new ModerationEnvelopeValidator().ValidateLive(
+            response,
+            batch);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(
+            result.Issues,
+            issue => issue.Code == "automod_rule_without_hold");
+    }
+
+    [Fact]
+    public void ValidateLive_RejectsCopiedSpamDecisionForEveryOrdinaryBatchMessage()
+    {
+        string[] ordinaryMessages =
+        [
+            "Jaaa <3",
+            "Wäre ich dabei",
+            "tschüssi @chat, @mods und shlo",
+            "uhh geilo",
+            "ok wo anmeldung",
+            "und 1 Shloschlik",
+            "Geil Bin dabei KEKW",
+        ];
+        var batch = SpamBatch(ordinaryMessages);
+        var decisions = batch.Messages.ToDictionary(
+            message => message.TemporaryMessageId,
+            message => (object?)V11Moderation(
+                "delete",
+                null,
+                ModerationRuleCodes.Spam,
+                "text_flood",
+                "Unbelegtes Flooding im Chat.",
+                [message.Message.Text.LowerText],
+                0.8),
+            StringComparer.Ordinal);
+
+        var result = new ModerationEnvelopeValidator().ValidateLive(
+            V7Response(batch, decisions),
+            batch);
+
+        Assert.False(result.IsValid);
+        Assert.Empty(result.ValidDecisions);
+        Assert.Equal(
+            batch.Messages.Select(message => message.TemporaryMessageId),
+            result.RepairMessageIds);
+        Assert.Equal(ordinaryMessages.Length, result.Issues.Count);
+        Assert.All(
+            result.Issues,
+            issue => Assert.Equal("spam_signal_missing", issue.Code));
+    }
+
+    [Fact]
+    public void ValidateLive_AcceptsRepeatedPhraseSpamForItsOwnMessageOnly()
+    {
+        const string repeated =
+            "i cant stop laughing megalul i cant stop laughing megalul "
+            + "i cant stop laughing megalul i cant stop laughing megalul "
+            + "i cant stop laughing megalul";
+        var batch = SpamBatch(repeated);
+        var response = V7Response(
+            batch,
+            new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["m1"] = V11Moderation(
+                    "delete",
+                    null,
+                    ModerationRuleCodes.Spam,
+                    "text_flood",
+                    "Mehrfach wiederholte Wortfolge im Chat.",
+                    ["i cant stop laughing megalul"],
+                    0.97),
+            });
+
+        var result = new ModerationEnvelopeValidator().ValidateLive(
+            response,
+            batch);
+
+        Assert.True(result.IsValid);
+        var decision = Assert.Single(result.ValidDecisions);
+        Assert.Equal(ModerationRuleCodes.Spam, decision.RuleCode);
+        Assert.Empty(result.RepairMessageIds);
+    }
+
+    [Fact]
+    public void ValidateLive_AcceptsStructuredManualSpamPhraseAsTextEvidence()
+    {
+        var baseBatch = SpamBatch("limited time offer now");
+        var source = baseBatch.Messages[0];
+        var batch = baseBatch with
+        {
+            Messages =
+            [
+                source with
+                {
+                    LocalMatches =
+                    [
+                        new BlacklistMatch(
+                            17,
+                            ModerationRuleCodes.Spam,
+                            PolicySetCode.General,
+                            "limited time offer"),
+                    ],
+                },
+            ],
+        };
+        var response = V7Response(
+            batch,
+            new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["m1"] = V11Moderation(
+                    "delete",
+                    null,
+                    ModerationRuleCodes.Spam,
+                    "text_flood",
+                    "Wiederholtes Werbemuster im Chat.",
+                    ["limited time offer"],
+                    0.95),
+            });
+
+        var result = new ModerationEnvelopeValidator().ValidateLive(
+            response,
+            batch);
+
+        Assert.True(result.IsValid);
+        Assert.Equal(
+            ModerationRuleCodes.Spam,
+            Assert.Single(result.ValidDecisions).RuleCode);
+    }
+
+    [Fact]
     public void Validate_ValidOneToOneEnvelopeReturnsTypedDecisions()
     {
         var batch = Batch(
@@ -1778,6 +2040,32 @@ public sealed class ModerationEnvelopeValidatorTests
         return result;
     }
 
+    private static Dictionary<string, object?> V11Moderation(
+        string action,
+        int? timeoutSeconds,
+        string ruleCode,
+        string evidenceKind,
+        string reason,
+        string[] triggerPhrases,
+        double confidence)
+    {
+        var result = new Dictionary<string, object?>
+        {
+            ["action"] = action,
+            ["ruleCode"] = ruleCode,
+            ["evidenceKind"] = evidenceKind,
+            ["reason"] = reason,
+            ["triggerPhrases"] = triggerPhrases,
+            ["confidence"] = confidence,
+        };
+        if (timeoutSeconds is not null)
+        {
+            result["timeoutSeconds"] = timeoutSeconds;
+        }
+
+        return result;
+    }
+
     private static Dictionary<string, object?> V6Moderation(
         string messageId,
         string action,
@@ -2070,6 +2358,62 @@ public sealed class ModerationEnvelopeValidatorTests
                 batch.Context.Channel,
                 policy),
         };
+    }
+
+    private static ModerationBatch AutoModBatch(
+        string text,
+        string autoModReason)
+    {
+        var batch = SpamBatch(text);
+        return batch with
+        {
+            Context = batch.Context with
+            {
+                EffectivePolicy = AutoModModerationPolicy.EnsureFallbackRule(
+                    batch.Context.EffectivePolicy),
+            },
+            Messages = batch.Messages
+                .Select(message => message with
+                {
+                    Message = message.Message with
+                    {
+                        IsAutoModHeld = true,
+                        AutoModReason = autoModReason,
+                    },
+                })
+                .ToArray(),
+        };
+    }
+
+    private static ModerationBatch SpamBatch(string[] messages)
+    {
+        ArgumentOutOfRangeException.ThrowIfZero(messages.Length);
+        var template = SpamBatch(messages[0]);
+        var channel = template.Context.Channel;
+        var batchMessages = messages
+            .Select((text, index) =>
+            {
+                var sequence = index + 1;
+                var identity = ChatMessageIdentityV1.Create(
+                    $"event-spam-{sequence}",
+                    $"twitch-spam-{sequence}",
+                    channel.ChannelId,
+                    $"user-spam-{sequence}",
+                    $"user-spam-{sequence}",
+                    $"User Spam {sequence}",
+                    text,
+                    template.OpenedAtUtc.AddMilliseconds(sequence));
+                return new ModerationBatchMessage(
+                    $"m{sequence}",
+                    new ChatMessageSnapshot(
+                        identity,
+                        new ChatTextNormalizer().Process(text),
+                        channel,
+                        sequence),
+                    []);
+            })
+            .ToArray();
+        return template with { Messages = batchMessages };
     }
 
     private static ModerationBatch PersonalAttackBatch(string original) =>

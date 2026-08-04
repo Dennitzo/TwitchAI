@@ -107,6 +107,9 @@ public static class ModerationActionRules
                 || action == ModerationActionKind.Timeout
                     && timeoutSeconds == SevereTimeoutSeconds,
             ModerationRuleCodes.BotScam => action == ModerationActionKind.Ban,
+            ModerationRuleCodes.AutoModHeld =>
+                action == ModerationActionKind.Timeout
+                && timeoutSeconds == DefaultTimeoutSeconds,
             _ => false,
         };
     }

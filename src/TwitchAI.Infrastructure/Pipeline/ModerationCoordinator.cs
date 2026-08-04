@@ -998,8 +998,17 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 batch,
                 cancellationToken)
             .ConfigureAwait(false);
+        var analysisPolicy = batch.Messages.Any(message =>
+                message.Message.IsAutoModHeld)
+            ? AutoModModerationPolicy.EnsureFallbackRule(
+                batch.Context.EffectivePolicy)
+            : batch.Context.EffectivePolicy;
         var analysisBatch = batch with
         {
+            Context = batch.Context with
+            {
+                EffectivePolicy = analysisPolicy,
+            },
             ReplyTemplates = replyTemplateMap
                 .Select(item => new ChatReplyTemplatePrompt(
                     item.Key,
@@ -1430,7 +1439,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     caseRowVersion: persistedCase?.RowVersion ?? 1,
                     localMatchCodes: localMatchCodes,
                     aiLatencyMilliseconds: aiLatencyMilliseconds,
-                    activeRules: batch.Context.EffectivePolicy.ActiveRules));
+                    activeRules: analysisBatch.Context.EffectivePolicy.ActiveRules));
         }
     }
 

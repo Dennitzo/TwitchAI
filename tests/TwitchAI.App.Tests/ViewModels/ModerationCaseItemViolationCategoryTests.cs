@@ -121,7 +121,7 @@ public sealed class ModerationCaseItemViolationCategoryTests
     }
 
     [Fact]
-    public void AutoModHeldCase_AllowsOnlyTimeoutOrBanReviewActions()
+    public void AutoModHeldCase_OffersAllowAndOnlyTimeoutOrBanExecution()
     {
         var item = CreateCase(isAutoModHeld: true);
         item.RuleCode = ModerationRuleCodes.Spam;
@@ -137,10 +137,10 @@ public sealed class ModerationCaseItemViolationCategoryTests
             applyFallbackDefaults: true);
 
         Assert.Equal("timeout", item.Action);
-        Assert.False(item.CanAllow);
+        Assert.True(item.CanAllow);
         Assert.True(item.CanExecute);
         Assert.Equal(
-            Microsoft.UI.Xaml.Visibility.Collapsed,
+            Microsoft.UI.Xaml.Visibility.Visible,
             item.AllowActionVisibility);
         Assert.Equal(
             Microsoft.UI.Xaml.Visibility.Collapsed,
@@ -148,6 +148,7 @@ public sealed class ModerationCaseItemViolationCategoryTests
 
         item.Action = "delete";
         Assert.False(item.CanExecute);
+        Assert.True(item.CanAllow);
     }
 
     [Fact]

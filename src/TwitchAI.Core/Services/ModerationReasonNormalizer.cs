@@ -37,6 +37,8 @@ public static partial class ModerationReasonNormalizer
             "Veröffentlichung persönlicher Daten.",
             "Aufforderung zu Selbstverletzung.",
             "Wiederholter Spam.",
+            "Nachricht wurde von AutoMod als Spam erkannt.",
+            "Text ohne Kontext.",
             "Betrugs- oder Phishingversuch.",
             "Gezielte Störung des Chats.",
             "Unaufgeforderte Werbung oder Eigenwerbung.",
