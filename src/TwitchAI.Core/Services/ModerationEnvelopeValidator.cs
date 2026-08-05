@@ -363,19 +363,6 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
 
                 if (property.Value.ValueKind == JsonValueKind.Null)
                 {
-                    if (sourceById[messageId].Message.IsAutoModHeld
-                        && sourceById[messageId].EffectiveAllowMatches.Count == 0)
-                    {
-                        MarkMessageInvalid(
-                            messageId,
-                            "automod_action_required",
-                            $"Decision '{messageId}': an AutoMod-held message without an effective allow match requires timeout or ban.",
-                            invalidIds,
-                            validatedById,
-                            issues);
-                        continue;
-                    }
-
                     if (RepeatedPhraseSpamDetector.IsSpam(
                             sourceById[messageId].Message.Text.LowerText))
                     {
@@ -683,19 +670,6 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
                         messageId,
                         "message_id_duplicate",
                         $"Temporary message ID '{messageId}' occurs more than once.",
-                        invalidIds,
-                        validatedById,
-                        issues);
-                    continue;
-                }
-
-                if (sourceById[messageId].Message.IsAutoModHeld
-                    && sourceById[messageId].EffectiveAllowMatches.Count == 0)
-                {
-                    MarkMessageInvalid(
-                        messageId,
-                        "automod_action_required",
-                        $"Decision '{messageId}': an AutoMod-held message without an effective allow match requires timeout or ban.",
                         invalidIds,
                         validatedById,
                         issues);
@@ -1071,37 +1045,6 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
                 $"Decision '{messageId}' requires a rule-compatible evidenceKind.");
         }
 
-        if (string.Equals(
-                rule.RuleCode,
-                ModerationRuleCodes.AutoModHeld,
-                StringComparison.Ordinal))
-        {
-            if (!source.Message.IsAutoModHeld)
-            {
-                return SparseDecisionValidationResult.Invalid(
-                    messageId,
-                    "automod_rule_without_hold",
-                    $"Decision '{messageId}': TWITCH_AUTOMOD_HELD requires an actual AutoMod hold for this message.");
-            }
-
-            var expectedEvidenceKind = string.Equals(
-                    source.Message.AutoModReason,
-                    "blocked_term",
-                    StringComparison.OrdinalIgnoreCase)
-                ? ModerationEvidenceKinds.BlockedTermHold
-                : ModerationEvidenceKinds.AutoModHold;
-            if (!string.Equals(
-                    evidenceKind,
-                    expectedEvidenceKind,
-                    StringComparison.Ordinal))
-            {
-                return SparseDecisionValidationResult.Invalid(
-                    messageId,
-                    "automod_evidence_mismatch",
-                    $"Decision '{messageId}': the AutoMod evidenceKind must match autoModReason.");
-            }
-        }
-
         if (detectionOnly
             && string.Equals(
                 rule.RuleCode,
@@ -1144,8 +1087,7 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
                 $"Decision '{messageId}': Emote-only spam requires at least {ModerationRuleCodes.MinimumEmoteSpamCount} Twitch emotes; the message contains {source.Message.TwitchEmoteCount}.");
         }
 
-        if (!source.Message.IsAutoModHeld
-            && source.Message.IsTwitchEmoteOnly
+        if (source.Message.IsTwitchEmoteOnly
             && source.Message.TwitchEmoteCount is > 0
                 and < ModerationRuleCodes.MinimumEmoteSpamCount)
         {
@@ -1248,6 +1190,7 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
                     candidateViolationReason,
                     action,
                     rule,
+                    source.Message.Text.LowerText,
                     triggerResult.TriggerPhrases,
                     out var reasonOnlyComposition,
                     out var reasonOnlyError))
@@ -1283,6 +1226,7 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
         else if (!ModerationReasonNormalizer.TryNormalizeContextualAiReason(
                      candidateViolationReason,
                      rule,
+                     source.Message.Text.LowerText,
                      out reason))
         {
             return SparseDecisionValidationResult.Invalid(
@@ -1300,9 +1244,7 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
                 $"Decision '{messageId}': reason must summarize the violation and must not repeat triggerPhrases.");
         }
 
-        var evidenceMissing = rule.RuleCode is not (
-                ModerationRuleCodes.PersonalData
-                or ModerationRuleCodes.AutoModHeld)
+        var evidenceMissing = rule.RuleCode is not ModerationRuleCodes.PersonalData
             && triggerResult.TriggerPhrases!.Count != 1;
 
         var confidenceElement = element.GetProperty("confidence");
@@ -1906,6 +1848,7 @@ public sealed partial class ModerationEnvelopeValidator : IModerationEnvelopeVal
             if (!ModerationReasonNormalizer.TryNormalizeContextualAiReason(
                     candidate,
                     ruleResult.Rule,
+                    source.Message.Text.LowerText,
                     out reason))
             {
                 return DecisionValidationResult.Invalid(

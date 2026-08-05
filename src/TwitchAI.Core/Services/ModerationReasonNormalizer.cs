@@ -8,15 +8,16 @@ public static partial class ModerationReasonNormalizer
     public const int MaximumLength = 120;
 
     public const string ContextualAiReasonInstruction =
-        "Write a new, message-specific German violationReason for every timeout or ban, up to 72 characters. "
+        "Write one new message-specific reason in natural German for every timeout or ban (max 72 characters); English or another language is invalid. "
         + "Prefer a concise neutral noun phrase that directly names the violation, for example 'Unaufgefordertes Backseatgaming an den Streamer.'. "
         + "Never start with 'Die Nachricht' or refer to the message as the acting subject. If you use a complete sentence, use neutral third-person past tense. "
-        + "Unless the target is explicitly identified with an @username, never assume whether a user or the streamer was targeted; use 'eines Nutzers oder des Streamers'. "
+        + "Never include @mentions or a username tagged in the current message, with or without @; use 'eines Nutzers oder des Streamers' instead. "
         + "Never address the chatter with du, dich, dir, dein, ihr, euch, or euer. "
-        + "State the concrete act or target so the reason is understandable without the category title. Summarize the wording semantically. "
-        + "Never quote, copy, repeat, or list triggerPhrases or any message excerpt in the reason, with or without quotation marks. Keep evidence text only in triggerPhrases. "
+        + "Semantically summarize the concrete act so the reason works without the category title. "
+        + "Never quote or copy triggerPhrases or any message excerpt; keep evidence only in triggerPhrases. "
         + "Never copy or paraphrase a generic rule description. For example, do not write 'Beleidigung, Belästigung oder unangebrachte persönliche Annäherung an einen Nutzer oder Streamer.'. "
-        + "Do not mention a rule code, timeout, ban, deletion, confidence, recommendation, or uncertainty.";
+        + "Never include a machine rule code or category ID such as G_SEXUAL_CONTENT. "
+        + "Do not mention a timeout, ban, deletion, confidence, recommendation, or uncertainty.";
 
     private static readonly HashSet<string> GenericAiReasons =
         new(StringComparer.OrdinalIgnoreCase)
@@ -93,6 +94,19 @@ public static partial class ModerationReasonNormalizer
         ModerationRuleDefinition? rule,
         out string normalizedReason)
     {
+        return TryNormalizeContextualAiReason(
+            reason,
+            rule,
+            sourceText: null,
+            out normalizedReason);
+    }
+
+    public static bool TryNormalizeContextualAiReason(
+        string? reason,
+        ModerationRuleDefinition? rule,
+        string? sourceText,
+        out string normalizedReason)
+    {
         normalizedReason = string.Empty;
         if (string.IsNullOrWhiteSpace(reason)
             || reason.Any(char.IsControl))
@@ -102,7 +116,10 @@ public static partial class ModerationReasonNormalizer
 
         var value = CollapseWhitespace().Replace(reason.Trim(), " ");
         if (value.Length > MaximumLength
-            || LooksEnglish(value.ToLowerInvariant())
+            || !LooksGermanReason(value)
+            || value.Contains('@', StringComparison.Ordinal)
+            || ContainsMentionedUsername(value, sourceText)
+            || MachineRuleCode().IsMatch(value)
             || UsesDirectSecondPerson(value)
             || StartsWithMessageReference(value)
             || UsesPresentTense(value)
@@ -129,6 +146,31 @@ public static partial class ModerationReasonNormalizer
 
         normalizedReason = value;
         return true;
+    }
+
+    private static bool ContainsMentionedUsername(
+        string reason,
+        string? sourceText)
+    {
+        if (string.IsNullOrWhiteSpace(sourceText))
+        {
+            return false;
+        }
+
+        foreach (Match match in Mention().Matches(sourceText))
+        {
+            var username = match.Groups[1].Value;
+            if (username.Length > 0
+                && Regex.IsMatch(
+                    reason,
+                    $@"(?<![\p{{L}}\p{{N}}_]){Regex.Escape(username)}(?![\p{{L}}\p{{N}}_])",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public static bool ContainsTriggerPhraseExcerpt(
@@ -257,7 +299,10 @@ public static partial class ModerationReasonNormalizer
         }
 
         var lower = value.ToLowerInvariant();
-        if (LooksEnglish(lower) && !string.IsNullOrWhiteSpace(ruleCode))
+        if ((!LooksGermanReason(value)
+                || value.Contains('@', StringComparison.Ordinal)
+                || MachineRuleCode().IsMatch(value))
+            && !string.IsNullOrWhiteSpace(ruleCode))
         {
             return Fallback(ruleCode, policySet, configuredPublicReason);
         }
@@ -286,7 +331,9 @@ public static partial class ModerationReasonNormalizer
 
         // English model output is replaced instead of being displayed or sent to
         // Twitch. German output keeps only its first, violation-focused sentence.
-        if (LooksEnglish(lower))
+        if (!LooksGermanReason(value)
+            || value.Contains('@', StringComparison.Ordinal)
+            || MachineRuleCode().IsMatch(value))
         {
             return Fallback(ruleCode, policySet, configuredPublicReason);
         }
@@ -305,6 +352,12 @@ public static partial class ModerationReasonNormalizer
 
         return value;
     }
+
+    private static bool LooksGermanReason(string value) =>
+        !LooksEnglish(value.ToLowerInvariant())
+        && !StrongEnglishReasonWord().IsMatch(value)
+        && (GermanLanguageSignal().IsMatch(value)
+            || GermanModerationWord().IsMatch(value));
 
     private static bool LooksEnglish(string value) =>
         EnglishWords().Count(value) >= 2
@@ -371,7 +424,9 @@ public static partial class ModerationReasonNormalizer
         var value = IncludeStreamerAsPossibleTarget(
             CollapseWhitespace().Replace(reason.Trim(), " "));
         if (value.Length is 0 or > MaximumLength
-            || LooksEnglish(value.ToLowerInvariant()))
+            || !LooksGermanReason(value)
+            || value.Contains('@', StringComparison.Ordinal)
+            || MachineRuleCode().IsMatch(value))
         {
             return null;
         }
@@ -384,11 +439,6 @@ public static partial class ModerationReasonNormalizer
 
     private static string IncludeStreamerAsPossibleTarget(string value)
     {
-        if (value.Contains('@', StringComparison.Ordinal))
-        {
-            return value;
-        }
-
         value = StreamerPossessiveTarget().Replace(
             value,
             "eines Nutzers oder des Streamers");
@@ -404,6 +454,29 @@ public static partial class ModerationReasonNormalizer
 
     [GeneratedRegex(@"\s+")]
     private static partial Regex CollapseWhitespace();
+
+    [GeneratedRegex(@"@([\p{L}\p{N}_]{1,25})")]
+    private static partial Regex Mention();
+
+    [GeneratedRegex(
+        @"(?<![\p{L}\p{N}_])(?:G|B|LOCAL|TWITCH)_[A-Z0-9_]+(?![\p{L}\p{N}_])",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex MachineRuleCode();
+
+    [GeneratedRegex(
+        @"\b(the|this|that|with|against|under|should|user|message|policy|disallowed|removed|remove|delete|harassment|profanity|directed|instruction|directive|order|violation|abuse|targeted|conduct|threat|racist|sexist|severe|strong|insult|extreme|banned|bannable|advertising|begging|warning)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex StrongEnglishReasonWord();
+
+    [GeneratedRegex(
+        @"[äöüß]|\b(der|die|das|den|dem|des|ein|eine|einer|eines|einem|einen|und|oder|an|auf|aus|bei|beim|durch|für|gegen|im|in|mit|nach|ohne|über|unter|von|vor|wegen|zu|zum|zur|als|wurde|wurden|hat|haben|nicht|kein|keine|keiner|keines)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex GermanLanguageSignal();
+
+    [GeneratedRegex(
+        @"\b(beleidig|belästig|herabsetz|abwert|bedroh|droh|gewalt|hass|diskrimin|sexuell|sexist|rassist|queerfeind|behindertenfeind|persönlich|daten|veröffentlich|aufforder|annäher|einschüchter|entmensch|verunglimpf|spam|flood|wiederhol|wortfolge|zeichen|stör|werb|eigenwerb|betrug|betrüger|bettel|gebettel|backseatgaming|spielhinweis|spoiler|anweisung|scam|phishing|chatregel|respektlos|unangemess|unaufgefordert|inhalt|nutzer|streamer|chat|regelverstoß|verstoß|grund)\w*\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex GermanModerationWord();
 
     [GeneratedRegex(
         @"\b(du|dich|dir|dein|deine|deiner|deines|deinem|deinen|deins|euch|euer|eure|eurer|eures|eurem|euren|euers)\b",

@@ -7,7 +7,32 @@ namespace TwitchAI.Tests.Core;
 public sealed class ModerationPromptCompilerTests
 {
     [Fact]
-    public void Compile_AutoModHeldMessageAllowsOnlyTimeoutOrBan()
+    public void Compile_RequiresGermanAnonymousReasonWithoutMachineRuleCode()
+    {
+        var compiled = new ModerationPromptCompiler().Compile(
+            Envelope(
+                Guid.NewGuid(),
+                [new ModerationRequestMessageV3(
+                    "m1",
+                    "@mayvo du bist völlig unfähig",
+                    [])]));
+
+        Assert.Contains(
+            "reason in natural German",
+            compiled.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "a username tagged in the current message, with or without @",
+            compiled.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "G_SEXUAL_CONTENT",
+            compiled.SystemPrompt,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Compile_AutoModHeldMessageAllowsIndependentNoActionOrPunitiveDecision()
     {
         var message = new ModerationRequestMessageV3(
             "m1",
@@ -15,19 +40,16 @@ public sealed class ModerationPromptCompilerTests
             [])
         {
             IsAutoModHeld = true,
-            AutoModReason = "automod",
-            AutoModCategory = "aggressive",
-            AutoModLevel = 3,
         };
 
         var compiled = new ModerationPromptCompiler().Compile(
-            WithAutoModFallback(Envelope(Guid.NewGuid(), [message])));
+            Envelope(Guid.NewGuid(), [message]));
         using var request = JsonDocument.Parse(compiled.UserPrompt);
         var wireMessage = request.RootElement.GetProperty("messages")[0];
         Assert.True(wireMessage.GetProperty("isAutoModHeld").GetBoolean());
-        Assert.Equal("automod", wireMessage.GetProperty("autoModReason").GetString());
-        Assert.Equal("aggressive", wireMessage.GetProperty("autoModCategory").GetString());
-        Assert.Equal(3, wireMessage.GetProperty("autoModLevel").GetInt32());
+        Assert.False(wireMessage.TryGetProperty("autoModReason", out _));
+        Assert.False(wireMessage.TryGetProperty("autoModCategory", out _));
+        Assert.False(wireMessage.TryGetProperty("autoModLevel", out _));
 
         var variants = compiled.ResponseFormat
             .GetProperty("json_schema")
@@ -37,16 +59,31 @@ public sealed class ModerationPromptCompilerTests
             .GetProperty("oneOf")
             .EnumerateArray()
             .ToArray();
+        Assert.Equal("null", variants[0].GetProperty("type").GetString());
         Assert.Equal(
             ["timeout", "ban"],
-            variants.Select(variant => variant.GetProperty("properties")
+            variants.Skip(1).Select(variant => variant.GetProperty("properties")
                 .GetProperty("action").GetProperty("const").GetString()!));
-        Assert.Contains("never return null, delete, or a reply", compiled.SystemPrompt);
-        Assert.Contains("otherwise use TWITCH_AUTOMOD_HELD", compiled.SystemPrompt);
+        Assert.Contains(
+            "evaluate the text independently against activeRules exactly like ordinary moderation input.",
+            compiled.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "The hold itself is zero evidence",
+            compiled.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "TWITCH_AUTOMOD_HELD",
+            compiled.SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "TWITCH_AUTOMOD_HELD",
+            compiled.ResponseFormat.GetRawText(),
+            StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Compile_AutoModHeldWithEffectiveAllowMatchAlsoAllowsNoAction()
+    public void Compile_AutoModHeldWithEffectiveAllowMatchKeepsAiDecisionIndependent()
     {
         var message = new ModerationRequestMessageV3(
             "m1",
@@ -54,14 +91,13 @@ public sealed class ModerationPromptCompilerTests
             [])
         {
             IsAutoModHeld = true,
-            AutoModReason = "blocked_term",
             EffectiveAllowMatches =
             [
                 new ModerationRequestLearningMatchV1(
                     "friendly blocked phrase",
                     "allow",
                     PolicySetCode.General,
-                    ModerationRuleCodes.AutoModHeld,
+                    ModerationRuleCodes.PersonalAttack,
                     Action: null,
                     TimeoutSeconds: null,
                     Reason: null,
@@ -73,7 +109,7 @@ public sealed class ModerationPromptCompilerTests
         };
 
         var compiled = new ModerationPromptCompiler().Compile(
-            WithAutoModFallback(Envelope(Guid.NewGuid(), [message])));
+            Envelope(Guid.NewGuid(), [message]));
         var variants = compiled.ResponseFormat
             .GetProperty("json_schema")
             .GetProperty("schema")
@@ -89,7 +125,7 @@ public sealed class ModerationPromptCompilerTests
             variants.Skip(1).Select(variant => variant.GetProperty("properties")
                 .GetProperty("action").GetProperty("const").GetString()!));
         Assert.Contains(
-            "Returning null does not approve or deny the Twitch AutoMod item.",
+            "allowLearningMatches contains only earlier human-approved messages",
             compiled.SystemPrompt,
             StringComparison.Ordinal);
     }
@@ -355,7 +391,7 @@ public sealed class ModerationPromptCompilerTests
             "i cant stop laughing megalul i cant stop laughing megalul "
             + "i cant stop laughing megalul i cant stop laughing megalul "
             + "i cant stop laughing megalul";
-        var envelope = WithAutoModFallback(Envelope(
+        var envelope = Envelope(
             Guid.NewGuid(),
             [
                 new ModerationRequestMessageV3("ordinary", "jaaa <3", []),
@@ -380,9 +416,8 @@ public sealed class ModerationPromptCompilerTests
                 new ModerationRequestMessageV3("automod", "short text", [])
                 {
                     IsAutoModHeld = true,
-                    AutoModReason = "blocked_term",
                 },
-            ]));
+            ]);
 
         var compiled = new ModerationPromptCompiler().Compile(envelope);
         using var request = JsonDocument.Parse(compiled.UserPrompt);
@@ -398,12 +433,6 @@ public sealed class ModerationPromptCompilerTests
         Assert.False(IsRuleExcluded(messages["manual"], ModerationRuleCodes.Spam));
         Assert.False(IsRuleExcluded(messages["symbols"], ModerationRuleCodes.Spam));
         Assert.True(IsRuleExcluded(messages["automod"], ModerationRuleCodes.Spam));
-        Assert.True(IsRuleExcluded(
-            messages["ordinary"],
-            ModerationRuleCodes.AutoModHeld));
-        Assert.False(IsRuleExcluded(
-            messages["automod"],
-            ModerationRuleCodes.AutoModHeld));
 
         var responseSchema = compiled.ResponseFormat
             .GetProperty("json_schema")
@@ -423,11 +452,10 @@ public sealed class ModerationPromptCompilerTests
                 responseSchema,
                 "automod",
                 ModerationRuleCodes.Spam));
-        Assert.True(
-            DecisionSchemaContainsRule(
-                responseSchema,
-                "automod",
-                ModerationRuleCodes.AutoModHeld));
+        Assert.DoesNotContain(
+            "TWITCH_AUTOMOD_HELD",
+            responseSchema.GetRawText(),
+            StringComparison.Ordinal);
         Assert.Contains(
             "Never infer spam from shortness, irrelevance, or another batch message.",
             compiled.SystemPrompt,
@@ -785,17 +813,6 @@ public sealed class ModerationPromptCompilerTests
             [],
             []);
     }
-
-    private static ModerationRequestEnvelopeV3 WithAutoModFallback(
-        ModerationRequestEnvelopeV3 envelope) =>
-        envelope with
-        {
-            ActiveRules =
-            [
-                .. envelope.ActiveRules,
-                AutoModModerationPolicy.FallbackRule,
-            ],
-        };
 
     private static bool IsRuleExcluded(JsonElement message, string ruleCode) =>
         message.TryGetProperty("excludedRuleCodes", out var exclusions)

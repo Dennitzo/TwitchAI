@@ -182,6 +182,7 @@ public sealed class ReviewReasonService : IReviewReasonService
                     reasonElement.GetString(),
                     request.Action,
                     rule,
+                    request.OriginalText,
                     request.TriggerPhrases,
                     out var composition,
                     out validationCode))

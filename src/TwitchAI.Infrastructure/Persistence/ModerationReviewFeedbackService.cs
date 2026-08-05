@@ -100,13 +100,6 @@ public sealed class SqliteModerationReviewFeedbackService
         var databasePolicySet = feedbackPolicySet is { } selectedPolicySet
             ? ToDatabasePolicySet(selectedPolicySet)
             : null;
-        var isAutoModFallbackLearning = learnAsAllowed
-            && moderationCase.Message.IsAutoModHeld
-            && feedbackPolicySet == PolicySetCode.General
-            && string.Equals(
-                feedbackRuleCode,
-                ModerationRuleCodes.AutoModHeld,
-                StringComparison.Ordinal);
         if (!selected.All(proposed.Contains))
         {
             return Rejected(
@@ -122,7 +115,6 @@ public sealed class SqliteModerationReviewFeedbackService
             .ConfigureAwait(false);
         await using var transaction = connection.BeginTransaction();
         if (learnAsAllowed
-            && !isAutoModFallbackLearning
             && !await IsActiveRuleAsync(
                 connection,
                 transaction,

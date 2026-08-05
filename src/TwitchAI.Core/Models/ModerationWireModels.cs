@@ -37,10 +37,7 @@ public sealed record ModerationWireMessageV6(
     IReadOnlyList<ModerationWireLearningMatchV1>? EffectiveLearningMatches = null,
     ModerationWireDecisionConstraintV3? DecisionConstraint = null,
     EffectiveLearningConsensus? LearningConsensus = null,
-    bool? IsAutoModHeld = null,
-    string? AutoModReason = null,
-    string? AutoModCategory = null,
-    int? AutoModLevel = null);
+    bool? IsAutoModHeld = null);
 
 public sealed record ModerationWireDecisionConstraintV3(
     string Mode,

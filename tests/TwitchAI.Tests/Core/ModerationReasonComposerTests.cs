@@ -137,6 +137,27 @@ public sealed class ModerationReasonComposerTests
         Assert.Equal("violation_reason_invalid", errorCode);
     }
 
+    [Theory]
+    [InlineData("Gezielte persönliche Herabsetzung von @Max.")]
+    [InlineData("Gezielte persönliche Herabsetzung von Max.")]
+    [InlineData("G_PERSONAL_ATTACK wegen gezielter persönlicher Herabsetzung.")]
+    [InlineData("Targeted harassment against a user.")]
+    public void TryComposeReasonOnly_RejectsIdentityCodeAndForeignLanguage(
+        string candidate)
+    {
+        var valid = ModerationReasonComposer.TryComposeReasonOnly(
+            candidate,
+            ModerationActionKind.Timeout,
+            PersonalAttackRule(),
+            "@max du bist völlig unfähig",
+            ["du bist völlig unfähig"],
+            out _,
+            out var errorCode);
+
+        Assert.False(valid);
+        Assert.Equal("reason_invalid", errorCode);
+    }
+
     [Fact]
     public void TryComposeAiReason_AppliesPartLimitsAfterAddingPunctuation()
     {

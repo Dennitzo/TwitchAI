@@ -83,9 +83,6 @@ public sealed class ModerationRequestFactory
                         ? message.Message.IsTwitchEmoteOnly
                         : null,
                 IsAutoModHeld = message.Message.IsAutoModHeld,
-                AutoModReason = message.Message.AutoModReason,
-                AutoModCategory = message.Message.AutoModCategory,
-                AutoModLevel = message.Message.AutoModLevel,
                 EffectiveAllowMatches = message.EffectiveAllowMatches
                     .Select(match => new ModerationRequestLearningMatchV1(
                         match.Text,

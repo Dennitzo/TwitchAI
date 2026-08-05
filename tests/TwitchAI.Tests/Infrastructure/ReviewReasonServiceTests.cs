@@ -16,7 +16,7 @@ public sealed class ReviewReasonServiceTests
         var client = new FakeLmStudioClient(
             _ => Completion(
                 Interlocked.Increment(ref responseNumber) == 1
-                    ? "{\"reason\":\"\"}"
+                    ? "{\"reason\":\"Gezielte persönliche Herabsetzung von Max.\"}"
                     : "{\"reason\":\"Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.\"}"));
         var sut = CreateService(client, Policy());
 
@@ -33,6 +33,14 @@ public sealed class ReviewReasonServiceTests
         Assert.Contains(
             ModerationRuleCodes.PersonalAttack,
             client.Requests[0].UserPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "a username tagged in the current message, with or without @",
+            client.Requests[0].SystemPrompt,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "G_SEXUAL_CONTENT",
+            client.Requests[0].SystemPrompt,
             StringComparison.Ordinal);
         Assert.All(
             client.Requests,

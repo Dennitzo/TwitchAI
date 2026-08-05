@@ -43,7 +43,6 @@ public static class ModerationRuleCodes
     public const string LocalBlacklist = "LOCAL_BLACKLIST";
     public const string SelfPromotion = "G_SELF_PROMOTION";
     public const string BotScam = "G_BOT_SCAM";
-    public const string AutoModHeld = "TWITCH_AUTOMOD_HELD";
 
     public const string PersonalAttackPromptInstruction =
         "Nur bei identifizierbarer Zielperson und direkter, unmissverständlicher persönlicher Beschimpfung, Herabsetzung, Einschüchterung oder unerwünschter intimer/persönlicher Annäherung. Manuelle Phrasen sind zusätzlicher Kontext, aber keine automatische Entscheidung. Kritik an Handlung, Spiel, Inhalt, Entscheidung oder Leistung, zielloser Fluch, neutrale Anweisung, freundschaftliche Neckerei, Selbstbezug sowie Zitat/Bericht ohne direkte Annäherung sind none. Wiederholte Belästigung nur annehmen, wenn der übergebene Kontext die Wiederholung belegt.";
@@ -86,17 +85,12 @@ public static class ModerationRuleCodes
         "Nur klare unaufgeforderte Werbung für den eigenen Kanal, Stream, Content oder die eigene Reichweite. Manuelle Phrasen sind Kontextsignale, aber keine Voraussetzung und kein automatisches Urteil. Ein Link, Channelname, Zitat, eine Warnung oder eine mehrdeutige Verwendung ohne tatsächliche Eigenwerbung ist none. Gewöhnliche klare Eigenwerbung erfordert 86400 Sekunden Timeout; Ban nur bei aggressiver, massenhafter, automatisiert wirkender oder kommerziell-bösartiger Bewerbung.";
     public const string BotScamPromptInstruction =
         "Nur klar automatisierte, betrügerische oder kommerzielle Werbung, insbesondere Viewer-/Follower-/Sub-Manipulation oder Phishing. Manuelle Phrasen sind Kontextsignale, aber keine Voraussetzung und kein automatisches Urteil. URL, Channelname, Zitat, Bericht oder Warnung allein ist none. Bei eindeutig bestätigtem Bot-/Scam-Kontext Ban, bei Unsicherheit none.";
-    public const string AutoModHeldPromptInstruction =
-        "Nur als Auffangkategorie für Nachrichten mit isAutoModHeld=true verwenden, wenn der Nachrichtentext keine andere aktive Verstoßkategorie eigenständig belegt. autoModReason=blocked_term bedeutet einen Twitch- oder kanalbezogenen Sperrworttreffer und ist niemals allein Spam. autoModReason=automod beschreibt eine Twitch-AutoMod-Klassifikation; autoModCategory und autoModLevel sind nur Kontext. Die Reason muss Twitch AutoMod und den konkreten Haltegrund nennen, aber weder Spam noch eine andere unbelegte Kategorie erfinden.";
-
     public static bool AllowsTriggerLearning(string? ruleCode) =>
-        !string.Equals(ruleCode, PersonalData, StringComparison.Ordinal)
-        && !string.Equals(ruleCode, AutoModHeld, StringComparison.Ordinal);
+        !string.Equals(ruleCode, PersonalData, StringComparison.Ordinal);
 
     public static bool IsSemanticAiRule(string? ruleCode) => ruleCode is
         PersonalData or Harm or Hate or SexualContent or PersonalAttack
-        or Begging or Spam or Backseatgaming or SelfPromotion or BotScam
-        or AutoModHeld;
+        or Begging or Spam or Backseatgaming or SelfPromotion or BotScam;
 
     public static bool RequiresLocalPhraseMatch(string? ruleCode) => false;
 }

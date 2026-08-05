@@ -848,7 +848,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 ModerationPipelineEventKind.ChatQueued,
                 isAutoModHeld ? "automod_held_queued_for_ai" : "queued_for_ai",
                 isAutoModHeld
-                    ? "An AutoMod-held message was queued for timeout-or-ban classification."
+                    ? "An AutoMod-held message was queued for independent content classification."
                     : "The lowercase message was queued for local moderation.",
                 snapshot));
         PublishBatchIngressUpdates(ingress);
@@ -998,17 +998,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 batch,
                 cancellationToken)
             .ConfigureAwait(false);
-        var analysisPolicy = batch.Messages.Any(message =>
-                message.Message.IsAutoModHeld)
-            ? AutoModModerationPolicy.EnsureFallbackRule(
-                batch.Context.EffectivePolicy)
-            : batch.Context.EffectivePolicy;
         var analysisBatch = batch with
         {
-            Context = batch.Context with
-            {
-                EffectivePolicy = analysisPolicy,
-            },
             ReplyTemplates = replyTemplateMap
                 .Select(item => new ChatReplyTemplatePrompt(
                     item.Key,

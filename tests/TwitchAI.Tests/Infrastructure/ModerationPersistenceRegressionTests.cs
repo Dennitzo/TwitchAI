@@ -870,7 +870,7 @@ public sealed class ModerationPersistenceRegressionTests
     }
 
     [Fact]
-    public async Task AllowingAutoModFallbackCreatesRetrievableAllowLearning()
+    public async Task AllowingAutoModProposalCreatesRetrievableAllowLearning()
     {
         await using var database = await TestDatabase.CreateAsync();
         const string channelId = "automod-allow-channel";
@@ -891,12 +891,12 @@ public sealed class ModerationPersistenceRegressionTests
                 ModerationActionKind.Timeout,
                 ModerationActionRules.DefaultTimeoutSeconds,
                 PolicySetCode.General,
-                "Twitch AutoMod hielt einen gesperrten Ausdruck zurück.",
+                "Direkte persönliche Beleidigung eines Nutzers oder des Streamers.",
                 [],
                 Confidence: 0.9,
-                RuleCode: ModerationRuleCodes.AutoModHeld)
+                RuleCode: ModerationRuleCodes.PersonalAttack)
             {
-                EvidenceKind = ModerationEvidenceKinds.BlockedTermHold,
+                EvidenceKind = "direct_insult",
             },
             fixture.Policy.RevisionFingerprint);
         var learningRevision = new LearningContextRevision();
@@ -912,7 +912,7 @@ public sealed class ModerationPersistenceRegressionTests
             expectedRowVersion: 1,
             discardReason: "Als erlaubt markiert",
             feedbackPolicySet: PolicySetCode.General,
-            feedbackRuleCode: ModerationRuleCodes.AutoModHeld,
+            feedbackRuleCode: ModerationRuleCodes.PersonalAttack,
             feedbackTriggerPhrases: [],
             learnAsAllowed: true);
 
@@ -920,26 +920,24 @@ public sealed class ModerationPersistenceRegressionTests
         Assert.True(result.LearningAccepted);
         Assert.Equal(revisionBefore + 1, learningRevision.Current);
 
-        var retrievalPolicy = AutoModModerationPolicy.EnsureFallbackRule(
-            fixture.Policy);
         var examples = await new SqliteRetrievalExampleStore(
                 database.ConnectionFactory)
             .GetRelevantAsync(
                 channelId,
                 fixture.Context.CategoryId,
-                retrievalPolicy,
+                fixture.Policy,
                 [originalText.ToLowerInvariant()]);
         var allowed = Assert.Single(examples, example =>
             !example.IsPositive
             && example.Action == ModerationActionKind.None
-            && example.RuleCode == ModerationRuleCodes.AutoModHeld);
+            && example.RuleCode == ModerationRuleCodes.PersonalAttack);
         Assert.Equal(originalText.ToLowerInvariant(), allowed.LowerText);
         Assert.True(AllowLearningPhraseMatcher.TryMatch(
             originalText.ToLowerInvariant(),
             allowed,
             out var effectiveMatch));
         Assert.True(effectiveMatch.IsExact);
-        Assert.Equal(ModerationRuleCodes.AutoModHeld, effectiveMatch.RuleCode);
+        Assert.Equal(ModerationRuleCodes.PersonalAttack, effectiveMatch.RuleCode);
     }
 
     private static async Task<Fixture> CreateFixtureAsync(

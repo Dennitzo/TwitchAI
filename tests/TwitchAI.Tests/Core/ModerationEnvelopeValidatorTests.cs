@@ -6,77 +6,10 @@ namespace TwitchAI.Tests.Core;
 
 public sealed class ModerationEnvelopeValidatorTests
 {
-    [Theory]
-    [InlineData(null, "automod_action_required")]
-    [InlineData("delete", "automod_action_invalid")]
-    public void ValidateLive_AutoModHeldMessageRejectsNonPunitiveDecision(
-        string? action,
-        string expectedError)
-    {
-        var baseBatch = Batch(1, includeBackseat: false, firstMessage: "spam spam spam spam spam");
-        var source = baseBatch.Messages[0];
-        var batch = baseBatch with
-        {
-            Messages =
-            [
-                source with
-                {
-                    Message = source.Message with { IsAutoModHeld = true },
-                },
-            ],
-        };
-        object? decision = action is null
-            ? null
-            : new Dictionary<string, object?>
-            {
-                ["action"] = action,
-                ["ruleCode"] = ModerationRuleCodes.Spam,
-                ["evidenceKind"] = ModerationEvidenceKinds.ForRule(
-                    ModerationRuleCodes.Spam)[0],
-                ["triggerPhrases"] = new[] { "spam spam spam spam spam" },
-                ["reason"] = "Wiederholter Spam im Chat.",
-                ["confidence"] = 0.95,
-            };
-        var response = JsonSerializer.Serialize(
-            new Dictionary<string, object?>
-            {
-                ["envelopeVersion"] = ModerationEnvelopeValidator.KeyedResponseEnvelopeVersion,
-                ["batchId"] = batch.BatchId,
-                ["decisions"] = new Dictionary<string, object?> { ["m1"] = decision },
-            });
-
-        var result = new ModerationEnvelopeValidator().ValidateLive(response, batch);
-
-        Assert.False(result.IsValid);
-        Assert.Contains(result.Issues, issue => issue.Code == expectedError);
-        Assert.Equal(["m1"], result.RepairMessageIds);
-    }
-
     [Fact]
-    public void ValidateLive_AutoModHeldMessageAcceptsNoActionWithEffectiveAllowMatch()
+    public void ValidateLive_AutoModHeldMessageAcceptsNoActionWithoutAllowMatch()
     {
-        var baseBatch = AutoModBatch("friendly blocked phrase", "blocked_term");
-        var source = baseBatch.Messages[0];
-        var batch = baseBatch with
-        {
-            Messages =
-            [
-                source with
-                {
-                    EffectiveAllowMatches =
-                    [
-                        new EffectiveAllowMatch(
-                            "friendly blocked phrase",
-                            1d,
-                            IsExact: true,
-                            Source: "TwitchModeration",
-                            MatchedPhrase: "friendly blocked phrase",
-                            RuleCode: ModerationRuleCodes.AutoModHeld,
-                            PolicySet: PolicySetCode.General),
-                    ],
-                },
-            ],
-        };
+        var batch = AutoModBatch("friendly blocked phrase", "blocked_term");
         var response = V7Response(
             batch,
             new Dictionary<string, object?>(StringComparer.Ordinal)
@@ -84,14 +17,88 @@ public sealed class ModerationEnvelopeValidatorTests
                 ["m1"] = null,
             });
 
-        var result = new ModerationEnvelopeValidator().ValidateLive(
-            response,
-            batch);
+        var result = new ModerationEnvelopeValidator().ValidateLive(response, batch);
 
         Assert.True(result.IsValid);
         Assert.Equal(
             ModerationActionKind.None,
             Assert.Single(result.ValidDecisions).Action);
+    }
+
+    [Fact]
+    public void ValidateLive_AutoModHeldMessageRejectsDeleteDecision()
+    {
+        var batch = AutoModBatch("you are an idiot", "automod");
+        var response = V7Response(
+            batch,
+            new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["m1"] = V11Moderation(
+                    "delete",
+                    null,
+                    ModerationRuleCodes.PersonalAttack,
+                    "direct_insult",
+                    "Direkte persönliche Beleidigung eines Nutzers oder des Streamers.",
+                    ["you are an idiot"],
+                    0.98),
+            });
+
+        var result = new ModerationEnvelopeValidator().ValidateLive(
+            response,
+            batch);
+
+        Assert.False(result.IsValid);
+        Assert.Empty(result.ValidDecisions);
+        Assert.Contains(
+            result.Issues,
+            issue => issue.Code == "automod_action_invalid");
+        Assert.Equal(["m1"], result.RepairMessageIds);
+    }
+
+    [Fact]
+    public void ValidateLive_AutoModHeldMessageAcceptsTextSupportedActiveRule()
+    {
+        var baseBatch = PersonalAttackBatch("du bist völlig unfähig");
+        var source = baseBatch.Messages[0];
+        var batch = baseBatch with
+        {
+            Messages =
+            [
+                source with
+                {
+                    Message = source.Message with
+                    {
+                        IsAutoModHeld = true,
+                        AutoModReason = "automod",
+                        AutoModCategory = "aggressive",
+                        AutoModLevel = 3,
+                    },
+                },
+            ],
+        };
+        var response = V7Response(
+            batch,
+            new Dictionary<string, object?>(StringComparer.Ordinal)
+            {
+                ["m1"] = V11Moderation(
+                    "timeout",
+                    600,
+                    ModerationRuleCodes.PersonalAttack,
+                    "direct_insult",
+                    "Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.",
+                    ["du bist völlig unfähig"],
+                    0.98),
+            });
+
+        var result = new ModerationEnvelopeValidator().ValidateLive(
+            response,
+            batch);
+
+        Assert.True(result.IsValid);
+        var decision = Assert.Single(result.ValidDecisions);
+        Assert.Equal(ModerationRuleCodes.PersonalAttack, decision.RuleCode);
+        Assert.Equal(ModerationActionKind.Timeout, decision.Action);
+        Assert.Empty(result.RepairMessageIds);
     }
 
     [Fact]
@@ -126,22 +133,26 @@ public sealed class ModerationEnvelopeValidatorTests
         Assert.Equal(["m1"], result.RepairMessageIds);
     }
 
-    [Fact]
-    public void ValidateLive_AcceptsDedicatedBlockedTermAutoModFallback()
+    [Theory]
+    [InlineData("Gezielte persönliche Herabsetzung von @Mayvo.")]
+    [InlineData("Gezielte persönliche Herabsetzung von Mayvo.")]
+    [InlineData("G_PERSONAL_ATTACK wegen gezielter persönlicher Herabsetzung.")]
+    [InlineData("Targeted harassment against a user.")]
+    public void ValidateLive_InvalidUserFacingReasonRequiresTargetedRepair(
+        string reason)
     {
-        const string text = "dieser begriff ist auf der sperrliste";
-        var batch = AutoModBatch(text, "blocked_term");
+        var batch = PersonalAttackBatch("@mayvo du bist völlig unfähig");
         var response = V7Response(
             batch,
             new Dictionary<string, object?>(StringComparer.Ordinal)
             {
                 ["m1"] = V11Moderation(
                     "timeout",
-                    ModerationActionRules.DefaultTimeoutSeconds,
-                    ModerationRuleCodes.AutoModHeld,
-                    ModerationEvidenceKinds.BlockedTermHold,
-                    "Twitch AutoMod hielt einen kanalweit gesperrten Ausdruck zurück.",
-                    [],
+                    600,
+                    ModerationRuleCodes.PersonalAttack,
+                    "direct_insult",
+                    reason,
+                    ["@mayvo du bist völlig unfähig"],
                     0.98),
             });
 
@@ -149,50 +160,13 @@ public sealed class ModerationEnvelopeValidatorTests
             response,
             batch);
 
-        Assert.True(result.IsValid);
-        var decision = Assert.Single(result.ValidDecisions);
-        Assert.Equal(ModerationRuleCodes.AutoModHeld, decision.RuleCode);
-        Assert.Equal(ModerationActionKind.Timeout, decision.Action);
-        Assert.Equal(
-            ModerationActionRules.DefaultTimeoutSeconds,
-            decision.TimeoutSeconds);
-        Assert.Empty(decision.TriggerPhrases);
-    }
-
-    [Fact]
-    public void ValidateLive_RejectsAutoModFallbackForOrdinaryMessage()
-    {
-        var baseBatch = SpamBatch("ordinary chat message");
-        var batch = baseBatch with
-        {
-            Context = baseBatch.Context with
-            {
-                EffectivePolicy = AutoModModerationPolicy.EnsureFallbackRule(
-                    baseBatch.Context.EffectivePolicy),
-            },
-        };
-        var response = V7Response(
-            batch,
-            new Dictionary<string, object?>(StringComparer.Ordinal)
-            {
-                ["m1"] = V11Moderation(
-                    "timeout",
-                    ModerationActionRules.DefaultTimeoutSeconds,
-                    ModerationRuleCodes.AutoModHeld,
-                    ModerationEvidenceKinds.AutoModHold,
-                    "Twitch AutoMod hielt einen problematischen Inhalt zurück.",
-                    ["ordinary chat message"],
-                    0.95),
-            });
-
-        var result = new ModerationEnvelopeValidator().ValidateLive(
-            response,
-            batch);
-
         Assert.False(result.IsValid);
+        Assert.Empty(result.ValidDecisions);
+        Assert.Equal(["m1"], result.RepairMessageIds);
         Assert.Contains(
             result.Issues,
-            issue => issue.Code == "automod_rule_without_hold");
+            issue => issue.Code == "reason_invalid"
+                && issue.MessageId == "m1");
     }
 
     [Fact]
@@ -2367,11 +2341,6 @@ public sealed class ModerationEnvelopeValidatorTests
         var batch = SpamBatch(text);
         return batch with
         {
-            Context = batch.Context with
-            {
-                EffectivePolicy = AutoModModerationPolicy.EnsureFallbackRule(
-                    batch.Context.EffectivePolicy),
-            },
             Messages = batch.Messages
                 .Select(message => message with
                 {

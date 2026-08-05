@@ -54,6 +54,68 @@ public sealed class ModerationReasonNormalizerTests
             reason);
     }
 
+    [Theory]
+    [InlineData("Gezielte persönliche Herabsetzung von @Mayvo.")]
+    [InlineData("Gezielte persönliche Herabsetzung von Mayvo.")]
+    public void TryNormalizeContextualAiReason_RejectsTaggedUsernameWithOrWithoutAt(
+        string candidate)
+    {
+        var valid = ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+            candidate,
+            PersonalAttackRule(),
+            "@mayvo du bist völlig unfähig",
+            out var reason);
+
+        Assert.False(valid);
+        Assert.Empty(reason);
+    }
+
+    [Theory]
+    [InlineData("G_SEXUAL_CONTENT wegen sexualisierender Äußerung.")]
+    [InlineData("Gezielte Herabsetzung gemäß G_PERSONAL_ATTACK.")]
+    public void TryNormalizeContextualAiReason_RejectsMachineRuleCode(
+        string candidate)
+    {
+        var valid = ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+            candidate,
+            PersonalAttackRule(),
+            "@mayvo du bist völlig unfähig",
+            out var reason);
+
+        Assert.False(valid);
+        Assert.Empty(reason);
+    }
+
+    [Theory]
+    [InlineData("Targeted harassment against a user.")]
+    [InlineData("Acoso dirigido contra una persona.")]
+    public void TryNormalizeContextualAiReason_RejectsNonGermanReason(
+        string candidate)
+    {
+        var valid = ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+            candidate,
+            PersonalAttackRule(),
+            "@mayvo du bist völlig unfähig",
+            out var reason);
+
+        Assert.False(valid);
+        Assert.Empty(reason);
+    }
+
+    [Fact]
+    public void TryNormalizeContextualAiReason_AcceptsNeutralTargetForTaggedMessage()
+    {
+        var valid = ModerationReasonNormalizer.TryNormalizeContextualAiReason(
+            "Gezielte persönliche Herabsetzung eines Nutzers oder des Streamers.",
+            PersonalAttackRule(),
+            "@mayvo du bist völlig unfähig",
+            out var reason);
+
+        Assert.True(valid);
+        Assert.DoesNotContain("mayvo", reason, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain('@', reason);
+    }
+
     [Fact]
     public void TryNormalizeContextualAiReason_RejectsObservedContextFreeReason()
     {
@@ -334,14 +396,16 @@ public sealed class ModerationReasonNormalizerTests
     }
 
     [Fact]
-    public void Normalize_PreservesExplicitTaggedTarget()
+    public void Normalize_ReplacesExplicitTaggedTargetWithSafeGermanFallback()
     {
         var result = ModerationReasonNormalizer.Normalize(
             "Beleidigung von @mayvo.",
             ModerationRuleCodes.Insult,
             PolicySetCode.General);
 
-        Assert.Equal("Beleidigung von @mayvo.", result);
+        Assert.Equal(
+            "Direkte Beleidigung eines Nutzers oder Streamers.",
+            result);
     }
 
     private static ModerationRuleDefinition PersonalAttackRule() =>

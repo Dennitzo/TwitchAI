@@ -65,6 +65,7 @@ public static partial class ModerationReasonComposer
         if (!ModerationReasonNormalizer.TryNormalizeContextualAiReason(
                 violationReason,
                 rule,
+                sourceText,
                 out var normalizedViolation))
         {
             errorCode = "violation_reason_invalid";
@@ -115,6 +116,25 @@ public static partial class ModerationReasonComposer
         out ModerationReasonComposition composition,
         out string errorCode)
     {
+        return TryComposeReasonOnly(
+            reason,
+            action,
+            rule,
+            sourceText: null,
+            triggerPhrases,
+            out composition,
+            out errorCode);
+    }
+
+    public static bool TryComposeReasonOnly(
+        string? reason,
+        ModerationActionKind action,
+        ModerationRuleDefinition? rule,
+        string? sourceText,
+        IReadOnlyList<string>? triggerPhrases,
+        out ModerationReasonComposition composition,
+        out string errorCode)
+    {
         composition = new(string.Empty, string.Empty, string.Empty);
         errorCode = string.Empty;
         if (action is ModerationActionKind.None)
@@ -126,6 +146,7 @@ public static partial class ModerationReasonComposer
         if (!ModerationReasonNormalizer.TryNormalizeContextualAiReason(
                 reason,
                 rule,
+                sourceText,
                 out var normalized))
         {
             errorCode = "reason_invalid";
@@ -138,16 +159,6 @@ public static partial class ModerationReasonComposer
                 ModerationRuleCodes.Backseatgaming,
                 StringComparison.OrdinalIgnoreCase)
             && !normalized.Contains("Backseatgaming", StringComparison.OrdinalIgnoreCase))
-        {
-            errorCode = "reason_category_missing";
-            return false;
-        }
-
-        if (string.Equals(
-                rule?.RuleCode,
-                ModerationRuleCodes.AutoModHeld,
-                StringComparison.OrdinalIgnoreCase)
-            && !normalized.Contains("AutoMod", StringComparison.OrdinalIgnoreCase))
         {
             errorCode = "reason_category_missing";
             return false;

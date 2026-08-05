@@ -697,10 +697,6 @@ public sealed record ViolationCategoryOption(
                     : PolicySetCode.General.ToString(),
             ruleCode,
             markUnavailable
-                && !string.Equals(
-                    ruleCode,
-                    ModerationRuleCodes.AutoModHeld,
-                    StringComparison.OrdinalIgnoreCase)
                 ? $"{GetFallbackDisplayName(ruleCode)} · nicht mehr aktiv"
                 : GetFallbackDisplayName(ruleCode),
             string.IsNullOrWhiteSpace(reason)
@@ -746,7 +742,6 @@ public sealed record ViolationCategoryOption(
             "G_ADVERTISING" => "Werbung",
             ModerationRuleCodes.SelfPromotion => "Eigenwerbung",
             ModerationRuleCodes.BotScam => "Bot / Scam",
-            ModerationRuleCodes.AutoModHeld => "Twitch AutoMod",
             "G_BEGGING" => "Gebettel",
             "G_OTHER_ABUSE" => "Sonstiger General-Verstoß",
             "BACKSEATGAMING" => "Backseatgaming",
