@@ -138,7 +138,15 @@ public sealed partial class ChatPage : Page
             return;
         }
 
-        await ViewModel.SetEnabledAsync(item, isEnabled);
+        var selectedItems = TemplateTable.SelectedItems
+            .OfType<ChatReplyTemplateItem>()
+            .ToArray();
+        if (!selectedItems.Contains(item))
+        {
+            selectedItems = [item];
+        }
+
+        await ViewModel.SetEnabledAsync(selectedItems, isEnabled);
     }
 
     private void OnTemplateSelectionChanged(

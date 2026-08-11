@@ -2227,35 +2227,56 @@ public sealed partial class ChatViewModel : ObservableObject
         bool isEnabled,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(item);
-        if (item.PersistedIsEnabled == isEnabled)
+        await SetEnabledAsync([item], isEnabled, cancellationToken);
+    }
+
+    public async Task SetEnabledAsync(
+        IEnumerable<ChatReplyTemplateItem> items,
+        bool isEnabled,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        var pendingItems = items
+            .Where(item => item is not null && item.PersistedIsEnabled != isEnabled)
+            .Distinct()
+            .ToArray();
+        if (pendingItems.Length == 0)
         {
             return;
         }
 
         if (IsBusy)
         {
-            item.RestoreEnabled();
+            foreach (var item in pendingItems)
+            {
+                item.RestoreEnabled();
+            }
             return;
         }
 
         IsBusy = true;
         try
         {
-            var rowVersion = await _chatReplyStore.SetTemplateEnabledAsync(
-                item.TemplateId,
-                item.RowVersion,
-                isEnabled,
-                cancellationToken);
-            item.AcceptEnabled(isEnabled, rowVersion);
+            foreach (var item in pendingItems)
+            {
+                var rowVersion = await _chatReplyStore.SetTemplateEnabledAsync(
+                    item.TemplateId,
+                    item.RowVersion,
+                    isEnabled,
+                    cancellationToken);
+                item.AcceptEnabled(isEnabled, rowVersion);
+            }
             OnPropertyChanged(nameof(SortedTemplates));
             StatusMessage = isEnabled
-                ? $"Chat-Vorlage {item.TemplateId:N0} ist aktiv."
-                : $"Chat-Vorlage {item.TemplateId:N0} ist deaktiviert.";
+                ? $"{pendingItems.Length:N0} Chat-Vorlage(n) sind aktiv."
+                : $"{pendingItems.Length:N0} Chat-Vorlage(n) sind deaktiviert.";
         }
         catch (Exception exception)
         {
-            item.RestoreEnabled();
+            foreach (var item in pendingItems)
+            {
+                item.RestoreEnabled();
+            }
             await ReloadCoreAsync(cancellationToken);
             StatusMessage = FriendlyError(exception);
         }
