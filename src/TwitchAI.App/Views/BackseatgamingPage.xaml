@@ -32,7 +32,7 @@
         x:Name="PageInfoBar"
         IsClosable="False"
         IsOpen="True"
-        Message="Backseatgaming ist bei jeder bekannten Twitch-Kategorie außer Just Chatting und IRL aktiv."
+        Message="Wenn Backseatgaming in den Einstellungen aktiviert ist, gilt das Regelset für bekannte Twitch-Kategorien außer Just Chatting und IRL."
         Severity="Informational"
         Title="Kategorieabhängiges Regelset" />
 

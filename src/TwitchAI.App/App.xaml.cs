@@ -50,6 +50,14 @@ public partial class App : Application
                 services.AddSingleton<ITwitchRuntimeModeSettings>(
                     provider => provider.GetRequiredService<
                         TwitchRuntimeModeSettings>());
+                services.AddSingleton(
+                    new ModerationPolicyRuntimeSettings(
+                        _localStorage.GetBooleanOrDefault(
+                            LocalAppSettingKeys.BackseatgamingEnabled,
+                            defaultValue: true)));
+                services.AddSingleton<IModerationPolicyRuntimeSettings>(
+                    provider => provider.GetRequiredService<
+                        ModerationPolicyRuntimeSettings>());
                 services.AddSingleton<
                     ITableSortPreferenceStore,
                     TableSortPreferenceStore>();

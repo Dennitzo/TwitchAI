@@ -2568,6 +2568,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly IPolicyStore _policyStore;
     private readonly ILocalAppStorage _localStorage;
     private readonly ModerationQueueRuntimeSettings _queueRuntimeSettings;
+    private readonly ModerationPolicyRuntimeSettings _policyRuntimeSettings;
     private readonly TwitchRuntimeModeSettings _twitchRuntimeModeSettings;
     private readonly IModerationCoordinator _coordinator;
     private readonly IDatabaseTransferService _databaseTransferService;
@@ -2590,7 +2591,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ModerationQueueRuntimeSettings queueRuntimeSettings,
         TwitchRuntimeModeSettings twitchRuntimeModeSettings,
         IModerationCoordinator coordinator,
-        IDatabaseTransferService databaseTransferService)
+        IDatabaseTransferService databaseTransferService,
+        ModerationPolicyRuntimeSettings? policyRuntimeSettings = null)
     {
         _state = state;
         _options = options;
@@ -2605,6 +2607,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _policyStore = policyStore;
         _localStorage = localStorage;
         _queueRuntimeSettings = queueRuntimeSettings;
+        _policyRuntimeSettings = policyRuntimeSettings
+            ?? new ModerationPolicyRuntimeSettings(
+                _localStorage.GetBooleanOrDefault(
+                    LocalAppSettingKeys.BackseatgamingEnabled,
+                    defaultValue: true));
         _twitchRuntimeModeSettings = twitchRuntimeModeSettings;
         _coordinator = coordinator;
         _databaseTransferService = databaseTransferService;
@@ -2624,6 +2631,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             defaultValue: true);
         _queueRuntimeSettings.RemoveIdenticalMessages =
             _removeIdenticalAiQueueMessages;
+        _backseatgamingEnabled = _policyRuntimeSettings.BackseatgamingEnabled;
         _readOnlyMode = _twitchRuntimeModeSettings.IsReadOnly;
         _state.IsReadOnlyMode = _readOnlyMode;
         _isInitializing = false;
@@ -2704,6 +2712,38 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
     }
 
+    private bool _backseatgamingEnabled = true;
+
+    public bool BackseatgamingEnabled
+    {
+        get => _backseatgamingEnabled;
+        set
+        {
+            if (!SetProperty(ref _backseatgamingEnabled, value))
+            {
+                return;
+            }
+
+            _policyRuntimeSettings.BackseatgamingEnabled = value;
+            try
+            {
+                _localStorage.SetString(
+                    LocalAppSettingKeys.BackseatgamingEnabled,
+                    value.ToString());
+                SaveStatus = value
+                    ? "Backseatgaming aktiviert und automatisch gespeichert"
+                    : "Backseatgaming deaktiviert und automatisch gespeichert";
+            }
+            catch (Exception exception)
+                when (exception is IOException or UnauthorizedAccessException)
+            {
+                SaveStatus =
+                    "Die Backseatgaming-Einstellung gilt sofort, konnte aber "
+                    + $"nicht gespeichert werden: {exception.Message}";
+            }
+        }
+    }
+
     private bool _readOnlyMode;
 
     public bool ReadOnlyMode
@@ -2779,6 +2819,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _localStorage.SetString(
             LocalAppSettingKeys.RemoveIdenticalAiQueueMessages,
             RemoveIdenticalAiQueueMessages.ToString());
+        _localStorage.SetString(
+            LocalAppSettingKeys.BackseatgamingEnabled,
+            BackseatgamingEnabled.ToString());
         _localStorage.SetString(
             LocalAppSettingKeys.ReadOnlyMode,
             ReadOnlyMode.ToString());

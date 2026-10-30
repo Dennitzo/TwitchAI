@@ -7,7 +7,8 @@ namespace TwitchAI.Core.Services;
 
 public sealed class EffectivePolicyResolver(
     string justChattingCategoryId = EffectivePolicyResolver.BootstrapJustChattingCategoryId,
-    string irlCategoryId = EffectivePolicyResolver.BootstrapIrlCategoryId)
+    string irlCategoryId = EffectivePolicyResolver.BootstrapIrlCategoryId,
+    IModerationPolicyRuntimeSettings? runtimeSettings = null)
     : IEffectivePolicyResolver
 {
     public const string BootstrapJustChattingCategoryId = "509658";
@@ -27,7 +28,8 @@ public sealed class EffectivePolicyResolver(
             new(PolicySetCode.General, generalRevision),
         };
 
-        if (channelContext.HasKnownCategory
+        if ((runtimeSettings?.BackseatgamingEnabled ?? true)
+            && channelContext.HasKnownCategory
             && !string.Equals(
                 channelContext.CategoryId,
                 justChattingCategoryId,

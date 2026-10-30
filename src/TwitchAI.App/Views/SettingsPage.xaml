@@ -287,6 +287,23 @@
 
       <Border Style="{StaticResource CardStyle}">
         <StackPanel Spacing="14">
+          <TextBlock Style="{StaticResource SectionTitleStyle}" Text="Moderation" />
+          <ToggleSwitch
+            AutomationProperties.Name="Backseatgaming moderieren"
+            Header="Backseatgaming"
+            IsOn="{x:Bind ViewModel.BackseatgamingEnabled, Mode=TwoWay}"
+            OffContent="Deaktiviert"
+            OnContent="Aktiviert" />
+          <TextBlock
+            FontSize="12"
+            Foreground="{ThemeResource MutedTextBrush}"
+            Text="Aktiviert das Backseatgaming-Regelset für bekannte Twitch-Kategorien außer Just Chatting und IRL. Ausgeschaltet wird Backseatgaming nicht moderiert. Änderungen gelten sofort und werden automatisch gespeichert."
+            TextWrapping="Wrap" />
+        </StackPanel>
+      </Border>
+
+      <Border Style="{StaticResource CardStyle}">
+        <StackPanel Spacing="14">
           <TextBlock Style="{StaticResource SectionTitleStyle}" Text="Darstellung" />
           <ComboBox
             Header="App-Design"

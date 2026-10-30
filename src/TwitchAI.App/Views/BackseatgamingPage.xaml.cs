@@ -39,7 +39,7 @@ public sealed partial class BackseatgamingPage : Page
             : "Kategorieabhängiges Regelset";
         PageInfoBar.Message = showLearning
             ? "Diese bestätigten Beispiele werden nur bei aktivem Backseatgaming als AI-Kontext verwendet."
-            : "Backseatgaming ist bei jeder bekannten Twitch-Kategorie außer Just Chatting und IRL aktiv.";
+            : "Wenn Backseatgaming in den Einstellungen aktiviert ist, gilt das Regelset für bekannte Twitch-Kategorien außer Just Chatting und IRL.";
     }
 
     private async void Page_Loaded(object sender, RoutedEventArgs e)

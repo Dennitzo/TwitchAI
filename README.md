@@ -73,8 +73,11 @@ unter `%LOCALAPPDATA%\TwitchAI`. Der Datenbankpfad ist
 3. Analysierbare Nachrichten werden nach spätestens 10 Sekunden oder bei 20
    Nachrichten gebündelt. Kategorie- oder Regelwechsel schließen ein Batch
    sofort.
-4. General-Regeln gelten immer. Backseatgaming gilt für bekannte Kategorien
-   außer Just Chatting und IRL; bei unbekannter Kategorie wird konservativ nur General
+4. General-Regeln gelten immer. Backseatgaming kann unter **Einstellungen →
+   Moderation → Backseatgaming** ein- oder ausgeschaltet werden; der Schalter ist
+   standardmäßig aktiviert, wirkt sofort und wird automatisch gespeichert.
+   Bei aktiviertem Schalter gilt Backseatgaming für bekannte Kategorien außer
+   Just Chatting und IRL; bei unbekannter Kategorie wird konservativ nur General
    verwendet.
 5. LM Studio klassifiziert zunächst mit
    `twitchai.moderation.classification.response.v1` ohne Begründungstext.

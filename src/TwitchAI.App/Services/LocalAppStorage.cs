@@ -22,6 +22,8 @@ internal static class LocalAppSettingKeys
     public const string RemoveIdenticalAiQueueMessages =
         "RemoveIdenticalAiQueueMessages";
 
+    public const string BackseatgamingEnabled = "BackseatgamingEnabled";
+
     public const string ReadOnlyMode = "ReadOnlyMode";
 }
 

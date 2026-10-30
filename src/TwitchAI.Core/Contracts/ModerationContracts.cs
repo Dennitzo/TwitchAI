@@ -144,6 +144,11 @@ public interface IModerationQueueRuntimeSettings
     bool RemoveIdenticalMessages { get; }
 }
 
+public interface IModerationPolicyRuntimeSettings
+{
+    bool BackseatgamingEnabled { get; }
+}
+
 public interface ITwitchRuntimeModeSettings
 {
     bool IsReadOnly { get; }
