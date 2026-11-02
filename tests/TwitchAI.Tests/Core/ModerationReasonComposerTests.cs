@@ -39,6 +39,7 @@ public sealed class ModerationReasonComposerTests
     [InlineData("Künftig bitte respektvoll kommunizieren.")]
     [InlineData("Zukünftig auf einen höflichen Umgang achten.")]
     [InlineData("Fortan bitte sachlich kommunizieren.")]
+    [InlineData("Bitte künftig Spielhinweise zurückhalten.")]
     public void TryComposeAiReason_AcceptsNeutralFutureGuidance(
         string guidance)
     {
@@ -87,6 +88,8 @@ public sealed class ModerationReasonComposerTests
     [InlineData("\"Beleidigungen\" künftig bitte vermeiden.")]
     [InlineData("Die Nachricht künftig bitte respektvoll formulieren.")]
     [InlineData("G_PERSONAL_ATTACK künftig bitte vermeiden.")]
+    [InlineData("Respektvoller Ton im Chat wird erwartet.")]
+    [InlineData("Spielhinweise nur auf Nachfrage geben.")]
     public void TryComposeAiReason_RejectsForbiddenGuidance(string guidance)
     {
         var valid = ModerationReasonComposer.TryComposeAiReason(

@@ -195,6 +195,148 @@ public sealed class ModerationCoordinatorTests
     }
 
     [Fact]
+    public async Task StartAsync_LoadsModelBeforeStartingEventSubWithoutWaitingForMessages()
+    {
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidEnvelope);
+        var prepareEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePrepare = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.LocalModel.PrepareResponse = async token =>
+        {
+            prepareEntered.TrySetResult();
+            await releasePrepare.Task.WaitAsync(token);
+        };
+        var events = new ConcurrentQueue<ModerationPipelineEventKind>();
+        harness.Coordinator.EventReceived += (_, item) => events.Enqueue(item.Kind);
+
+        var start = harness.Coordinator.StartAsync();
+        await prepareEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.False(start.IsCompleted);
+        Assert.False(harness.EventSub.ReadStarted.Task.IsCompleted);
+        Assert.DoesNotContain(ModerationPipelineEventKind.Started, events);
+        Assert.Equal(0, harness.LocalModel.CallCount);
+
+        releasePrepare.TrySetResult();
+        await start.WaitAsync(TimeSpan.FromSeconds(3));
+        await harness.EventSub.ReadStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(1, harness.LocalModel.PrepareCallCount);
+        Assert.Equal(0, harness.LocalModel.CallCount);
+        Assert.Equal(
+            [ModerationPipelineEventKind.ModelLoading,
+             ModerationPipelineEventKind.ModelReady,
+             ModerationPipelineEventKind.Started],
+            events.Where(kind => kind is ModerationPipelineEventKind.ModelLoading
+                or ModerationPipelineEventKind.ModelReady
+                or ModerationPipelineEventKind.Started).ToArray());
+    }
+
+    [Fact]
+    public async Task StartAsync_ModelLoadFailureDoesNotStartWorkersAndAllowsRetry()
+    {
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidEnvelope);
+        harness.LocalModel.PrepareResponse = _ =>
+            ValueTask.FromException(new InvalidOperationException("model load failed"));
+        var events = new ConcurrentQueue<ModerationPipelineEventArgs>();
+        harness.Coordinator.EventReceived += (_, item) => events.Enqueue(item);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.Coordinator.StartAsync());
+
+        Assert.Equal("model load failed", exception.Message);
+        Assert.False(harness.Coordinator.IsRunning);
+        Assert.False(harness.EventSub.ReadStarted.Task.IsCompleted);
+        Assert.Equal(0, harness.LocalModel.CallCount);
+        Assert.DoesNotContain(events, item => item.Kind == ModerationPipelineEventKind.Started);
+        Assert.DoesNotContain(events, item => item.StatusCode == "channel_policy_initialized");
+        Assert.Contains(events, item => item.Kind == ModerationPipelineEventKind.Faulted
+            && item.StatusCode == "ai_model_load_failed");
+
+        harness.LocalModel.PrepareResponse = _ => ValueTask.CompletedTask;
+        await harness.Coordinator.StartAsync().WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.True(harness.Coordinator.IsRunning);
+        Assert.Equal(2, harness.LocalModel.PrepareCallCount);
+        Assert.Contains(events, item => item.Kind == ModerationPipelineEventKind.Started);
+    }
+
+    [Fact]
+    public async Task StartAsync_PublishesPolicyForEveryChannelAfterStartupAndSettingsRestart()
+    {
+        var contexts = new[]
+        {
+            Context(),
+            GameContext() with { ChannelId = "channel-2" },
+        };
+        var runtimeSettings = new ModerationPolicyRuntimeSettings(true);
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidEnvelope,
+            channelContexts: contexts,
+            policyRuntimeSettings: runtimeSettings);
+        var events = new ConcurrentQueue<ModerationPipelineEventArgs>();
+        harness.Coordinator.EventReceived += (_, item) => events.Enqueue(item);
+
+        await harness.Coordinator.StartAsync();
+
+        var enabledEvents = events.ToArray();
+        var enabledPolicies = enabledEvents
+            .Where(item => item.StatusCode == "channel_policy_initialized")
+            .ToArray();
+        Assert.Equal(contexts.Select(context => context.ChannelId),
+            enabledPolicies.Select(item => item.ChannelContext!.ChannelId));
+        Assert.True(Array.FindIndex(enabledEvents,
+            item => item.Kind == ModerationPipelineEventKind.Started)
+            < Array.FindIndex(enabledEvents,
+                item => item.StatusCode == "channel_policy_initialized"));
+        Assert.Equal([PolicySetCode.General], enabledPolicies[0].ActivePolicySets);
+        Assert.Contains(PolicySetCode.Backseatgaming, enabledPolicies[1].ActivePolicySets);
+
+        await harness.Coordinator.StopAsync();
+        runtimeSettings.BackseatgamingEnabled = false;
+        events.Clear();
+        await harness.Coordinator.StartAsync();
+
+        var disabledPolicies = events
+            .Where(item => item.StatusCode == "channel_policy_initialized")
+            .ToArray();
+        Assert.Equal(2, disabledPolicies.Length);
+        Assert.All(disabledPolicies, item =>
+            Assert.Equal([PolicySetCode.General], item.ActivePolicySets));
+    }
+
+    [Fact]
+    public async Task StartAsync_CancellationDuringModelLoadDoesNotStartWorkers()
+    {
+        await using var harness = CoordinatorHarness.Create(
+            whitelist: Set(),
+            modelResponse: ValidEnvelope);
+        using var cancellation = new CancellationTokenSource();
+        var prepareEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.LocalModel.PrepareResponse = async token =>
+        {
+            prepareEntered.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        };
+
+        var start = harness.Coordinator.StartAsync(cancellation.Token);
+        await prepareEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        await cancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => start);
+
+        Assert.False(harness.Coordinator.IsRunning);
+        Assert.False(harness.EventSub.ReadStarted.Task.IsCompleted);
+        Assert.Equal(0, harness.LocalModel.CallCount);
+    }
+
+    [Fact]
     public async Task StartAsync_PublishesStartedOnlyAfterEventSubIsReady()
     {
         var readiness = new TwitchConnectionReadiness();
@@ -1071,7 +1213,7 @@ public sealed class ModerationCoordinatorTests
             item => item.Kind == ModerationPipelineEventKind.CaseCreated);
 
         await harness.Coordinator.StartAsync();
-        harness.EventSub.Publish(MessageEvent(1, "@foo du bist vÃ¶llig unfÃ¤hig"));
+        harness.EventSub.Publish(MessageEvent(1, "@foo du bist völlig unfähig"));
         await firstClassificationStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
         Volatile.Write(ref policyRevision, 2);
@@ -1127,7 +1269,7 @@ public sealed class ModerationCoordinatorTests
             item => item.Kind == ModerationPipelineEventKind.CaseCreated);
 
         await harness.Coordinator.StartAsync();
-        harness.EventSub.Publish(MessageEvent(1, "@foo du bist vÃ¶llig unfÃ¤hig"));
+        harness.EventSub.Publish(MessageEvent(1, "@foo du bist völlig unfähig"));
         await firstConfirmationStarted.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
         learningRevision.Advance();
@@ -1284,7 +1426,7 @@ public sealed class ModerationCoordinatorTests
             {
                 if (Interlocked.Increment(ref modelAttempt) == 1)
                 {
-                    throw new HttpRequestException("LM Studio connection failed.");
+                    throw new HttpRequestException("Lokale AI connection failed.");
                 }
 
                 return ValidEnvelope(request);
@@ -2569,7 +2711,8 @@ public sealed class ModerationCoordinatorTests
             IAiValidationAttemptStore? validationAttemptStore = null,
             IReadOnlyList<ChannelContextSnapshot>? channelContexts = null,
             IReadOnlyList<BlacklistRuleRecord>? policyRules = null,
-            IPhraseRuleSource? phraseRuleSource = null)
+            IPhraseRuleSource? phraseRuleSource = null,
+            ModerationPolicyRuntimeSettings? policyRuntimeSettings = null)
         {
             var contexts = channelContexts?.ToArray() ?? [Context()];
             var eventSub = new FakeEventSubClient();
@@ -2602,7 +2745,7 @@ public sealed class ModerationCoordinatorTests
             };
             options.TwitchApi.SetBroadcasterIds(
                 contexts.Select(context => context.ChannelId));
-            options.LmStudio.UseCompactModerationContractV6 =
+            options.LocalAi.UseCompactModerationContractV6 =
                 useCompactContractV6;
             var coordinator = new ModerationCoordinator(
                 eventSub,
@@ -2610,7 +2753,7 @@ public sealed class ModerationCoordinatorTests
                 new CoreChatTextNormalizer(),
                 new WhitelistFilterAgent(whitelistSource),
                 policyStore,
-                new EffectivePolicyResolver(),
+                new EffectivePolicyResolver(runtimeSettings: policyRuntimeSettings),
                 phraseRuleSource ?? new EmptyPhraseRuleSource(),
                 new BlacklistMatcher(),
                 batcher ?? new ModerationBatcher(),
@@ -2898,8 +3041,20 @@ public sealed class ModerationCoordinatorTests
         private readonly ConcurrentQueue<ModerationRequestEnvelopeV3> _requests = [];
         private readonly ConcurrentQueue<string?> _schedulingKeys = [];
         private int _callCount;
+        private int _prepareCallCount;
 
         public int CallCount => Volatile.Read(ref _callCount);
+
+        public int PrepareCallCount => Volatile.Read(ref _prepareCallCount);
+
+        public Func<CancellationToken, ValueTask>? PrepareResponse { get; set; }
+
+        public ValueTask PrepareAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Interlocked.Increment(ref _prepareCallCount);
+            return PrepareResponse?.Invoke(cancellationToken) ?? ValueTask.CompletedTask;
+        }
 
         public ModerationRequestEnvelopeV3[] Requests => _requests.ToArray();
 

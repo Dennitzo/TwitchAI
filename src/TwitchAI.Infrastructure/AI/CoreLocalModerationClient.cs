@@ -6,17 +6,20 @@ namespace TwitchAI.Infrastructure.AI;
 
 public sealed class CoreLocalModerationClient : ILocalModerationClient
 {
-    private readonly ILmStudioClient _client;
+    private readonly ILocalAiClient _client;
     private readonly IModerationPromptCompiler _promptCompiler;
 
     public CoreLocalModerationClient(
-        ILmStudioClient client,
+        ILocalAiClient client,
         InfrastructureOptions? options = null,
         IModerationPromptCompiler? promptCompiler = null)
     {
         _client = client;
         _promptCompiler = promptCompiler ?? new ModerationPromptCompiler();
     }
+
+    public async ValueTask PrepareAsync(CancellationToken cancellationToken = default) =>
+        await _client.EnsureModelLoadedAsync(cancellationToken).ConfigureAwait(false);
 
     public async ValueTask<string> ModerateAsync(
         ModerationRequestEnvelopeV3 request,
@@ -39,7 +42,7 @@ public sealed class CoreLocalModerationClient : ILocalModerationClient
     {
         ArgumentNullException.ThrowIfNull(prompt);
         var completion = await _client.CompleteModerationAsync(
-            new LmStudioModerationRequest(
+            new LocalAiModerationRequest(
                 prompt.CorrelationId ?? prompt.Envelope.BatchId.ToString("D"),
                 prompt.PolicyHash,
                 prompt.MessageIds.Count,
@@ -47,7 +50,7 @@ public sealed class CoreLocalModerationClient : ILocalModerationClient
                 prompt.UserPrompt,
                 prompt.ActiveRuleCodes,
                 prompt.ReplyTemplateIds,
-                LmStudioResponseSchemaKind.ModerationV6,
+                LocalAiResponseSchemaKind.ModerationV6,
                 LocalAiRunKind.Moderation,
                 prompt.ResponseFormat,
                 SchedulingKey: schedulingKey),

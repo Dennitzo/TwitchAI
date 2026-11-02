@@ -1,8 +1,7 @@
 # TwitchAI
 
 TwitchAI ist eine lokale WinUI-3-Anwendung für assistierte Twitch-Chatmoderation.
-Sie bündelt Chatnachrichten, bewertet sie mit einem lokal in LM Studio geladenen
-`openai/gpt-oss-20b` und legt ausschließlich überprüfbare Vorschläge vor. Eine
+Sie bündelt Chatnachrichten, bewertet sie mit einem lokalen GGUF-Modell über den eigenen TwitchAI-Gateway und llama.cpp und legt ausschließlich überprüfbare Vorschläge vor. Eine
 Moderationsaktion wird niemals automatisch ausgeführt.
 
 ## Sicherheitsmodell
@@ -27,15 +26,14 @@ Moderationsaktion wird niemals automatisch ausgeführt.
 - Windows 10 ab Version 2004 (Build 19041), x64
 - .NET SDK `10.0.302` (siehe `global.json`)
 - Visual Studio 2026 oder eine Installation mit WinUI-/MSIX-Buildtools
-- LM Studio mit lokal geladenem Modell `openai/gpt-oss-20b`
+- Docker Desktop, Python 3 und ein vollständiges GGUF-Modell unter `C:\Users\AMD\.cache\huggingface`
 - eine registrierte Twitch Developer Application. TwitchAI verwendet den
   Device Code Flow und benötigt in den Einstellungen ausschließlich deren
   Client-ID, keinen Client Secret.
 
 ## Erster Start
 
-1. LM Studio starten, das Modell laden und den lokalen Server auf
-   `http://127.0.0.1:1234` bereitstellen.
+1. Einmal `windows/build-ai-stack.ps1` ausführen. Gateway und llama werden beim App-Start automatisch gestartet und beim Beenden gestoppt.
 2. TwitchAI öffnen und unter **Einstellungen** die Twitch Client-ID eintragen.
 3. Optional die zu moderierenden Kanäle kommagetrennt eintragen, zum Beispiel
    `channel1, channel2, channel3`. Ohne Kanalangabe wird der eigene Kanal
@@ -43,7 +41,7 @@ Moderationsaktion wird niemals automatisch ausgeführt.
    Kontos enthalten sein.
 4. **Mit Twitch verbinden** wählen, den Device-Code im Browser bestätigen und
    die Verbindung prüfen.
-5. LM Studio prüfen und anschließend im Header **Analyse starten** wählen.
+5. Unter Einstellungen das lokale Modell und dessen unterstütztes Reasoning wählen, die lokale AI prüfen und anschließend im Header **Analyse starten** wählen.
 
 Zeigt Twitch beim Aktivieren **„Falscher Code!“**, den alten Browser-Tab
 schließen und die Verbindung in TwitchAI erneut starten. Die Anwendung öffnet
@@ -75,11 +73,12 @@ unter `%LOCALAPPDATA%\TwitchAI`. Der Datenbankpfad ist
    sofort.
 4. General-Regeln gelten immer. Backseatgaming kann unter **Einstellungen →
    Moderation → Backseatgaming** ein- oder ausgeschaltet werden; der Schalter ist
-   standardmäßig aktiviert, wirkt sofort und wird automatisch gespeichert.
+   standardmäßig aktiviert. **Einstellungen speichern** im Seitenkopf übernimmt
+   die Änderung und initialisiert den Regelkontext ohne App-Neustart neu.
    Bei aktiviertem Schalter gilt Backseatgaming für bekannte Kategorien außer
    Just Chatting und IRL; bei unbekannter Kategorie wird konservativ nur General
    verwendet.
-5. LM Studio klassifiziert zunächst mit
+5. Die lokale AI klassifiziert zunächst mit
    `twitchai.moderation.classification.response.v1` ohne Begründungstext.
    Erkannte sowie durch exakte Lerndaten oder aktive Phrasen vorgegebene
    Kandidaten werden anschließend gemeinsam mit
@@ -156,3 +155,53 @@ Bestätigungs- und Reparaturdiagnosen werden ohne Chattexte oder Modellantworten
 
 Weitere technische Details stehen in
 [docs/architecture.md](docs/architecture.md).
+
+## Eigene lokale AI-Laufzeit
+
+Der Docker-Gateway (`twitchai-gateway`, Compose-Projekt `twitchai-ai-stack`) hört auf
+`127.0.0.1:8180`. Der native llama-Router verwendet Port 8181, seine Modellsteuerung
+Port 8182. Missums Dienste, Ports und Laufzeitverzeichnisse werden nicht verwendet.
+Die portable EXE enthält den Runtime-Support und stellt ihn beim Start unter
+`%USERPROFILE%\.twitchai\runtime-support` passend zur App-Version bereit.
+GGUF-Dateien werden ausschließlich aus `C:\Users\AMD\.cache\huggingface` gelesen.
+Unvollständige Shards, reine Projektoren und ungeeignete Modelltypen erscheinen
+nicht in der nativen Chat-Modellauswahl. Es werden keine Modelle heruntergeladen.
+
+- `windows/build-ai-stack.ps1`: Docker-Image bauen und offizielle llama.cpp-CUDA-Binärdateien mit SHA-256-Prüfung installieren.
+- `windows/start-ai-stack.ps1`: Docker Desktop bei Bedarf starten, eigene native Runtime und Gateway starten.
+- `windows/stop-ai-stack.ps1`: eigenen Gateway stoppen, Modelle entladen und eigene native Prozesse beenden.
+- `windows/Build-Portable.ps1`: App einschließlich Runtime-Support erstellen.
+
+**Einstellungen speichern** im Seitenkopf übernimmt Modell, Reasoning und die
+Moderationsschalter gemeinsam. Eine laufende Analyse wird dafür angehalten und
+mit frischen Kanalinformationen neu gestartet; eine pausierte Analyse bleibt
+pausiert. Ein App-Neustart ist nicht erforderlich. `auto` verwendet
+die nativen Modellvorgaben; weitere Stufen stammen aus den GGUF-Template-Metadaten.
+**Analyse starten** wartet auf die bestätigte Ladung des ausgewählten Modells,
+bevor Nachrichtenempfang und AI-Verarbeitung beginnen. Währenddessen zeigt die
+App **Modell wird geladen**. Der Gateway nimmt JSON sowohl mit `Content-Length`
+als auch über HTTP/1.1 Chunked entgegen und beantwortet ungültige Requests mit
+strukturierten JSON-Fehlern. Modellwechsel warten auf laufende Inferenzanfragen.
+Ein Modellwechsel wird bei der nächsten Anfrage durch die native GPU-Verwaltung
+angewendet. Die bereits vorhandenen Moderationsschemas, Freigaben, AI-Metriken
+und Learning-Abläufe verwenden denselben lokalen Gateway.
+
+Die native Verwaltung in `workers/coding/catalog.py`, `session_cache.py` und den
+beiden `manage-*.ps1`-Skripten wurde aus dem lokalen Missum-Projekt übernommen und
+für TwitchAI isoliert. Der auf Chatmoderation beschränkte Gateway ist eigenständig;
+er benötigt weder eine laufende Missum-App noch Missums Server oder Datenordner.
+Betriebslogs und Modell-/Sitzungszustand liegen unter `%USERPROFILE%\.twitchai\native-runtime`,
+die separaten llama-Binärdateien unter `%USERPROFILE%\.twitchai\llama-server`.
+Dieser paketunabhängige Pfad gilt auch beim Start aus Codex. Startfehler werden
+unter `%USERPROFILE%\.twitchai\logs\start-ai-stack.log` protokolliert.
+
+Für die Übernahme bereits vorhandener llama-Binärdateien unterstützt der Build
+`-BinaryDirectory <Ordner mit llama-server.exe und DLLs>`. Dabei werden alle
+Binärdateien in den eigenen TwitchAI-Installationsordner kopiert und ihre Hashes
+verglichen. Der Quellordner wird danach für den Betrieb nicht benötigt.
+
+Der reproduzierbare lokale Gateway-Test steht unter
+[tools/TwitchAI.Gateway.Smoke](tools/TwitchAI.Gateway.Smoke/README.md).
+Er prüft feste Beispielnachrichten mit den produktiven Klassifikations- und
+Bestätigungsschemas, ohne Twitch-Anfragen oder Änderungen an der App-Datenbank.
+Protokollregressionen: `python -m unittest discover -s tests/gateway -v`.

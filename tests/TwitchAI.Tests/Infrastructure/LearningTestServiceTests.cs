@@ -16,7 +16,7 @@ public sealed class LearningTestServiceTests
     public async Task AnalyzeAsync_UsesOfflineGeneralAndBackseatPolicyForWhitelistedExample()
     {
         var testIdFromRequest = Guid.Empty;
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
         {
             testIdFromRequest = ReadTestId(request.UserPrompt);
             return Completion(Allow(testIdFromRequest, "G_OTHER_ABUSE"));
@@ -24,7 +24,7 @@ public sealed class LearningTestServiceTests
         var monitor = new LocalAiRunActivityMonitor();
         var activities = new List<LocalAiRunActivity>();
         monitor.ActivityChanged += (_, args) => activities.Add(args.Activity);
-        var sut = CreateService(lmStudio, monitor: monitor);
+        var sut = CreateService(localAi, monitor: monitor);
 
         var result = await sut.AnalyzeAsync(new LearningTestRequest("KEKW"));
 
@@ -41,8 +41,8 @@ public sealed class LearningTestServiceTests
         Assert.Contains(
             result.ActiveRules,
             item => item.PolicySet == PolicySetCode.Backseatgaming);
-        var sent = Assert.Single(lmStudio.Requests);
-        Assert.Equal(LmStudioResponseSchemaKind.LearningTest, sent.ResponseSchema);
+        var sent = Assert.Single(localAi.Requests);
+        Assert.Equal(LocalAiResponseSchemaKind.LearningTest, sent.ResponseSchema);
         Assert.Equal(LocalAiRunKind.LearningTest, sent.RunKind);
         Assert.DoesNotContain("KEKW", sent.UserPrompt, StringComparison.Ordinal);
         var queued = Assert.Single(activities);
@@ -54,7 +54,7 @@ public sealed class LearningTestServiceTests
     [Fact]
     public async Task AnalyzeAsync_ModeratePreservesValidActionAndContextualReason()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
         {
             var id = ReadTestId(request.UserPrompt);
             return Completion(
@@ -69,7 +69,7 @@ public sealed class LearningTestServiceTests
                     ["spam spam"],
                     0.91));
         });
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("SPAM SPAM jetzt"));
@@ -89,7 +89,7 @@ public sealed class LearningTestServiceTests
     public async Task AnalyzeAsync_NormalizesGuidanceAfterRepairRepeatsInvalidDirectAddress()
     {
         var calls = 0;
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
         {
             calls++;
             return Completion(Response(
@@ -105,7 +105,7 @@ public sealed class LearningTestServiceTests
                 evidenceKind: "instruction",
                 guidanceOverride: "Du solltest Spielhinweise vermeiden."));
         });
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("Du musst nachladen"));
@@ -120,7 +120,7 @@ public sealed class LearningTestServiceTests
     [Fact]
     public async Task AnalyzeAsync_PersonalAttackPreservesTenMinuteTimeout()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -132,7 +132,7 @@ public sealed class LearningTestServiceTests
                     "Nutzer oder Streamer wurde direkt persönlich beleidigt.",
                     ["du idiot"],
                     0.94)));
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("Du Idiot"));
@@ -149,7 +149,7 @@ public sealed class LearningTestServiceTests
     [Fact]
     public async Task AnalyzeAsync_DeleteForSpamRemainsDelete()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -161,7 +161,7 @@ public sealed class LearningTestServiceTests
                     "Der Chat wurde durch mehrfache Wiederholungen überflutet.",
                     ["spam spam"],
                     0.91)));
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("SPAM SPAM"));
@@ -174,7 +174,7 @@ public sealed class LearningTestServiceTests
     [Fact]
     public async Task AnalyzeAsync_BackseatgamingPreservesTenMinuteTimeout()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -186,7 +186,7 @@ public sealed class LearningTestServiceTests
                     "Der Streamer wurde ungefragt zu einer Spielhandlung angewiesen.",
                     ["geh nach links"],
                     0.93)));
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("Geh nach links"));
@@ -201,7 +201,7 @@ public sealed class LearningTestServiceTests
     [Fact]
     public async Task AnalyzeAsync_BotScamPreservesBan()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -213,7 +213,7 @@ public sealed class LearningTestServiceTests
                     "Der eigene Kanal wurde ausdrücklich beworben.",
                     ["meinen kanal"],
                     0.97)));
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("Besucht meinen Kanal"));
@@ -228,7 +228,7 @@ public sealed class LearningTestServiceTests
     [Fact]
     public async Task AnalyzeAsync_BeggingPreservesDayTimeout()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -240,7 +240,7 @@ public sealed class LearningTestServiceTests
                     "Ausdrückliches Betteln um einen kostenlosen Sub.",
                     ["schenk mir bitte einen sub"],
                     0.95)));
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("Schenk mir bitte einen Sub"));
@@ -255,7 +255,7 @@ public sealed class LearningTestServiceTests
     [Fact]
     public async Task AnalyzeAsync_HarmPreservesDayTimeout()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -267,7 +267,7 @@ public sealed class LearningTestServiceTests
                     "Eine Person wurde mit einer konkreten Drohung eingeschüchtert.",
                     ["unnötiger lärm"],
                     0.83)));
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("Unnötiger Lärm"));
@@ -280,7 +280,7 @@ public sealed class LearningTestServiceTests
     [Fact]
     public async Task AnalyzeAsync_MissingRuleFallsBackToGeneralBaseRuleBeforeRepair()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
         {
             var id = ReadTestId(request.UserPrompt);
             return Completion(
@@ -296,12 +296,12 @@ public sealed class LearningTestServiceTests
                     0.4));
         });
         var diagnostics = new RecordingValidationAttemptStore();
-        var sut = CreateService(lmStudio, validationAttempts: diagnostics);
+        var sut = CreateService(localAi, validationAttempts: diagnostics);
 
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("Eine harmlose Testnachricht"));
 
-        Assert.Single(lmStudio.Requests);
+        Assert.Single(localAi.Requests);
         Assert.Equal("G_OTHER_ABUSE", result.ProposedRuleCode);
         Assert.Equal(PolicySetCode.General, result.ProposedPolicySet);
         Assert.True(result.UsedRuleFallback);
@@ -325,7 +325,7 @@ public sealed class LearningTestServiceTests
     [Fact]
     public async Task AnalyzeAsync_UnknownExplicitRuleRemainsInvalidAfterOneRepair()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
         {
             var id = ReadTestId(request.UserPrompt);
             return Completion(
@@ -340,16 +340,16 @@ public sealed class LearningTestServiceTests
                     [],
                     0.4));
         });
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         await Assert.ThrowsAsync<InvalidDataException>(
             async () => await sut.AnalyzeAsync(
                 new LearningTestRequest("Eine harmlose Testnachricht")));
 
-        Assert.Equal(2, lmStudio.Requests.Count);
-        var repair = lmStudio.Requests[1];
+        Assert.Equal(2, localAi.Requests.Count);
+        var repair = localAi.Requests[1];
         Assert.EndsWith("-repair", repair.CorrelationId, StringComparison.Ordinal);
-        Assert.NotEqual(lmStudio.Requests[0].CorrelationId, repair.CorrelationId);
+        Assert.NotEqual(localAi.Requests[0].CorrelationId, repair.CorrelationId);
         Assert.Contains(
             "\"validationErrorCodes\":[\"rule_unknown\"]",
             repair.UserPrompt,
@@ -363,7 +363,7 @@ public sealed class LearningTestServiceTests
     [Fact]
     public async Task AnalyzeAsync_ExplicitInvalidPolicyIsNeverSilentlyReplaced()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -375,20 +375,20 @@ public sealed class LearningTestServiceTests
                     string.Empty,
                     [],
                     0.4)));
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         var exception = await Assert.ThrowsAsync<InvalidDataException>(
             async () => await sut.AnalyzeAsync(
                 new LearningTestRequest("Eine harmlose Testnachricht")));
 
         Assert.Contains("policy_set_invalid", exception.Message, StringComparison.Ordinal);
-        Assert.Equal(2, lmStudio.Requests.Count);
+        Assert.Equal(2, localAi.Requests.Count);
     }
 
     [Fact]
     public async Task AnalyzeAsync_BackseatQuestionIsRejectedAfterSingleRepair()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -400,7 +400,7 @@ public sealed class LearningTestServiceTests
                     "Der Streamer wurde ungefragt zu einer Spielhandlung angewiesen.",
                     ["geh nach links"],
                     0.9)));
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         var exception = await Assert.ThrowsAsync<InvalidDataException>(
             async () => await sut.AnalyzeAsync(
@@ -410,13 +410,13 @@ public sealed class LearningTestServiceTests
             "backseat_context_insufficient",
             exception.Message,
             StringComparison.Ordinal);
-        Assert.Equal(2, lmStudio.Requests.Count);
+        Assert.Equal(2, localAi.Requests.Count);
     }
 
     [Fact]
     public async Task AnalyzeAsync_BackseatRequiresConcreteMultiwordTrigger()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -428,7 +428,7 @@ public sealed class LearningTestServiceTests
                     "Unaufgeforderter Spielhinweis.",
                     ["links"],
                     0.9)));
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         var exception = await Assert.ThrowsAsync<InvalidDataException>(
             async () => await sut.AnalyzeAsync(
@@ -438,13 +438,13 @@ public sealed class LearningTestServiceTests
             "backseat_evidence_insufficient",
             exception.Message,
             StringComparison.Ordinal);
-        Assert.Equal(2, lmStudio.Requests.Count);
+        Assert.Equal(2, localAi.Requests.Count);
     }
 
     [Fact]
     public async Task AnalyzeAsync_MissingRuleUsesMatchingLocalBackseatRuleBeforeRepair()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -469,12 +469,12 @@ public sealed class LearningTestServiceTests
                 0,
                 IsArchived: false),
         ]);
-        var sut = CreateService(lmStudio, phraseSource: phraseSource);
+        var sut = CreateService(localAi, phraseSource: phraseSource);
 
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("Geh nach links"));
 
-        Assert.Single(lmStudio.Requests);
+        Assert.Single(localAi.Requests);
         Assert.Equal(ModerationRuleCodes.Backseatgaming, result.ProposedRuleCode);
         Assert.Equal(PolicySetCode.Backseatgaming, result.ProposedPolicySet);
         Assert.True(result.UsedRuleFallback);
@@ -487,7 +487,7 @@ public sealed class LearningTestServiceTests
     public async Task AnalyzeAsync_ActivePhraseUsesTrustedEvidenceWithoutAiRepair()
     {
         const string message = "ich liebe dich";
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -512,11 +512,11 @@ public sealed class LearningTestServiceTests
                 0,
                 IsArchived: false),
         ]);
-        var sut = CreateService(lmStudio, phraseSource: phraseSource);
+        var sut = CreateService(localAi, phraseSource: phraseSource);
 
         var result = await sut.AnalyzeAsync(new LearningTestRequest(message));
 
-        Assert.Single(lmStudio.Requests);
+        Assert.Single(localAi.Requests);
         Assert.Equal(LearningVerdict.Moderate, result.Verdict);
         Assert.Equal(ModerationRuleCodes.PersonalAttack, result.ProposedRuleCode);
         Assert.Equal("unwanted_intimate_approach", result.EvidenceKind);
@@ -541,7 +541,7 @@ public sealed class LearningTestServiceTests
                 IsExactHumanDecision = true,
             },
         ]);
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -554,11 +554,11 @@ public sealed class LearningTestServiceTests
                     [message],
                     0.91,
                     evidenceKind: "unwanted_intimate_approach")));
-        var sut = CreateService(lmStudio, retrieval: retrieval);
+        var sut = CreateService(localAi, retrieval: retrieval);
 
         var result = await sut.AnalyzeAsync(new LearningTestRequest(message));
 
-        Assert.Single(lmStudio.Requests);
+        Assert.Single(localAi.Requests);
         Assert.Equal(LearningVerdict.Moderate, result.Verdict);
         Assert.Equal("unwanted_intimate_approach", result.EvidenceKind);
         Assert.Equal("exact_moderate_learning", result.HumanPrioritySource);
@@ -582,7 +582,7 @@ public sealed class LearningTestServiceTests
                 IsExactHumanDecision = true,
             },
         ]);
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -596,12 +596,12 @@ public sealed class LearningTestServiceTests
                     0.91,
                     evidenceKind: "disclosure",
                     sensitiveDataType: "email")));
-        var sut = CreateService(lmStudio, retrieval: retrieval);
+        var sut = CreateService(localAi, retrieval: retrieval);
 
         var exception = await Assert.ThrowsAsync<InvalidDataException>(
             async () => await sut.AnalyzeAsync(new LearningTestRequest(message)));
 
-        Assert.Single(lmStudio.Requests);
+        Assert.Single(localAi.Requests);
         Assert.Contains(
             "contextual reason for the human-priority rule",
             exception.Message,
@@ -626,7 +626,7 @@ public sealed class LearningTestServiceTests
                 IsExactHumanDecision = true,
             },
         ]);
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(
                 Response(
                     ReadTestId(request.UserPrompt),
@@ -639,11 +639,11 @@ public sealed class LearningTestServiceTests
                     [message],
                     0.91,
                     evidenceKind: "sexualization")));
-        var sut = CreateService(lmStudio, retrieval: retrieval);
+        var sut = CreateService(localAi, retrieval: retrieval);
 
         var result = await sut.AnalyzeAsync(new LearningTestRequest(message));
 
-        Assert.Single(lmStudio.Requests);
+        Assert.Single(localAi.Requests);
         Assert.Equal(LearningVerdict.Allow, result.Verdict);
         Assert.Equal(ModerationActionKind.None, result.ProposedAction);
         Assert.Null(result.EvidenceKind);
@@ -653,7 +653,7 @@ public sealed class LearningTestServiceTests
     [Fact]
     public async Task AnalyzeAsync_SemanticEvidenceMismatchRepairsWithExplicitRuleMapping()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
         {
             var isRepair = request.CorrelationId.EndsWith(
                 "-repair",
@@ -676,13 +676,13 @@ public sealed class LearningTestServiceTests
                         ? "direct_insult"
                         : "sexualization"));
         });
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("Du Idiot"));
 
-        Assert.Equal(2, lmStudio.Requests.Count);
-        var repair = lmStudio.Requests[1];
+        Assert.Equal(2, localAi.Requests.Count);
+        var repair = localAi.Requests[1];
         Assert.Contains(
             "\"validationErrorCodes\":[\"evidence_kind_invalid\"]",
             repair.UserPrompt,
@@ -708,7 +708,7 @@ public sealed class LearningTestServiceTests
     [Fact]
     public async Task AnalyzeAsync_EvidenceRepairCannotSilentlyChangeRuleCode()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
         {
             var isRepair = request.CorrelationId.EndsWith(
                 "-repair",
@@ -730,13 +730,13 @@ public sealed class LearningTestServiceTests
                     0.91,
                     evidenceKind: isRepair ? "racist" : "sexualization"));
         });
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
 
         var exception = await Assert.ThrowsAsync<InvalidDataException>(
             async () => await sut.AnalyzeAsync(
                 new LearningTestRequest("Du Idiot")));
 
-        Assert.Equal(2, lmStudio.Requests.Count);
+        Assert.Equal(2, localAi.Requests.Count);
         Assert.Contains(
             "repair_rule_changed",
             exception.Message,
@@ -746,7 +746,7 @@ public sealed class LearningTestServiceTests
     [Fact]
     public async Task AnalyzeAsync_RecordsInitialAndRepairDiagnosticsWithoutContent()
     {
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
         {
             var id = ReadTestId(request.UserPrompt);
             return request.CorrelationId.EndsWith("-repair", StringComparison.Ordinal)
@@ -764,7 +764,7 @@ public sealed class LearningTestServiceTests
                         0.4));
         });
         var diagnostics = new RecordingValidationAttemptStore();
-        var sut = CreateService(lmStudio, validationAttempts: diagnostics);
+        var sut = CreateService(localAi, validationAttempts: diagnostics);
 
         var result = await sut.AnalyzeAsync(
             new LearningTestRequest("Ein vertraulicher Beispieltext"));
@@ -810,13 +810,13 @@ public sealed class LearningTestServiceTests
                 IsPositive: false,
                 "G_SPAM"),
         ]);
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(Allow(ReadTestId(request.UserPrompt), "G_OTHER_ABUSE")));
-        var sut = CreateService(lmStudio, retrieval: retrieval);
+        var sut = CreateService(localAi, retrieval: retrieval);
 
         await sut.AnalyzeAsync(new LearningTestRequest("das ist harmlos"));
 
-        var sent = Assert.Single(lmStudio.Requests);
+        var sent = Assert.Single(localAi.Requests);
         Assert.Contains("\"learningExamples\":[", sent.UserPrompt, StringComparison.Ordinal);
         Assert.Contains("\"text\":\"das ist harmlos\"", sent.UserPrompt, StringComparison.Ordinal);
         Assert.Contains("\"matchedPhrase\":\"das ist harmlos\"", sent.UserPrompt, StringComparison.Ordinal);
@@ -830,9 +830,9 @@ public sealed class LearningTestServiceTests
         var original = Policy("policy-1");
         var changed = Policy("policy-2");
         var store = new FakePolicyStore(original, changed);
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(Allow(ReadTestId(request.UserPrompt), "G_OTHER_ABUSE")));
-        var sut = CreateService(lmStudio, store);
+        var sut = CreateService(localAi, store);
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
             async () => await sut.AnalyzeAsync(
@@ -845,12 +845,12 @@ public sealed class LearningTestServiceTests
     public async Task AnalyzeAsync_RejectsResultWhenLearningChangedDuringInference()
     {
         var revision = new LearningContextRevision();
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
         {
             revision.Advance();
             return Completion(Allow(ReadTestId(request.UserPrompt), "G_OTHER_ABUSE"));
         });
-        var sut = CreateService(lmStudio, learningRevision: revision);
+        var sut = CreateService(localAi, learningRevision: revision);
 
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
             async () => await sut.AnalyzeAsync(
@@ -864,9 +864,9 @@ public sealed class LearningTestServiceTests
     public async Task IsPolicyCurrentAsync_RejectsCompletedResultAfterLearningChange()
     {
         var revision = new LearningContextRevision();
-        var lmStudio = new FakeLmStudioClient(request =>
+        var localAi = new FakeLocalAiClient(request =>
             Completion(Allow(ReadTestId(request.UserPrompt), "G_OTHER_ABUSE")));
-        var sut = CreateService(lmStudio, learningRevision: revision);
+        var sut = CreateService(localAi, learningRevision: revision);
         var result = await sut.AnalyzeAsync(new LearningTestRequest("harmlos"));
         Assert.True(await sut.IsPolicyCurrentAsync(result));
 
@@ -882,13 +882,13 @@ public sealed class LearningTestServiceTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         var entered = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var lmStudio = new FakeLmStudioClient(async request =>
+        var localAi = new FakeLocalAiClient(async request =>
         {
             entered.SetResult();
             await release.Task;
             return Completion(Allow(ReadTestId(request.UserPrompt), "G_OTHER_ABUSE"));
         });
-        var sut = CreateService(lmStudio);
+        var sut = CreateService(localAi);
         var first = sut.AnalyzeAsync(new LearningTestRequest("erste")).AsTask();
         await entered.Task;
 
@@ -905,8 +905,8 @@ public sealed class LearningTestServiceTests
         var currentPolicy = Policy("policy-current");
         var store = new FakePolicyStore(currentPolicy);
         var sut = CreateService(
-            new FakeLmStudioClient(
-                _ => Task.FromException<LmStudioModerationCompletion>(
+            new FakeLocalAiClient(
+                _ => Task.FromException<LocalAiModerationCompletion>(
                     new NotSupportedException())),
             store);
         var result = Result(
@@ -915,15 +915,15 @@ public sealed class LearningTestServiceTests
         Assert.True(await sut.IsPolicyCurrentAsync(result));
         Assert.False(
                 await CreateService(
-                    new FakeLmStudioClient(
-                        _ => Task.FromException<LmStudioModerationCompletion>(
+                    new FakeLocalAiClient(
+                        _ => Task.FromException<LocalAiModerationCompletion>(
                             new NotSupportedException())),
                     new FakePolicyStore(Policy("different")))
                 .IsPolicyCurrentAsync(result));
         Assert.False(
                 await CreateService(
-                    new FakeLmStudioClient(
-                        _ => Task.FromException<LmStudioModerationCompletion>(
+                    new FakeLocalAiClient(
+                        _ => Task.FromException<LocalAiModerationCompletion>(
                             new NotSupportedException())),
                     new FakePolicyStore(
                         currentPolicy with
@@ -937,10 +937,10 @@ public sealed class LearningTestServiceTests
     public async Task GenerateReasonAsync_UsesLowercaseTextAndSelectedRuleOnly()
     {
         var policy = Policy("policy-reason");
-        var lmStudio = new FakeLmStudioClient(
+        var localAi = new FakeLocalAiClient(
             _ => Completion(
                     "{\"violationReason\":\"Der Streamer wurde ungefragt zum Nachladen angewiesen.\",\"guidance\":\"Spielhinweise künftig bitte vermeiden.\"}"));
-        var sut = CreateService(lmStudio, new FakePolicyStore(policy));
+        var sut = CreateService(localAi, new FakePolicyStore(policy));
         var testResult = Result(
             LearningPolicyRevisionFingerprint.Create(policy)) with
         {
@@ -965,7 +965,7 @@ public sealed class LearningTestServiceTests
         Assert.Equal(
             "Spielhinweise künftig bitte vermeiden.",
             result.Guidance);
-        var request = Assert.Single(lmStudio.Requests);
+        var request = Assert.Single(localAi.Requests);
         Assert.Equal(LocalAiRunKind.LearningTest, request.RunKind);
         Assert.NotNull(request.ResponseFormat);
         Assert.Contains("du musst nachladen", request.UserPrompt, StringComparison.Ordinal);
@@ -985,12 +985,12 @@ public sealed class LearningTestServiceTests
     {
         var policy = Policy("policy-reason-repair");
         var responseNumber = 0;
-        var lmStudio = new FakeLmStudioClient(
+        var localAi = new FakeLocalAiClient(
             _ => Completion(
                 Interlocked.Increment(ref responseNumber) == 1
                     ? "{\"violationReason\":\"Der Streamer wurde ungefragt zum Nachladen angewiesen.\",\"guidance\":\"Du solltest Spielhinweise vermeiden.\"}"
                     : "{\"violationReason\":\"Der Streamer wurde ungefragt zum Nachladen angewiesen.\",\"guidance\":\"Spielhinweise künftig bitte vermeiden.\"}"));
-        var sut = CreateService(lmStudio, new FakePolicyStore(policy));
+        var sut = CreateService(localAi, new FakePolicyStore(policy));
 
         var result = await sut.GenerateReasonAsync(
             new LearningReasonRequest(
@@ -1006,11 +1006,11 @@ public sealed class LearningTestServiceTests
         Assert.Equal(
             "Der Streamer wurde ungefragt zum Nachladen angewiesen. Spielhinweise künftig bitte vermeiden.",
             result.Reason);
-        Assert.Equal(2, lmStudio.Requests.Count);
-        Assert.EndsWith("-repair", lmStudio.Requests[1].CorrelationId, StringComparison.Ordinal);
+        Assert.Equal(2, localAi.Requests.Count);
+        Assert.EndsWith("-repair", localAi.Requests[1].CorrelationId, StringComparison.Ordinal);
         Assert.Contains(
             "invalidOutput",
-            lmStudio.Requests[1].UserPrompt,
+            localAi.Requests[1].UserPrompt,
             StringComparison.Ordinal);
     }
 
@@ -1018,10 +1018,10 @@ public sealed class LearningTestServiceTests
     public async Task GenerateReasonAsync_SecondInvalidResponseUsesNoFallback()
     {
         var policy = Policy("policy-reason-invalid");
-        var lmStudio = new FakeLmStudioClient(
+        var localAi = new FakeLocalAiClient(
             _ => Completion(
                 "{\"violationReason\":\"Allgemeiner Verstoß.\",\"guidance\":\"Du solltest das künftig vermeiden.\"}"));
-        var sut = CreateService(lmStudio, new FakePolicyStore(policy));
+        var sut = CreateService(localAi, new FakePolicyStore(policy));
 
         await Assert.ThrowsAsync<InvalidDataException>(
             () => sut.GenerateReasonAsync(
@@ -1032,16 +1032,16 @@ public sealed class LearningTestServiceTests
                         600))
                 .AsTask());
 
-        Assert.Equal(2, lmStudio.Requests.Count);
+        Assert.Equal(2, localAi.Requests.Count);
     }
 
     [Fact]
     public async Task GenerateReasonAsync_DeleteUsesEmptyStructuredParts()
     {
         var policy = Policy("policy-reason-delete");
-        var lmStudio = new FakeLmStudioClient(
+        var localAi = new FakeLocalAiClient(
             _ => Completion("{\"violationReason\":\"\",\"guidance\":\"\"}"));
-        var sut = CreateService(lmStudio, new FakePolicyStore(policy));
+        var sut = CreateService(localAi, new FakePolicyStore(policy));
 
         var result = await sut.GenerateReasonAsync(
             new LearningReasonRequest(
@@ -1051,7 +1051,7 @@ public sealed class LearningTestServiceTests
                 null));
 
         Assert.Empty(result.Reason);
-        var properties = Assert.Single(lmStudio.Requests).ResponseFormat!.Value
+        var properties = Assert.Single(localAi.Requests).ResponseFormat!.Value
             .GetProperty("json_schema")
             .GetProperty("schema")
             .GetProperty("properties");
@@ -1064,7 +1064,7 @@ public sealed class LearningTestServiceTests
     }
 
     private static LearningTestService CreateService(
-        ILmStudioClient client,
+        ILocalAiClient client,
         IPolicyStore? store = null,
         ILocalAiRunActivityMonitor? monitor = null,
         IPhraseRuleSource? phraseSource = null,
@@ -1289,10 +1289,10 @@ public sealed class LearningTestServiceTests
                 .GetGuid();
     }
 
-    private static LmStudioModerationCompletion Completion(string envelope) =>
+    private static LocalAiModerationCompletion Completion(string envelope) =>
         new(
             envelope,
-            new LmStudioUsageMetrics(
+            new LocalAiUsageMetrics(
                 PromptTokens: 12,
                 CompletionTokens: 8,
                 TotalTokens: 20,
@@ -1394,30 +1394,30 @@ public sealed class LearningTestServiceTests
         }
     }
 
-    private sealed class FakeLmStudioClient : ILmStudioClient
+    private sealed class FakeLocalAiClient : ILocalAiClient
     {
         private readonly Func<
-            LmStudioModerationRequest,
-            Task<LmStudioModerationCompletion>> _response;
+            LocalAiModerationRequest,
+            Task<LocalAiModerationCompletion>> _response;
 
-        public FakeLmStudioClient(
-            Func<LmStudioModerationRequest, LmStudioModerationCompletion> response)
+        public FakeLocalAiClient(
+            Func<LocalAiModerationRequest, LocalAiModerationCompletion> response)
             : this(request => Task.FromResult(response(request)))
         {
         }
 
-        public FakeLmStudioClient(
+        public FakeLocalAiClient(
             Func<
-                LmStudioModerationRequest,
-                Task<LmStudioModerationCompletion>> response)
+                LocalAiModerationRequest,
+                Task<LocalAiModerationCompletion>> response)
         {
             _response = response;
         }
 
-        public List<LmStudioModerationRequest> Requests { get; } = [];
+        public List<LocalAiModerationRequest> Requests { get; } = [];
 
-        public Task<LmStudioModerationCompletion> CompleteModerationAsync(
-            LmStudioModerationRequest request,
+        public Task<LocalAiModerationCompletion> CompleteModerationAsync(
+            LocalAiModerationRequest request,
             CancellationToken cancellationToken = default)
         {
             Requests.Add(request);

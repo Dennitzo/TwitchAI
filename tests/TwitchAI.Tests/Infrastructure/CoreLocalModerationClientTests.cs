@@ -11,12 +11,12 @@ public sealed class CoreLocalModerationClientTests
     public async Task ModerateAsync_CompiledPrompt_ForwardsExactV6Artifacts()
     {
         var prompt = new ModerationPromptCompiler().Compile(Envelope());
-        var lmStudio = new RecordingLmStudioClient();
+        var localAi = new RecordingLocalAiClient();
         var sut = new CoreLocalModerationClient(
-            lmStudio,
+            localAi,
             new InfrastructureOptions
             {
-                LmStudio = new LmStudioOptions
+                LocalAi = new LocalAiOptions
                 {
                     UseCompactModerationContractV6 = true,
                 },
@@ -25,10 +25,10 @@ public sealed class CoreLocalModerationClientTests
         var result = await sut.ModerateAsync(prompt, "channel-1");
 
         Assert.Equal("{}", result);
-        var request = Assert.IsType<LmStudioModerationRequest>(lmStudio.Request);
+        var request = Assert.IsType<LocalAiModerationRequest>(localAi.Request);
         Assert.Same(prompt.SystemPrompt, request.SystemPrompt);
         Assert.Same(prompt.UserPrompt, request.UserPrompt);
-        Assert.Equal(LmStudioResponseSchemaKind.ModerationV6, request.ResponseSchema);
+        Assert.Equal(LocalAiResponseSchemaKind.ModerationV6, request.ResponseSchema);
         Assert.True(request.ResponseFormat.HasValue);
         Assert.Equal(
             prompt.ResponseFormat.GetRawText(),
@@ -43,12 +43,12 @@ public sealed class CoreLocalModerationClientTests
     public async Task ModerateAsync_WhenCompactContractDisabled_UsesLegacyV5Request()
     {
         var envelope = Envelope();
-        var lmStudio = new RecordingLmStudioClient();
+        var localAi = new RecordingLocalAiClient();
         var sut = new CoreLocalModerationClient(
-            lmStudio,
+            localAi,
             new InfrastructureOptions
             {
-                LmStudio = new LmStudioOptions
+                LocalAi = new LocalAiOptions
                 {
                     UseCompactModerationContractV6 = false,
                 },
@@ -56,8 +56,8 @@ public sealed class CoreLocalModerationClientTests
 
         await sut.ModerateAsync(envelope);
 
-        var request = Assert.IsType<LmStudioModerationRequest>(lmStudio.Request);
-        Assert.Equal(LmStudioResponseSchemaKind.Moderation, request.ResponseSchema);
+        var request = Assert.IsType<LocalAiModerationRequest>(localAi.Request);
+        Assert.Equal(LocalAiResponseSchemaKind.Moderation, request.ResponseSchema);
         Assert.False(request.ResponseFormat.HasValue);
         Assert.Contains(
             $"\"envelopeVersion\":\"{ModerationRequestFactory.LegacyRequestEnvelopeVersion}\"",
@@ -83,12 +83,12 @@ public sealed class CoreLocalModerationClientTests
             ModerationCandidateSource.SemanticClassification);
         var prompt = new ModerationPromptCompiler().CompileConfirmation(
             new ModerationConfirmationRequest(envelope, [candidate]));
-        var lmStudio = new RecordingLmStudioClient();
+        var localAi = new RecordingLocalAiClient();
         var sut = new CoreLocalModerationClient(
-            lmStudio,
+            localAi,
             new InfrastructureOptions
             {
-                LmStudio = new LmStudioOptions
+                LocalAi = new LocalAiOptions
                 {
                     UseCompactModerationContractV6 = true,
                 },
@@ -96,7 +96,7 @@ public sealed class CoreLocalModerationClientTests
 
         await sut.ModerateAsync(prompt, "channel-1");
 
-        var request = Assert.IsType<LmStudioModerationRequest>(lmStudio.Request);
+        var request = Assert.IsType<LocalAiModerationRequest>(localAi.Request);
         Assert.Equal($"{envelope.BatchId:D}-confirm", request.CorrelationId);
         Assert.Equal("channel-1", request.SchedulingKey);
         Assert.Equal(prompt.ResponseFormat.GetRawText(), request.ResponseFormat?.GetRawText());
@@ -123,20 +123,20 @@ public sealed class CoreLocalModerationClientTests
             [],
             []);
 
-    private sealed class RecordingLmStudioClient : ILmStudioClient
+    private sealed class RecordingLocalAiClient : ILocalAiClient
     {
-        public LmStudioModerationRequest? Request { get; private set; }
+        public LocalAiModerationRequest? Request { get; private set; }
 
-        public Task<LmStudioModerationCompletion> CompleteModerationAsync(
-            LmStudioModerationRequest request,
+        public Task<LocalAiModerationCompletion> CompleteModerationAsync(
+            LocalAiModerationRequest request,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Request = request;
             return Task.FromResult(
-                new LmStudioModerationCompletion(
+                new LocalAiModerationCompletion(
                     "{}",
-                    new LmStudioUsageMetrics(
+                    new LocalAiUsageMetrics(
                         1,
                         1,
                         2,

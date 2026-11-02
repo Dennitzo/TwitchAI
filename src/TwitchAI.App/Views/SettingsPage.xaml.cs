@@ -25,35 +25,27 @@ public sealed partial class SettingsPage : Page
     private async void OnPageLoaded(object sender, RoutedEventArgs e)
     {
         _isPageLoaded = true;
-        try
+        try { await ViewModel.CheckLocalAiAsync(); }
+        catch (Exception exception) { ViewModel.LocalAiConnectionStatus = exception.Message; }
+    }
+
+    private void OnReasoningSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_isPageLoaded && sender is ComboBox { SelectedItem: string value }
+            && !string.IsNullOrWhiteSpace(value))
         {
-            await ViewModel.RefreshLmStudioCredentialStatusAsync();
-        }
-        catch
-        {
-            // The status text already explains that the Credential Locker
-            // could not be read; page loading must remain non-blocking.
+            ViewModel.ReasoningEffort = value;
         }
     }
 
-    private async void OnReadOnlyModeToggled(object sender, RoutedEventArgs e)
+    private void OnReadOnlyModeToggled(object sender, RoutedEventArgs e)
     {
         if (!_isPageLoaded || sender is not ToggleSwitch toggle)
         {
             return;
         }
 
-        try
-        {
-            await ViewModel.ApplyReadOnlyModeChangeAsync(toggle.IsOn);
-        }
-        catch (Exception exception)
-        {
-            await ShowMessageAsync(
-                "Read-Only-Modus nicht umgestellt",
-                "Die bisherige Einstellung und Twitch-Verbindung bleiben aktiv: "
-                + exception.Message);
-        }
+        ViewModel.ReadOnlyMode = toggle.IsOn;
     }
 
     private async void OnExportDatabaseClicked(object sender, RoutedEventArgs e)
@@ -115,17 +107,20 @@ public sealed partial class SettingsPage : Page
     private void UpdateResponsiveLayout(double availableWidth)
     {
         var useCompactLayout = availableWidth < 800;
+        PageHeader.Margin = useCompactLayout
+            ? new Thickness(72, 20, 16, 18)
+            : new Thickness(28, 24, 28, 18);
         PageContent.Margin = useCompactLayout
-            ? new Thickness(72, 20, 16, 40)
-            : new Thickness(28, 24, 28, 48);
+            ? new Thickness(72, 0, 16, 40)
+            : new Thickness(28, 0, 28, 48);
 
         UpdateStatusHeader(
             TwitchStatus,
             TwitchHeaderStatusColumn,
             useCompactLayout);
         UpdateStatusHeader(
-            LmStudioStatus,
-            LmStudioHeaderStatusColumn,
+            LocalAiStatus,
+            LocalAiHeaderStatusColumn,
             useCompactLayout);
 
         TwitchChannelColumn.Width = useCompactLayout
@@ -149,35 +144,6 @@ public sealed partial class SettingsPage : Page
             ? HorizontalAlignment.Stretch
             : HorizontalAlignment.Left;
 
-        LmStudioModelColumn.Width = useCompactLayout
-            ? new GridLength(0)
-            : new GridLength(1, GridUnitType.Star);
-        Grid.SetColumn(LmStudioModelInput, useCompactLayout ? 0 : 1);
-        Grid.SetRow(LmStudioModelInput, useCompactLayout ? 1 : 0);
-
-        LmStudioTokenActionsColumn.Width = useCompactLayout
-            ? new GridLength(0)
-            : GridLength.Auto;
-        Grid.SetColumn(LmStudioTokenActions, useCompactLayout ? 0 : 1);
-        Grid.SetRow(LmStudioTokenActions, useCompactLayout ? 1 : 0);
-        LmStudioTokenActions.Orientation = useCompactLayout
-            ? Orientation.Vertical
-            : Orientation.Horizontal;
-        LmStudioTokenActions.HorizontalAlignment = useCompactLayout
-            ? HorizontalAlignment.Stretch
-            : HorizontalAlignment.Left;
-
-        BatchWaitColumn.Width = useCompactLayout
-            ? new GridLength(0)
-            : new GridLength(1, GridUnitType.Star);
-        BatchQueueColumn.Width = useCompactLayout
-            ? new GridLength(0)
-            : new GridLength(1, GridUnitType.Star);
-        Grid.SetColumn(BatchWaitInput, useCompactLayout ? 0 : 1);
-        Grid.SetRow(BatchWaitInput, useCompactLayout ? 1 : 0);
-        Grid.SetColumn(BatchQueueInput, useCompactLayout ? 0 : 2);
-        Grid.SetRow(BatchQueueInput, useCompactLayout ? 2 : 0);
-
         SaveActionColumn.Width = useCompactLayout
             ? new GridLength(0)
             : GridLength.Auto;
@@ -186,6 +152,7 @@ public sealed partial class SettingsPage : Page
         SaveSettingsButton.HorizontalAlignment = useCompactLayout
             ? HorizontalAlignment.Stretch
             : HorizontalAlignment.Right;
+        Grid.SetRow(SaveStatusText, useCompactLayout ? 2 : 1);
     }
 
     private static void UpdateStatusHeader(
@@ -203,30 +170,40 @@ public sealed partial class SettingsPage : Page
             : HorizontalAlignment.Right;
     }
 
+    private bool _saveInProgress;
+
     private async void OnSaveClicked(object sender, RoutedEventArgs e)
     {
+        if (_saveInProgress || !TryBeginTwitchOperation())
+        {
+            return;
+        }
+
+        _saveInProgress = true;
+        SettingsScrollViewer.IsEnabled = false;
         try
         {
-            ViewModel.Save();
+            await ViewModel.SaveAsync();
             App.Current.ApplyTheme(ViewModel.SelectedTheme);
         }
         catch (Exception exception)
         {
-            await ShowMessageAsync("Einstellungen ungültig", exception.Message);
+            await ShowMessageAsync("Speichern nicht möglich", exception.Message);
+        }
+        finally
+        {
+            _saveInProgress = false;
+            EndTwitchOperation();
+            SettingsScrollViewer.IsEnabled = true;
         }
     }
 
     private void OnTwitchClientIdLostFocus(object sender, RoutedEventArgs e)
     {
-        try
-        {
-            ViewModel.SaveTwitchClientId();
-        }
-        catch (Exception exception)
-        {
-            ViewModel.TwitchClientIdPersistenceStatus =
-                $"Client-ID konnte nicht gespeichert werden: {exception.Message}";
-        }
+        ViewModel.TwitchClientIdPersistenceStatus =
+            ViewModel.TwitchClientId.Length == 0
+                ? "Keine Client-ID eingetragen."
+                : "Client-ID wird erst mit 'Speichern' übernommen.";
     }
 
     private async void OnConnectTwitchClicked(object sender, RoutedEventArgs e)
@@ -445,13 +422,15 @@ public sealed partial class SettingsPage : Page
 
     private bool TryBeginTwitchOperation()
     {
-        if (Interlocked.CompareExchange(ref _twitchOperationInProgress, 1, 0) != 0)
+        if (_saveInProgress
+            || Interlocked.CompareExchange(ref _twitchOperationInProgress, 1, 0) != 0)
         {
             return false;
         }
 
         ConnectTwitchButton.IsEnabled = false;
         CheckTwitchButton.IsEnabled = false;
+        SaveSettingsButton.IsEnabled = false;
         return true;
     }
 
@@ -460,6 +439,7 @@ public sealed partial class SettingsPage : Page
         Interlocked.Exchange(ref _twitchOperationInProgress, 0);
         ConnectTwitchButton.IsEnabled = true;
         CheckTwitchButton.IsEnabled = true;
+        SaveSettingsButton.IsEnabled = true;
     }
 
     private static async Task<ContentDialogResult> ShowDialogAsync(
@@ -495,89 +475,41 @@ public sealed partial class SettingsPage : Page
         }
     }
 
-    private async void OnTestLmStudioClicked(object sender, RoutedEventArgs e)
+    private async void OnTestLocalAiClicked(object sender, RoutedEventArgs e)
     {
         try
         {
-            var models = await ViewModel.CheckLmStudioAsync();
+            var models = await ViewModel.CheckLocalAiAsync();
             await ShowMessageAsync(
-                "LM-Studio-Verbindung",
+                "Lokale-AI-Verbindung",
                 models.Count == 0
-                    ? "LM Studio antwortet, meldet aber kein verfügbares Modell."
+                    ? "Lokale AI antwortet, meldet aber kein verfügbares Modell."
                     : $"Verfügbare Modelle:\n{string.Join("\n", models)}");
         }
         catch (Exception exception)
         {
-            await ShowMessageAsync("LM Studio nicht erreichbar", exception.Message);
+            await ShowMessageAsync("Lokale AI nicht erreichbar", exception.Message);
         }
     }
 
-    private async void OnSaveAndCheckLmStudioBaseUrlClicked(
+    private async void OnRefreshLocalAiModelsClicked(
         object sender,
         RoutedEventArgs e)
     {
         try
         {
-            ViewModel.Save();
-            var models = await ViewModel.CheckLmStudioAsync();
+            var models = await ViewModel.CheckLocalAiAsync();
             await ShowMessageAsync(
-                "LM-Studio-Basis-URL gespeichert",
+                "Lokale AI-Modelle",
                 models.Count == 0
-                    ? "Die URL wurde gespeichert. LM Studio antwortet, meldet aber kein verfügbares Modell."
-                    : $"Die URL wurde gespeichert und erfolgreich geprüft. Verfügbare Modelle:\n{string.Join("\n", models)}");
+                    ? "Im Hugging-Face-Cache wurde kein vollständiges GGUF-Modell gefunden."
+                    : $"Verfügbare Modelle:\n{string.Join("\n", models)}");
         }
         catch (Exception exception)
         {
             await ShowMessageAsync(
-                "LM-Studio-Basis-URL konnte nicht geprüft werden",
+                "Modelle konnten nicht geladen werden",
                 exception.Message);
-        }
-    }
-
-    private async void OnSaveLmStudioTokenClicked(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            await ViewModel.SaveLmStudioTokenAsync(LmStudioTokenBox.Password);
-            LmStudioTokenBox.Password = string.Empty;
-            await ShowMessageAsync(
-                "LM-Studio-Token gespeichert",
-                "Der optionale API-Token liegt ausschließlich im Windows Credential Locker.");
-        }
-        catch (Exception exception)
-        {
-            await ShowMessageAsync("Token konnte nicht gespeichert werden", exception.Message);
-        }
-    }
-
-    private async void OnDeleteLmStudioTokenClicked(object sender, RoutedEventArgs e)
-    {
-        var confirmation = new ContentDialog
-        {
-            XamlRoot = XamlRoot,
-            Title = "LM-Studio-Token entfernen?",
-            Content =
-                "Der gespeicherte Token wird aus dem Windows Credential Locker entfernt.",
-            PrimaryButtonText = "Token entfernen",
-            CloseButtonText = "Abbrechen",
-            DefaultButton = ContentDialogButton.Close,
-        };
-        if (await confirmation.ShowAsync() != ContentDialogResult.Primary)
-        {
-            return;
-        }
-
-        try
-        {
-            await ViewModel.DeleteLmStudioTokenAsync();
-            LmStudioTokenBox.Password = string.Empty;
-            await ShowMessageAsync(
-                "LM-Studio-Token entfernt",
-                "LM Studio wird jetzt ohne Authorization-Header angesprochen.");
-        }
-        catch (Exception exception)
-        {
-            await ShowMessageAsync("Token konnte nicht entfernt werden", exception.Message);
         }
     }
 

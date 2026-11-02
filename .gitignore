@@ -38,4 +38,6 @@ appsettings.Local.json
 .idea/
 .vscode/
 *.DotSettings.user
+__pycache__/
+*.py[cod]
 

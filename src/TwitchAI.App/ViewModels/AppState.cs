@@ -8,6 +8,8 @@ namespace TwitchAI.App.ViewModels;
 
 public sealed partial class AppState : ObservableObject
 {
+    internal SemaphoreSlim AnalysisLifecycleGate { get; } = new(1, 1);
+
     private readonly Dictionary<string, string> _channelNames =
         new(StringComparer.Ordinal);
 
@@ -41,13 +43,19 @@ public sealed partial class AppState : ObservableObject
     public partial string EventSubStatus { get; set; } = "EventSub offline";
 
     [ObservableProperty]
-    public partial string LmStudioStatus { get; set; } = "LM Studio prüfen";
+    public partial string LocalAiStatus { get; set; } = "Lokale AI prüfen";
 
     [ObservableProperty]
     public partial string DatabaseStatus { get; set; } = "SQLite startet";
 
     [ObservableProperty]
     public partial bool IsAnalysisRunning { get; set; }
+
+    [ObservableProperty]
+    public partial bool IsApplyingSettings { get; set; }
+
+    [ObservableProperty]
+    public partial bool IsLocalAiModelLoading { get; set; }
 
     [ObservableProperty]
     public partial bool IsTwitchConnectionReady { get; set; }

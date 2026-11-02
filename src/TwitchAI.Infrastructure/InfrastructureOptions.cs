@@ -11,7 +11,7 @@ public sealed class InfrastructureOptions
 
     public TwitchApiOptions TwitchApi { get; set; } = new();
 
-    public LmStudioOptions LmStudio { get; set; } = new();
+    public LocalAiOptions LocalAi { get; set; } = new();
 }
 
 public sealed class TwitchOAuthOptions
@@ -86,13 +86,13 @@ public sealed class TwitchApiOptions
         GetBroadcasterIds().Contains(broadcasterId, StringComparer.Ordinal);
 }
 
-public sealed class LmStudioOptions
+public sealed class LocalAiOptions
 {
-    public Uri BaseAddress { get; set; } = new("http://127.0.0.1:1234/");
+    public Uri BaseAddress { get; set; } = new("http://127.0.0.1:8180/");
 
-    public string Model { get; set; } = "openai/gpt-oss-20b";
+    public string Model { get; set; } = string.Empty;
 
-    public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromMinutes(2);
+    public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromMinutes(30);
 
     public int MaximumOutputTokens { get; set; } = 2048;
 
@@ -105,7 +105,5 @@ public sealed class LmStudioOptions
     /// </summary>
     public bool UseCompactModerationContractV6 { get; set; } = true;
 
-    public string VaultResource { get; set; } = "TwitchAI.LmStudio";
-
-    public string VaultAccount { get; set; } = "local-api-token";
+    public string ReasoningEffort { get; set; } = "auto";
 }

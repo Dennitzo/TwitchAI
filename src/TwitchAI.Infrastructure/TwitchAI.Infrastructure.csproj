@@ -11,6 +11,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="..\..\windows\ai-stack-common.ps1;..\..\windows\build-ai-stack.ps1;..\..\windows\start-ai-stack.ps1;..\..\windows\stop-ai-stack.ps1;..\..\windows\manage-coding-llama.ps1;..\..\windows\manage-llama-server.ps1" LogicalName="TwitchAI.Runtime.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\..\workers\coding\catalog.py;..\..\workers\coding\session_cache.py" LogicalName="TwitchAI.Runtime.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\..\deploy\twitchai\compose.yaml;..\..\deploy\twitchai\Dockerfile;..\..\deploy\twitchai\gateway.py" LogicalName="TwitchAI.Runtime.%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />

@@ -7,8 +7,102 @@ using TwitchAI.Infrastructure.AI;
 
 namespace TwitchAI.Tests.Infrastructure;
 
-public sealed class LmStudioLiveActivityTests
+public sealed class LocalAiLiveActivityTests
 {
+    [Fact]
+    public async Task EnsureModelLoadedAsync_PostsBufferedModelAndReasoningBeforeInference()
+    {
+        var options = CreateOptions();
+        options.LocalAi.ReasoningEffort = "low";
+        var handler = new StaticResponseHandler(
+            HttpStatusCode.OK,
+            """{"model":"openai/gpt-oss-20b","status":"loaded"}""");
+        using var httpClient = CreateHttpClient(handler);
+        var metrics = new RecordingMetricsStore();
+        var startupCalls = 0;
+        using var runtime = new LocalAiRuntime(_ =>
+        {
+            startupCalls++;
+            return Task.CompletedTask;
+        });
+        var sut = new LocalAiClient(httpClient, metrics, options, runtime);
+
+        await sut.EnsureModelLoadedAsync();
+
+        Assert.Equal(1, startupCalls);
+        Assert.Equal(HttpMethod.Post, handler.RequestMethod);
+        Assert.Equal("/v1/models/load", handler.RequestUri?.AbsolutePath);
+        Assert.NotNull(handler.RequestBody);
+        Assert.Equal(Encoding.UTF8.GetByteCount(handler.RequestBody), handler.RequestContentLength);
+        using var body = JsonDocument.Parse(handler.RequestBody);
+        Assert.Equal(options.LocalAi.Model, body.RootElement.GetProperty("model").GetString());
+        Assert.Equal("low", body.RootElement.GetProperty("reasoning_effort").GetString());
+        Assert.Empty(metrics.Records);
+    }
+
+    [Theory]
+    [InlineData("other-model", "loaded")]
+    [InlineData("openai/gpt-oss-20b", "loading")]
+    public async Task EnsureModelLoadedAsync_RejectsIncorrectReadyConfirmation(
+        string confirmedModel,
+        string status)
+    {
+        var handler = new StaticResponseHandler(
+            HttpStatusCode.OK,
+            JsonSerializer.Serialize(new { model = confirmedModel, status }));
+        using var httpClient = CreateHttpClient(handler);
+        using var runtime = new LocalAiRuntime(_ => Task.CompletedTask);
+        var sut = new LocalAiClient(
+            httpClient,
+            new RecordingMetricsStore(),
+            CreateOptions(),
+            runtime);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => sut.EnsureModelLoadedAsync());
+    }
+
+    [Fact]
+    public async Task EnsureModelLoadedAsync_PreservesGatewayFailureDetails()
+    {
+        const string responseBody = """{"error":{"message":"No GPU allocation is available"}}""";
+        var handler = new StaticResponseHandler(HttpStatusCode.ServiceUnavailable, responseBody);
+        using var httpClient = CreateHttpClient(handler);
+        using var runtime = new LocalAiRuntime(_ => Task.CompletedTask);
+        var sut = new LocalAiClient(
+            httpClient,
+            new RecordingMetricsStore(),
+            CreateOptions(),
+            runtime);
+
+        var exception = await Assert.ThrowsAsync<LocalAiException>(
+            () => sut.EnsureModelLoadedAsync());
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, exception.StatusCode);
+        Assert.Equal(responseBody, exception.ResponseBody);
+        Assert.Contains("No GPU allocation", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EnsureModelLoadedAsync_RejectsEmptySelectionBeforeStartingRuntime()
+    {
+        var options = CreateOptions();
+        options.LocalAi.Model = string.Empty;
+        var handler = new StaticResponseHandler(HttpStatusCode.OK, "{}");
+        using var httpClient = CreateHttpClient(handler);
+        var runtimeStarted = false;
+        using var runtime = new LocalAiRuntime(_ =>
+        {
+            runtimeStarted = true;
+            return Task.CompletedTask;
+        });
+        var sut = new LocalAiClient(httpClient, new RecordingMetricsStore(), options, runtime);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => sut.EnsureModelLoadedAsync());
+
+        Assert.False(runtimeStarted);
+        Assert.Equal(0, handler.CallCount);
+    }
+
     [Fact]
     public async Task CompleteModerationAsync_PublishesRealUsageAfterMetricWasStored()
     {
@@ -41,11 +135,11 @@ public sealed class LmStudioLiveActivityTests
         var monitor = new LocalAiRunActivityMonitor();
         var activities = new List<LocalAiRunActivity>();
         monitor.ActivityChanged += (_, args) => activities.Add(args.Activity);
-        var sut = new LmStudioClient(
+        var sut = new LocalAiClient(
             httpClient,
             metrics,
-            new EmptyCredentialVault(),
             CreateOptions(),
+            new LocalAiRuntime(_ => Task.CompletedTask),
             monitor);
 
         var completion = await sut.CompleteModerationAsync(Request());
@@ -87,24 +181,24 @@ public sealed class LmStudioLiveActivityTests
         var monitor = new LocalAiRunActivityMonitor();
         var activities = new List<LocalAiRunActivity>();
         monitor.ActivityChanged += (_, args) => activities.Add(args.Activity);
-        var sut = new LmStudioClient(
+        var sut = new LocalAiClient(
             httpClient,
             metrics,
-            new EmptyCredentialVault(),
             CreateOptions(),
+            new LocalAiRuntime(_ => Task.CompletedTask),
             monitor);
 
-        await Assert.ThrowsAsync<LmStudioException>(
+        await Assert.ThrowsAsync<LocalAiException>(
             () => sut.CompleteModerationAsync(Request()));
 
         Assert.Equal(
             [LocalAiRunState.Running, LocalAiRunState.Failed],
             activities.Select(item => item.State));
-        Assert.Equal(nameof(LmStudioException), activities[^1].ErrorCode);
+        Assert.Equal(nameof(LocalAiException), activities[^1].ErrorCode);
         Assert.Null(activities[^1].TotalTokens);
         var stored = Assert.Single(metrics.Records);
         Assert.False(stored.Succeeded);
-        Assert.Equal(nameof(LmStudioException), stored.ErrorCode);
+        Assert.Equal(nameof(LocalAiException), stored.ErrorCode);
     }
 
     [Fact]
@@ -136,11 +230,11 @@ public sealed class LmStudioLiveActivityTests
         var monitor = new LocalAiRunActivityMonitor();
         var activities = new List<LocalAiRunActivity>();
         monitor.ActivityChanged += (_, args) => activities.Add(args.Activity);
-        var sut = new LmStudioClient(
+        var sut = new LocalAiClient(
             httpClient,
             metrics,
-            new EmptyCredentialVault(),
             CreateOptions(),
+            new LocalAiRuntime(_ => Task.CompletedTask),
             monitor);
 
         var completion = await sut.CompleteModerationAsync(Request());
@@ -244,11 +338,11 @@ public sealed class LmStudioLiveActivityTests
             });
         var handler = new StaticResponseHandler(HttpStatusCode.OK, responseBody);
         using var httpClient = CreateHttpClient(handler);
-        var sut = new LmStudioClient(
+        var sut = new LocalAiClient(
             httpClient,
             new RecordingMetricsStore(),
-            new EmptyCredentialVault(),
-            CreateOptions());
+            CreateOptions(),
+            new LocalAiRuntime(_ => Task.CompletedTask));
 
         await sut.CompleteModerationAsync(
             Request(["G_INSULT", "G_PERSONAL_DATA"], ["r1", "r2"]));
@@ -339,11 +433,11 @@ public sealed class LmStudioLiveActivityTests
             });
         var handler = new StaticResponseHandler(HttpStatusCode.OK, responseBody);
         using var httpClient = CreateHttpClient(handler);
-        var sut = new LmStudioClient(
+        var sut = new LocalAiClient(
             httpClient,
             new RecordingMetricsStore(),
-            new EmptyCredentialVault(),
-            CreateOptions());
+            CreateOptions(),
+            new LocalAiRuntime(_ => Task.CompletedTask));
         var responseFormat = JsonSerializer.SerializeToElement(
             new
             {
@@ -361,7 +455,7 @@ public sealed class LmStudioLiveActivityTests
             });
 
         await sut.CompleteModerationAsync(
-            new LmStudioModerationRequest(
+            new LocalAiModerationRequest(
                 "batch-1",
                 "policy",
                 1,
@@ -369,7 +463,7 @@ public sealed class LmStudioLiveActivityTests
                 "{}",
                 ["G_INSULT"],
                 [],
-                LmStudioResponseSchemaKind.ModerationV6,
+                LocalAiResponseSchemaKind.ModerationV6,
                 ResponseFormat: responseFormat));
 
         using var document = JsonDocument.Parse(handler.RequestBody!);
@@ -404,16 +498,16 @@ public sealed class LmStudioLiveActivityTests
         var activities = new List<LocalAiRunActivity>();
         monitor.ActivityChanged += (_, args) => activities.Add(args.Activity);
         var gate = new RecordingExecutionGate();
-        var sut = new LmStudioClient(
+        var sut = new LocalAiClient(
             httpClient,
             new RecordingMetricsStore(),
-            new EmptyCredentialVault(),
             CreateOptions(),
+            new LocalAiRuntime(_ => Task.CompletedTask),
             monitor,
             gate);
 
         await sut.CompleteModerationAsync(
-            new LmStudioModerationRequest(
+            new LocalAiModerationRequest(
                 "learning-test:11111111-1111-1111-1111-111111111111",
                 "policy",
                 MessageCount: 1,
@@ -421,7 +515,7 @@ public sealed class LmStudioLiveActivityTests
                 "{}",
                 ["G_PERSONAL_DATA", "G_PERSONAL_ATTACK", "BACKSEATGAMING"],
                 ReplyTemplateIds: [],
-                LmStudioResponseSchemaKind.LearningTest,
+                LocalAiResponseSchemaKind.LearningTest,
                 LocalAiRunKind.LearningTest));
 
         using var document = JsonDocument.Parse(handler.RequestBody!);
@@ -632,14 +726,14 @@ public sealed class LmStudioLiveActivityTests
             });
         var handler = new StaticResponseHandler(HttpStatusCode.OK, responseBody);
         using var httpClient = CreateHttpClient(handler);
-        var sut = new LmStudioClient(
+        var sut = new LocalAiClient(
             httpClient,
             new RecordingMetricsStore(),
-            new EmptyCredentialVault(),
-            CreateOptions());
+            CreateOptions(),
+            new LocalAiRuntime(_ => Task.CompletedTask));
 
         await sut.CompleteModerationAsync(
-            new LmStudioModerationRequest(
+            new LocalAiModerationRequest(
                 "learning-test:action-matrix",
                 "policy",
                 MessageCount: 1,
@@ -647,7 +741,7 @@ public sealed class LmStudioLiveActivityTests
                 "{}",
                 activeRuleCodes,
                 ReplyTemplateIds: [],
-                LmStudioResponseSchemaKind.LearningTest,
+                LocalAiResponseSchemaKind.LearningTest,
                 LocalAiRunKind.LearningTest));
 
         using var document = JsonDocument.Parse(handler.RequestBody!);
@@ -704,7 +798,7 @@ public sealed class LmStudioLiveActivityTests
             $"Missing learning decision alternative '{verdict}/{ruleCode}'.");
     }
 
-    private static LmStudioModerationRequest Request(
+    private static LocalAiModerationRequest Request(
         IReadOnlyList<string>? activeRuleCodes = null,
         IReadOnlyList<string>? replyTemplateIds = null) =>
         new(
@@ -719,15 +813,15 @@ public sealed class LmStudioLiveActivityTests
     private static HttpClient CreateHttpClient(HttpMessageHandler handler) =>
         new(handler)
         {
-            BaseAddress = new Uri("http://127.0.0.1:1234/"),
+            BaseAddress = new Uri("http://127.0.0.1:8180/"),
         };
 
     private static InfrastructureOptions CreateOptions() =>
         new()
         {
-            LmStudio = new LmStudioOptions
+            LocalAi = new LocalAiOptions
             {
-                BaseAddress = new Uri("http://127.0.0.1:1234/"),
+                BaseAddress = new Uri("http://127.0.0.1:8180/"),
                 Model = "openai/gpt-oss-20b",
             },
         };
@@ -738,10 +832,22 @@ public sealed class LmStudioLiveActivityTests
     {
         public string? RequestBody { get; private set; }
 
+        public HttpMethod? RequestMethod { get; private set; }
+
+        public Uri? RequestUri { get; private set; }
+
+        public long? RequestContentLength { get; private set; }
+
+        public int CallCount { get; private set; }
+
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            CallCount++;
+            RequestMethod = request.Method;
+            RequestUri = request.RequestUri;
+            RequestContentLength = request.Content?.Headers.ContentLength;
             RequestBody = request.Content is null
                 ? null
                 : await request.Content.ReadAsStringAsync(cancellationToken);
@@ -766,21 +872,6 @@ public sealed class LmStudioLiveActivityTests
             Records.Add(metric);
             return Task.CompletedTask;
         }
-    }
-
-    private sealed class EmptyCredentialVault : ILmStudioCredentialVault
-    {
-        public Task<string?> LoadTokenAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult<string?>(null);
-
-        public Task SaveTokenAsync(
-            string tokenValue,
-            CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
-
-        public Task DeleteTokenAsync(CancellationToken cancellationToken = default) =>
-            Task.CompletedTask;
     }
 
     private sealed class RecordingExecutionGate : ILocalAiExecutionGate

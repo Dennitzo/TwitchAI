@@ -23,12 +23,12 @@ public sealed class LearningTestService : ILearningTestService
     private readonly CoreTextNormalizer _normalizer;
     private readonly IPhraseRuleSource _phraseRuleSource;
     private readonly IBlacklistMatcher _blacklistMatcher;
-    private readonly ILmStudioClient _lmStudioClient;
+    private readonly ILocalAiClient _localAiClient;
     private readonly ILocalAiRunActivityMonitor? _activityMonitor;
     private readonly IRetrievalExampleStore? _retrievalExampleStore;
     private readonly ILearningContextRevision _learningContextRevision;
     private readonly IAiValidationAttemptStore? _validationAttemptStore;
-    private readonly LmStudioOptions _lmStudioOptions;
+    private readonly LocalAiOptions _localAiOptions;
     private readonly TimeProvider _timeProvider;
     private int _analysisInProgress;
 
@@ -37,7 +37,7 @@ public sealed class LearningTestService : ILearningTestService
         CoreTextNormalizer normalizer,
         IPhraseRuleSource phraseRuleSource,
         IBlacklistMatcher blacklistMatcher,
-        ILmStudioClient lmStudioClient,
+        ILocalAiClient localAiClient,
         InfrastructureOptions options,
         ILocalAiRunActivityMonitor? activityMonitor = null,
         TimeProvider? timeProvider = null,
@@ -49,13 +49,13 @@ public sealed class LearningTestService : ILearningTestService
         _normalizer = normalizer;
         _phraseRuleSource = phraseRuleSource;
         _blacklistMatcher = blacklistMatcher;
-        _lmStudioClient = lmStudioClient;
+        _localAiClient = localAiClient;
         _activityMonitor = activityMonitor;
         _retrievalExampleStore = retrievalExampleStore;
         _learningContextRevision = learningContextRevision
             ?? LearningContextRevision.ProcessWide;
         _validationAttemptStore = validationAttemptStore;
-        _lmStudioOptions = options.LmStudio;
+        _localAiOptions = options.LocalAi;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
@@ -124,7 +124,7 @@ public sealed class LearningTestService : ILearningTestService
                 retrievalExamples);
             var promptCharacters = prompt.PromptCharacters with
             {
-                Schema = LmStudioClient.GetLearningTestResponseFormatCharacterCount(
+                Schema = LocalAiClient.GetLearningTestResponseFormatCharacterCount(
                     policy.ActiveRules
                         .Where(item => ModerationRuleCodes.IsSemanticAiRule(item.RuleCode))
                         .Select(item => item.RuleCode)),
@@ -317,7 +317,7 @@ public sealed class LearningTestService : ILearningTestService
             if (!validation.IsValid)
             {
                 throw new InvalidDataException(
-                    "LM Studio returned an invalid learning-test envelope: "
+                    "Lokale AI returned an invalid learning-test envelope: "
                     + string.Join(
                         "; ",
                         validation.Errors.Select(
@@ -346,7 +346,7 @@ public sealed class LearningTestService : ILearningTestService
                 && !useAiPriorityDecision)
             {
                 throw new InvalidDataException(
-                    "LM Studio did not provide a contextual reason for the human-priority rule.");
+                    "Lokale AI did not provide a contextual reason for the human-priority rule.");
             }
             var effectiveRuleCode = humanPriority switch
             {
@@ -527,9 +527,9 @@ public sealed class LearningTestService : ILearningTestService
                         : null,
                 });
             PublishQueued(correlationId);
-            var completion = await _lmStudioClient
+            var completion = await _localAiClient
                 .CompleteModerationAsync(
-                    new LmStudioModerationRequest(
+                    new LocalAiModerationRequest(
                         correlationId,
                         storedPolicy.PolicyHash,
                         MessageCount: 1,
@@ -537,7 +537,7 @@ public sealed class LearningTestService : ILearningTestService
                         userPrompt,
                         ActiveRuleCodes: [selectedRule.RuleCode],
                         ReplyTemplateIds: [],
-                        LmStudioResponseSchemaKind.ModerationV6,
+                        LocalAiResponseSchemaKind.ModerationV6,
                         LocalAiRunKind.LearningTest,
                         CreateReasonResponseFormat(request.Action)),
                     cancellationToken)
@@ -562,9 +562,9 @@ public sealed class LearningTestService : ILearningTestService
                         invalidOutput = completion.RawEnvelope,
                     });
                 PublishQueued(repairCorrelationId, LocalAiRunKind.LearningTest);
-                completion = await _lmStudioClient
+                completion = await _localAiClient
                     .CompleteModerationAsync(
-                        new LmStudioModerationRequest(
+                        new LocalAiModerationRequest(
                             repairCorrelationId,
                             storedPolicy.PolicyHash,
                             MessageCount: 1,
@@ -572,7 +572,7 @@ public sealed class LearningTestService : ILearningTestService
                             repairPayload,
                             ActiveRuleCodes: [selectedRule.RuleCode],
                             ReplyTemplateIds: [],
-                            LmStudioResponseSchemaKind.ModerationV6,
+                            LocalAiResponseSchemaKind.ModerationV6,
                             LocalAiRunKind.LearningTest,
                             CreateReasonResponseFormat(request.Action)),
                         cancellationToken)
@@ -586,7 +586,7 @@ public sealed class LearningTestService : ILearningTestService
                         out composition))
                 {
                     throw new InvalidDataException(
-                        "LM Studio returned no valid structured reason after one repair attempt.");
+                        "Lokale AI returned no valid structured reason after one repair attempt.");
                 }
             }
 
@@ -693,7 +693,7 @@ public sealed class LearningTestService : ILearningTestService
                 || guidance.ValueKind != JsonValueKind.String)
             {
                 throw new InvalidDataException(
-                    "LM Studio returned an invalid reason envelope.");
+                    "Lokale AI returned an invalid reason envelope.");
             }
 
             return new(reason.GetString()!, guidance.GetString()!);
@@ -701,7 +701,7 @@ public sealed class LearningTestService : ILearningTestService
         catch (JsonException exception)
         {
             throw new InvalidDataException(
-                "LM Studio returned an invalid reason envelope.",
+                "Lokale AI returned an invalid reason envelope.",
                 exception);
         }
     }
@@ -745,7 +745,7 @@ public sealed class LearningTestService : ILearningTestService
             _ => "none",
         };
 
-    private Task<LmStudioModerationCompletion> CompleteAsync(
+    private Task<LocalAiModerationCompletion> CompleteAsync(
         string correlationId,
         string policyHash,
         string systemPrompt,
@@ -753,8 +753,8 @@ public sealed class LearningTestService : ILearningTestService
         CoreEffectivePolicySnapshot policy,
         CancellationToken cancellationToken)
     {
-        return _lmStudioClient.CompleteModerationAsync(
-            new LmStudioModerationRequest(
+        return _localAiClient.CompleteModerationAsync(
+            new LocalAiModerationRequest(
                 correlationId,
                 policyHash,
                 MessageCount: 1,
@@ -766,7 +766,7 @@ public sealed class LearningTestService : ILearningTestService
                     .Distinct(StringComparer.Ordinal)
                     .ToArray(),
                 ReplyTemplateIds: [],
-                LmStudioResponseSchemaKind.LearningTest,
+                LocalAiResponseSchemaKind.LearningTest,
                 LocalAiRunKind.LearningTest),
             cancellationToken);
     }
@@ -849,7 +849,7 @@ public sealed class LearningTestService : ILearningTestService
                         }).Length,
                 prompt.PromptCharacters.Examples,
                 Templates: 0,
-                Schema: LmStudioClient.GetLearningTestResponseFormatCharacterCount(
+                Schema: LocalAiClient.GetLearningTestResponseFormatCharacterCount(
                     policy.ActiveRules
                         .Where(item => ModerationRuleCodes.IsSemanticAiRule(item.RuleCode))
                         .Select(item => item.RuleCode))),
@@ -1153,7 +1153,7 @@ public sealed class LearningTestService : ILearningTestService
 
     private sealed record LearningRepairAttempt(
         string CorrelationId,
-        LmStudioModerationCompletion Completion,
+        LocalAiModerationCompletion Completion,
         ModerationPromptCharacterCounts PromptCharacters,
         IReadOnlyList<LearningEnvelopeValidationError> SourceErrors,
         string? RequiredRuleCode);
@@ -1172,7 +1172,7 @@ public sealed class LearningTestService : ILearningTestService
                 correlationId,
                 LocalAiRunState.Queued,
                 MessageCount: 1,
-                _lmStudioOptions.Model,
+                _localAiOptions.Model,
                 PromptTokens: null,
                 CompletionTokens: null,
                 TotalTokens: null,

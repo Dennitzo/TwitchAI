@@ -2,6 +2,7 @@ using System.Reflection;
 using Microsoft.UI.Xaml;
 using TwitchAI.App.Services;
 using TwitchAI.App.ViewModels;
+using TwitchAI.Core.Models;
 using TwitchAI.Infrastructure;
 using TwitchAI.Infrastructure.AI;
 using TwitchAI.Infrastructure.Pipeline;
@@ -45,7 +46,7 @@ public sealed class ModerationUiBridgeAiRunProjectionTests
         Assert.Equal(7, state.QueuedLocalAiMessageCount);
         Assert.Equal(
             "AI arbeitet · 2 Läufe · 3 Nachrichten",
-            state.LmStudioStatus);
+            state.LocalAiStatus);
     }
 
     [Fact]
@@ -88,6 +89,61 @@ public sealed class ModerationUiBridgeAiRunProjectionTests
         Assert.Equal(1, state.ActiveLocalAiRuns[0].MessageCount);
         Assert.Equal(5, state.ActiveLocalAiRuns[1].MessageCount);
         Assert.Equal(3, state.ActiveLocalAiRuns[2].MessageCount);
+    }
+
+    [Fact]
+    public void Started_ReplacesPreviousChannelPoliciesWhenAnalysisIsReinitialized()
+    {
+        var state = new AppState();
+        var options = new InfrastructureOptions();
+        options.TwitchApi.SetBroadcasterIds(["channel-1", "channel-2"]);
+        using var bridge = new ModerationUiBridge(
+            state,
+            new StubCoordinator(),
+            new LocalAiRunActivityMonitor(),
+            options);
+        var firstContext = new ChannelContextSnapshot(
+            "channel-1", "509658", "Just Chatting",
+            DateTimeOffset.UtcNow, Revision: 1, IsVerified: true);
+        var secondContext = firstContext with
+        {
+            ChannelId = "channel-2",
+            CategoryId = "game-1",
+            CategoryDisplayName = "Palworld",
+        };
+
+        ApplyPolicy(ModerationPipelineEventKind.Started, firstContext, false);
+        ApplyPolicy(ModerationPipelineEventKind.CategoryChanged, secondContext, true);
+        Assert.Equal("General + Backseatgaming", state.ActivePolicies);
+
+        ApplyPolicy(ModerationPipelineEventKind.Started, firstContext, false);
+        Assert.Equal("Nur General", state.ActivePolicies);
+        ApplyPolicy(ModerationPipelineEventKind.CategoryChanged, secondContext, false);
+        Assert.Equal("Nur General", state.ActivePolicies);
+        Assert.Equal("Mehrere Kategorien", state.CategoryName);
+
+        ApplyPolicy(ModerationPipelineEventKind.Started, firstContext, false);
+        ApplyPolicy(ModerationPipelineEventKind.CategoryChanged, secondContext, true);
+        Assert.Equal("General + Backseatgaming", state.ActivePolicies);
+
+        void ApplyPolicy(
+            ModerationPipelineEventKind kind,
+            ChannelContextSnapshot context,
+            bool backseatgaming)
+        {
+            var method = typeof(ModerationUiBridge).GetMethod(
+                "Apply", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(method);
+            method.Invoke(bridge,
+                [new ModerationPipelineEventArgs(
+                    kind,
+                    "policy_projection_test",
+                    "Policy projection test.",
+                    channelContext: context,
+                    activePolicySets: backseatgaming
+                        ? [PolicySetCode.General, PolicySetCode.Backseatgaming]
+                        : [PolicySetCode.General])]);
+        }
     }
 
     [Fact]

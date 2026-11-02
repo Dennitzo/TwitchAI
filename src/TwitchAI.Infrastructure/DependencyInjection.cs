@@ -128,16 +128,15 @@ public static class DependencyInjection
         services.AddSingleton<
             ILocalAiExecutionGate,
             LocalAiExecutionGate>();
-        services.AddSingleton<
-            ILmStudioCredentialVault,
-            WindowsLmStudioCredentialVault>();
+        services.AddSingleton<LocalAiRuntime>();
+        services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<LocalAiRuntime>());
         services.AddSingleton<CoreContracts.IModerationPromptCompiler,
             TwitchAI.Core.Services.ModerationPromptCompiler>();
         services
-            .AddHttpClient<ILmStudioClient, LmStudioClient>(client =>
+            .AddHttpClient<ILocalAiClient, LocalAiClient>(client =>
             {
-                client.BaseAddress = options.LmStudio.BaseAddress;
-                client.Timeout = options.LmStudio.RequestTimeout;
+                client.BaseAddress = options.LocalAi.BaseAddress;
+                client.Timeout = options.LocalAi.RequestTimeout;
             });
         services.AddSingleton<
             CoreContracts.ILocalModerationClient,
@@ -160,17 +159,17 @@ public static class DependencyInjection
             throw new ArgumentException("Twitch API addresses must be absolute.", nameof(options));
         }
 
-        if (!options.LmStudio.BaseAddress.IsAbsoluteUri)
+        if (!options.LocalAi.BaseAddress.IsAbsoluteUri)
         {
-            throw new ArgumentException("LM Studio BaseAddress must be absolute.", nameof(options));
+            throw new ArgumentException("Lokale AI BaseAddress must be absolute.", nameof(options));
         }
 
-        if (options.LmStudio.MaximumOutputTokens <= 0)
+        if (options.LocalAi.MaximumOutputTokens <= 0)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(options),
-                options.LmStudio.MaximumOutputTokens,
-                "LM Studio MaximumOutputTokens must be positive.");
+                options.LocalAi.MaximumOutputTokens,
+                "Lokale AI MaximumOutputTokens must be positive.");
         }
     }
 }

@@ -39,18 +39,21 @@ public sealed partial class ShellViewModel : ObservableObject
 
     public string EventSubStatus => _state.EventSubStatus;
 
-    public string LmStudioStatus => _state.LmStudioStatus;
+    public string LocalAiStatus => _state.LocalAiStatus;
 
     public string DatabaseStatus => _state.DatabaseStatus;
 
     public bool IsAnalysisRunning => _state.IsAnalysisRunning;
 
-    public string AnalysisLabel => IsAnalysisRunning ? "Analyse pausieren" : "Analyse starten";
+    public string AnalysisLabel => _state.IsLocalAiModelLoading
+        ? "Modell wird geladen …"
+        : IsAnalysisRunning ? "Analyse pausieren" : "Analyse starten";
 
     public bool CanToggleAnalysis =>
+        !_state.IsApplyingSettings && (
         _coordinator.IsRunning
         || IsAnalysisRunning
-        || _state.IsTwitchConnectionReady;
+        || _state.IsTwitchConnectionReady);
 
     public string AnalysisToolTip => IsAnalysisRunning
         ? "Analyse pausieren"
@@ -70,7 +73,9 @@ public sealed partial class ShellViewModel : ObservableObject
         _state.QueuedLocalAiRuns;
 
     public string LocalAiRunStateLabel =>
-        _state.CurrentLocalAiRun.IsPresent
+        _state.IsLocalAiModelLoading
+            ? "Modell wird geladen …"
+            : _state.CurrentLocalAiRun.IsPresent
             ? _state.CurrentLocalAiRun.State == LocalAiRunState.Failed
                 && _state.IsAnalysisRunning
                     ? "Fehler · Analyse läuft weiter"
@@ -78,7 +83,9 @@ public sealed partial class ShellViewModel : ObservableObject
             : "Bereit";
 
     public string LocalAiRunBatchLabel =>
-        _state.CurrentLocalAiRun.IsPresent
+        _state.IsLocalAiModelLoading
+            ? "Analysestart wartet auf das ausgewählte Modell"
+            : _state.CurrentLocalAiRun.IsPresent
             ? $"{_state.CurrentLocalAiRun.RunLabel} · "
                 + _state.CurrentLocalAiRun.MessageCountLabel
             : "Noch kein lokaler AI-Lauf";
@@ -86,7 +93,7 @@ public sealed partial class ShellViewModel : ObservableObject
     public string LocalAiRunTokenLabel =>
         _state.CurrentLocalAiRun.IsPresent
             ? _state.CurrentLocalAiRun.TokenLabel
-            : "LM Studio lokal";
+            : "Lokale AI lokal";
 
     public string LocalAiRunMetaLabel
     {
@@ -167,6 +174,20 @@ public sealed partial class ShellViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanToggleAnalysis))]
     private async Task ToggleAnalysisAsync()
     {
+        if (_state.IsApplyingSettings) return;
+        await _state.AnalysisLifecycleGate.WaitAsync();
+        try
+        {
+            if (!_state.IsApplyingSettings) await ToggleAnalysisCoreAsync();
+        }
+        finally
+        {
+            _state.AnalysisLifecycleGate.Release();
+        }
+    }
+
+    private async Task ToggleAnalysisCoreAsync()
+    {
         try
         {
             if (_coordinator.IsRunning)
@@ -240,7 +261,7 @@ public sealed partial class ShellViewModel : ObservableObject
         OnPropertyChanged(nameof(CategorySummary));
         OnPropertyChanged(nameof(TwitchStatus));
         OnPropertyChanged(nameof(EventSubStatus));
-        OnPropertyChanged(nameof(LmStudioStatus));
+        OnPropertyChanged(nameof(LocalAiStatus));
         OnPropertyChanged(nameof(DatabaseStatus));
         OnPropertyChanged(nameof(IsAnalysisRunning));
         OnPropertyChanged(nameof(AnalysisLabel));

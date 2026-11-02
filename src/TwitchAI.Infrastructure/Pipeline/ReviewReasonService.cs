@@ -13,16 +13,16 @@ public sealed class ReviewReasonService : IReviewReasonService
     private static readonly string[] RequiredReasonProperties = ["reason"];
     private readonly IPolicyStore _policyStore;
     private readonly CoreTextNormalizer _normalizer;
-    private readonly ILmStudioClient _lmStudioClient;
+    private readonly ILocalAiClient _localAiClient;
 
     public ReviewReasonService(
         IPolicyStore policyStore,
         CoreTextNormalizer normalizer,
-        ILmStudioClient lmStudioClient)
+        ILocalAiClient localAiClient)
     {
         _policyStore = policyStore;
         _normalizer = normalizer;
-        _lmStudioClient = lmStudioClient;
+        _localAiClient = localAiClient;
     }
 
     public async ValueTask<ReviewReasonResult> GenerateAsync(
@@ -120,7 +120,7 @@ public sealed class ReviewReasonService : IReviewReasonService
                     out _))
             {
                 throw new InvalidDataException(
-                    "LM Studio lieferte auch nach der Reparatur keine gültige kontextbezogene Reason.");
+                    "Lokale AI lieferte auch nach der Reparatur keine gültige kontextbezogene Reason.");
             }
         }
 
@@ -133,7 +133,7 @@ public sealed class ReviewReasonService : IReviewReasonService
             completion.Usage.TotalTokens);
     }
 
-    private async Task<LmStudioModerationCompletion> CompleteAsync(
+    private async Task<LocalAiModerationCompletion> CompleteAsync(
         string correlationId,
         string policyHash,
         string systemPrompt,
@@ -141,8 +141,8 @@ public sealed class ReviewReasonService : IReviewReasonService
         string ruleCode,
         string schedulingKey,
         CancellationToken cancellationToken) =>
-        await _lmStudioClient.CompleteModerationAsync(
-            new LmStudioModerationRequest(
+        await _localAiClient.CompleteModerationAsync(
+            new LocalAiModerationRequest(
                 correlationId,
                 policyHash,
                 MessageCount: 1,
@@ -150,7 +150,7 @@ public sealed class ReviewReasonService : IReviewReasonService
                 userPrompt,
                 ActiveRuleCodes: [ruleCode],
                 ReplyTemplateIds: [],
-                LmStudioResponseSchemaKind.ModerationV6,
+                LocalAiResponseSchemaKind.ModerationV6,
                 LocalAiRunKind.ReviewReason,
                 CreateResponseFormat(),
                 LocalAiRunPriority.ManualReview,

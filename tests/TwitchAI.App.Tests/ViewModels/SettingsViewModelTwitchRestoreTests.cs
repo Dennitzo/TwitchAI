@@ -16,12 +16,13 @@ namespace TwitchAI.App.Tests.ViewModels;
 public sealed class SettingsViewModelTwitchRestoreTests
 {
     [Fact]
-    public void Channels_AreNormalizedWhenLoadedAndSaved()
+    public async Task Channels_AreNormalizedWhenLoadedAndSaved()
     {
         var options = new InfrastructureOptions();
         var storage = new MemoryLocalAppStorage(new Dictionary<string, string>
         {
             ["ChannelLogin"] = " ChannelOne, #CHANNELTWO, channelone ",
+            ["LocalAiModel"] = "openai/gpt-oss-20b",
         });
         using var viewModel = new SettingsViewModel(
             new AppState(),
@@ -30,7 +31,6 @@ public sealed class SettingsViewModelTwitchRestoreTests
             null!,
             null!,
             new TwitchConnectionReadiness(),
-            null!,
             null!,
             null!,
             null!,
@@ -44,7 +44,7 @@ public sealed class SettingsViewModelTwitchRestoreTests
         Assert.Equal("channelone, channeltwo", viewModel.ChannelLogin);
 
         viewModel.ChannelLogin = " ChannelThree, @CHANNELFOUR, channelthree ";
-        viewModel.Save();
+        await viewModel.SaveAsync();
 
         Assert.Equal("channelthree, channelfour", viewModel.ChannelLogin);
         Assert.Equal(
@@ -53,12 +53,12 @@ public sealed class SettingsViewModelTwitchRestoreTests
     }
 
     [Fact]
-    public void LmStudioModel_WhenSelected_IsAppliedAndPersistedImmediately()
+    public async Task LocalAiModel_WhenSelected_IsStagedUntilSaved()
     {
         var options = new InfrastructureOptions();
         var storage = new MemoryLocalAppStorage(new Dictionary<string, string>
         {
-            ["LmStudioModel"] = "openai/gpt-oss-20b",
+            ["LocalAiModel"] = "openai/gpt-oss-20b",
         });
         using var viewModel = new SettingsViewModel(
             new AppState(),
@@ -71,22 +71,29 @@ public sealed class SettingsViewModelTwitchRestoreTests
             null!,
             null!,
             null!,
-            null!,
             storage,
             new ModerationQueueRuntimeSettings(),
             new TwitchRuntimeModeSettings(),
             null!,
             null!);
 
-        viewModel.LmStudioModel = "openai/gpt-oss-120b";
+        viewModel.LocalAiModel = "openai/gpt-oss-120b";
 
-        Assert.Equal("openai/gpt-oss-120b", options.LmStudio.Model);
+        // Die Auswahl wird gestuft: Modell und Speicher bleiben unverändert.
+        Assert.NotEqual("openai/gpt-oss-120b", options.LocalAi.Model);
+        Assert.Equal(
+            "openai/gpt-oss-20b",
+            storage.GetString("LocalAiModel"));
+        Assert.Equal(
+            "Lokale-AI-Modell geändert · Speichern übernimmt die Auswahl",
+            viewModel.SaveStatus);
+
+        await viewModel.SaveAsync();
+
+        Assert.Equal("openai/gpt-oss-120b", options.LocalAi.Model);
         Assert.Equal(
             "openai/gpt-oss-120b",
-            storage.GetString("LmStudioModel"));
-        Assert.Equal(
-            "LM-Studio-Modell automatisch gespeichert",
-            viewModel.SaveStatus);
+            storage.GetString("LocalAiModel"));
     }
 
     [Fact]
@@ -132,7 +139,6 @@ public sealed class SettingsViewModelTwitchRestoreTests
                             options.TwitchOAuth.Scopes),
                         new CompleteAsynchronousMultiChannelHelixClient(),
                         new TwitchConnectionReadiness(),
-                        null!,
                         null!,
                         connectionFactory,
                         writeCoordinator,
@@ -210,7 +216,6 @@ public sealed class SettingsViewModelTwitchRestoreTests
             null!,
             null!,
             null!,
-            null!,
             storage,
             new ModerationQueueRuntimeSettings(),
             new TwitchRuntimeModeSettings(),
@@ -277,7 +282,6 @@ public sealed class SettingsViewModelTwitchRestoreTests
             null!,
             null!,
             null!,
-            null!,
             storage,
             new ModerationQueueRuntimeSettings(),
             new TwitchRuntimeModeSettings(),
@@ -305,6 +309,320 @@ public sealed class SettingsViewModelTwitchRestoreTests
         Assert.Equal("old-channel", storage.GetString("BroadcasterIds"));
         Assert.Equal("oldlogin", storage.GetString("ChannelLogin"));
         Assert.Equal(0, storage.SetStringsCalls);
+    }
+
+    [Fact]
+    public async Task Save_BackseatgamingToggle_ReevaluatesPolicyOnEverySaveWhilePaused()
+    {
+        await using var harness = await SettingsSaveHarness.CreateAsync(isRunning: false);
+        var resolver = new EffectivePolicyResolver(runtimeSettings: harness.PolicyRuntime);
+        var channelContext = new TwitchAI.Core.Models.ChannelContextSnapshot(
+            "channel-1", "game-1", "Game one", DateTimeOffset.UtcNow, 1, IsVerified: true);
+
+        foreach (var enabled in new[] { true, false, true })
+        {
+            harness.ViewModel.BackseatgamingEnabled = enabled;
+
+            await harness.ViewModel.SaveAsync();
+
+            Assert.Equal(enabled, harness.PolicyRuntime.BackseatgamingEnabled);
+            Assert.Equal(enabled.ToString(), harness.Storage.GetString("BackseatgamingEnabled"));
+            Assert.Equal(
+                enabled ? "General + Backseatgaming" : "Nur General",
+                harness.State.ActivePolicies);
+            Assert.Equal(
+                enabled,
+                resolver.Resolve(channelContext, 1, 1)
+                    .Contains(TwitchAI.Core.Models.PolicySetCode.Backseatgaming));
+            Assert.False(harness.ViewModel.IsBusy);
+        }
+
+        Assert.Equal(0, harness.Coordinator.StopCalls);
+        Assert.Equal(0, harness.Coordinator.StartCalls);
+        Assert.False(harness.State.IsAnalysisRunning);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Save_StopsOldWorkersBeforeCommittingAndResumesOnlyRunningAnalysis(bool isRunning)
+    {
+        await using var harness = await SettingsSaveHarness.CreateAsync(isRunning);
+        harness.ViewModel.LocalAiModel = "coding/new-model";
+        harness.ViewModel.ReasoningEffort = "low";
+        harness.ViewModel.BackseatgamingEnabled = false;
+        harness.ViewModel.RemoveIdenticalAiQueueMessages = false;
+        var order = new List<string>();
+        harness.Coordinator.OnStop = () =>
+        {
+            order.Add("stop");
+            Assert.Equal("coding/old-model", harness.Options.LocalAi.Model);
+            Assert.Equal("auto", harness.Options.LocalAi.ReasoningEffort);
+            Assert.True(harness.PolicyRuntime.BackseatgamingEnabled);
+            Assert.True(harness.QueueRuntime.RemoveIdenticalMessages);
+            Assert.Equal("coding/old-model", harness.Storage.GetString("LocalAiModel"));
+        };
+        harness.Coordinator.OnStart = () =>
+        {
+            order.Add("start");
+            Assert.Equal("coding/new-model", harness.Options.LocalAi.Model);
+            Assert.Equal("low", harness.Options.LocalAi.ReasoningEffort);
+            Assert.False(harness.PolicyRuntime.BackseatgamingEnabled);
+            Assert.False(harness.QueueRuntime.RemoveIdenticalMessages);
+            Assert.Equal("coding/new-model", harness.Storage.GetString("LocalAiModel"));
+            Assert.True(harness.State.IsTwitchConnectionReady);
+            Assert.Equal("Nur General", harness.State.ActivePolicies);
+        };
+
+        await harness.ViewModel.SaveAsync();
+
+        string[] expectedOrder = isRunning ? ["stop", "start"] : [];
+        Assert.Equal(expectedOrder, order);
+        Assert.Equal(isRunning ? 1 : 0, harness.Coordinator.StopCalls);
+        Assert.Equal(isRunning ? 1 : 0, harness.Coordinator.StartCalls);
+        Assert.Equal(isRunning, harness.Coordinator.IsRunning);
+        Assert.Equal(isRunning, harness.State.IsAnalysisRunning);
+        Assert.Equal("coding/new-model", harness.Options.LocalAi.Model);
+        Assert.Equal("low", harness.Options.LocalAi.ReasoningEffort);
+        Assert.False(harness.PolicyRuntime.BackseatgamingEnabled);
+        Assert.False(harness.QueueRuntime.RemoveIdenticalMessages);
+        Assert.Contains("neu initialisiert", harness.ViewModel.SaveStatus);
+    }
+
+    [Fact]
+    public async Task Save_WhenChannelPreparationFails_LeavesRunningAnalysisAndCommittedSettingsUntouched()
+    {
+        await using var harness = await SettingsSaveHarness.CreateAsync(
+            isRunning: true,
+            helixClient: new IncompleteMultiChannelHelixClient());
+        var storedBefore = harness.Storage.Snapshot();
+        harness.ViewModel.ChannelLogin = "newone, newtwo";
+        harness.ViewModel.LocalAiModel = "coding/uncommitted-model";
+        harness.ViewModel.ReasoningEffort = "low";
+        harness.ViewModel.BackseatgamingEnabled = false;
+        harness.ViewModel.RemoveIdenticalAiQueueMessages = false;
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.ViewModel.SaveAsync());
+
+        Assert.Contains("newtwo", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("public-client-id", harness.Options.TwitchOAuth.ClientId);
+        Assert.Equal("coding/old-model", harness.Options.LocalAi.Model);
+        Assert.Equal("auto", harness.Options.LocalAi.ReasoningEffort);
+        Assert.Equal(["old-channel"], harness.Options.TwitchApi.GetBroadcasterIds());
+        Assert.Equal("old-reader", harness.Options.TwitchApi.ReaderUserId);
+        Assert.Equal("old-moderator", harness.Options.TwitchApi.ModeratorUserId);
+        Assert.True(harness.PolicyRuntime.BackseatgamingEnabled);
+        Assert.True(harness.QueueRuntime.RemoveIdenticalMessages);
+        Assert.False(harness.TwitchRuntime.IsReadOnly);
+        Assert.Equal(storedBefore, harness.Storage.Snapshot());
+        Assert.Equal(0, harness.Storage.SetStringsCalls);
+        Assert.Empty(harness.ChannelStates.Upserts);
+        Assert.True(harness.Coordinator.IsRunning);
+        Assert.True(harness.State.IsAnalysisRunning);
+        Assert.True(harness.State.IsTwitchConnectionReady);
+        Assert.Equal("Old channel", harness.State.ChannelDisplayName);
+        Assert.Equal("Old category", harness.State.CategoryName);
+        Assert.Equal("Nur General", harness.State.ActivePolicies);
+        Assert.Equal(0, harness.Coordinator.StopCalls);
+        Assert.Equal(0, harness.Coordinator.StartCalls);
+        Assert.False(harness.ViewModel.IsBusy);
+        Assert.Contains("nicht übernommen", harness.ViewModel.SaveStatus);
+    }
+
+    [Fact]
+    public async Task Save_Offline_AppliesAllLocalSettingsImmediatelyWithoutRestartHint()
+    {
+        var options = new InfrastructureOptions
+        {
+            TwitchOAuth = new TwitchOAuthOptions { ClientId = "public-client-id" },
+        };
+        options.LocalAi.Model = "coding/old-model";
+        var state = new AppState();
+        var storage = new MemoryLocalAppStorage(new Dictionary<string, string>
+        {
+            ["TwitchClientId"] = "public-client-id",
+            ["LocalAiModel"] = "coding/old-model",
+        });
+        var tokenProvider = new ConfigurationFailureTokenProvider();
+        var coordinator = new TrackingCoordinator(isRunning: false);
+        var policyRuntime = new ModerationPolicyRuntimeSettings();
+        var queueRuntime = new ModerationQueueRuntimeSettings();
+        var twitchRuntime = new TwitchRuntimeModeSettings();
+        using var viewModel = new SettingsViewModel(
+            state, options, null!, tokenProvider, null!, new TwitchConnectionReadiness(),
+            null!, null!, null!, null!, storage, queueRuntime, twitchRuntime,
+            coordinator, null!, policyRuntime)
+        {
+            ChannelLogin = " #NewChannel ",
+            LocalAiModel = "coding/new-model",
+            ReasoningEffort = "low",
+            BackseatgamingEnabled = false,
+            RemoveIdenticalAiQueueMessages = false,
+            ReadOnlyMode = true,
+            SelectedTheme = "Hell",
+        };
+
+        await viewModel.SaveAsync();
+
+        Assert.Equal("coding/new-model", options.LocalAi.Model);
+        Assert.Equal("low", options.LocalAi.ReasoningEffort);
+        Assert.False(policyRuntime.BackseatgamingEnabled);
+        Assert.False(queueRuntime.RemoveIdenticalMessages);
+        Assert.True(twitchRuntime.IsReadOnly);
+        Assert.True(state.IsReadOnlyMode);
+        Assert.False(state.IsTwitchConnectionReady);
+        Assert.False(state.IsAnalysisRunning);
+        Assert.Equal("newchannel", storage.GetString("ChannelLogin"));
+        Assert.Equal("coding/new-model", storage.GetString("LocalAiModel"));
+        Assert.Equal("low", storage.GetString("ReasoningEffort"));
+        Assert.Equal("Hell", storage.GetString("Theme"));
+        Assert.Equal("False", storage.GetString("BackseatgamingEnabled"));
+        Assert.Equal("False", storage.GetString("RemoveIdenticalAiQueueMessages"));
+        Assert.Equal("True", storage.GetString("ReadOnlyMode"));
+        Assert.Equal(1, tokenProvider.ValidateCalls);
+        Assert.Equal(0, coordinator.StopCalls);
+        Assert.Equal(0, coordinator.StartCalls);
+        Assert.False(viewModel.IsBusy);
+        Assert.Contains("gespeichert und angewandt", viewModel.SaveStatus);
+        Assert.DoesNotContain("Neustart", viewModel.SaveStatus, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Save_PersistsFreshVerifiedChannelContextsBeforeRestartingAnalysis()
+    {
+        await using var harness = await SettingsSaveHarness.CreateAsync(isRunning: true);
+        harness.ViewModel.ChannelLogin = "channelone, channeltwo";
+        var observedAfter = DateTimeOffset.UtcNow;
+        harness.Coordinator.OnStart = () =>
+        {
+            Assert.Equal(2, harness.ChannelStates.Upserts.Count);
+            Assert.Equal(["channel-1", "channel-2"], harness.Options.TwitchApi.GetBroadcasterIds());
+            Assert.Equal("General + Backseatgaming", harness.State.ActivePolicies);
+        };
+
+        await harness.ViewModel.SaveAsync();
+
+        Assert.Collection(
+            harness.ChannelStates.Upserts,
+            first => AssertFreshChannel(first, "channel-1", "channelone", "Channel one", "game-1", "Game one", observedAfter),
+            second => AssertFreshChannel(second, "channel-2", "channeltwo", "Channel two", "game-2", "Game two", observedAfter));
+        Assert.Equal(1, harness.Coordinator.StartCalls);
+        Assert.Equal(1, harness.Coordinator.StopCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Save_WhilePreparing_BlocksShellAnalysisToggle(bool isRunning)
+    {
+        await using var harness = await SettingsSaveHarness.CreateAsync(isRunning);
+        var shell = new ShellViewModel(harness.State, harness.Coordinator);
+        var preparing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.TokenProvider.BeforeValidate = async cancellationToken =>
+        {
+            preparing.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken);
+        };
+
+        var save = harness.ViewModel.SaveAsync();
+        await preparing.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        try
+        {
+            Assert.True(harness.State.IsApplyingSettings);
+            Assert.False(shell.CanToggleAnalysis);
+            Assert.False(shell.ToggleAnalysisCommand.CanExecute(null));
+
+            // Also protect direct command execution while its UI is disabled.
+            await shell.ToggleAnalysisCommand.ExecuteAsync(null).WaitAsync(TimeSpan.FromSeconds(3));
+
+            Assert.Equal(0, harness.Coordinator.StartCalls);
+            Assert.Equal(0, harness.Coordinator.StopCalls);
+            Assert.Equal(isRunning, harness.Coordinator.IsRunning);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await save.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+
+        Assert.False(harness.State.IsApplyingSettings);
+        Assert.True(shell.CanToggleAnalysis);
+        Assert.Equal(isRunning ? 1 : 0, harness.Coordinator.StartCalls);
+        Assert.Equal(isRunning ? 1 : 0, harness.Coordinator.StopCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Save_WaitsForInFlightShellToggleBeforeDecidingWhetherToResume(bool wasRunning)
+    {
+        await using var harness = await SettingsSaveHarness.CreateAsync(wasRunning);
+        var shell = new ShellViewModel(harness.State, harness.Coordinator);
+        var toggling = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task DelayFirstToggle(CancellationToken cancellationToken)
+        {
+            var firstCall = wasRunning
+                ? harness.Coordinator.StopCalls == 1
+                : harness.Coordinator.StartCalls == 1;
+            if (firstCall)
+            {
+                toggling.TrySetResult();
+                await release.Task.WaitAsync(cancellationToken);
+            }
+        }
+        if (wasRunning) harness.Coordinator.StopResponse = DelayFirstToggle;
+        else harness.Coordinator.StartResponse = DelayFirstToggle;
+
+        var toggle = shell.ToggleAnalysisCommand.ExecuteAsync(null);
+        await toggling.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        harness.ViewModel.LocalAiModel = "coding/new-model";
+        harness.ViewModel.BackseatgamingEnabled = false;
+        var save = harness.ViewModel.SaveAsync();
+        try
+        {
+            Assert.True(harness.State.IsApplyingSettings);
+            Assert.False(save.IsCompleted);
+            Assert.Equal(0, harness.TokenProvider.ValidateCalls);
+            Assert.Equal("coding/old-model", harness.Options.LocalAi.Model);
+            Assert.True(harness.PolicyRuntime.BackseatgamingEnabled);
+            Assert.Equal(0, harness.Storage.SetStringsCalls);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await toggle.WaitAsync(TimeSpan.FromSeconds(3));
+            await save.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+
+        Assert.Equal(!wasRunning, harness.Coordinator.IsRunning);
+        Assert.Equal(!wasRunning, harness.State.IsAnalysisRunning);
+        Assert.Equal(wasRunning ? 0 : 2, harness.Coordinator.StartCalls);
+        Assert.Equal(1, harness.Coordinator.StopCalls);
+        Assert.Equal("coding/new-model", harness.Options.LocalAi.Model);
+        Assert.False(harness.PolicyRuntime.BackseatgamingEnabled);
+        Assert.False(harness.State.IsApplyingSettings);
+    }
+
+    private static void AssertFreshChannel(
+        ChannelStateRecord state,
+        string broadcasterId,
+        string login,
+        string displayName,
+        string categoryId,
+        string categoryName,
+        DateTimeOffset observedAfter)
+    {
+        Assert.Equal(broadcasterId, state.BroadcasterId);
+        Assert.Equal(login, state.BroadcasterLogin);
+        Assert.Equal(displayName, state.BroadcasterName);
+        Assert.Equal(categoryId, state.CategoryId);
+        Assert.Equal(categoryName, state.CategoryName);
+        Assert.Equal("reader", state.ModeratorUserId);
+        Assert.True(state.IsVerified);
+        Assert.InRange(state.ObservedAt, observedAfter, DateTimeOffset.UtcNow);
     }
 
     private sealed class ConfigurationFailureTokenProvider : ITwitchAccessTokenProvider
@@ -349,6 +667,10 @@ public sealed class SettingsViewModelTwitchRestoreTests
         string clientId,
         IReadOnlyList<string> scopes) : ITwitchAccessTokenProvider
     {
+        public int ValidateCalls { get; private set; }
+
+        public Func<CancellationToken, Task>? BeforeValidate { get; set; }
+
         public Task<bool> HasStoredAuthorizationAsync(
             CancellationToken cancellationToken = default) =>
             Task.FromResult(true);
@@ -361,15 +683,13 @@ public sealed class SettingsViewModelTwitchRestoreTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult("token");
 
-        public Task<TwitchTokenValidation> ValidateStoredAuthorizationAsync(
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(
-                new TwitchTokenValidation(
-                    clientId,
-                    "account",
-                    "reader",
-                    scopes,
-                    3600));
+        public async Task<TwitchTokenValidation> ValidateStoredAuthorizationAsync(
+            CancellationToken cancellationToken = default)
+        {
+            ValidateCalls++;
+            if (BeforeValidate is not null) await BeforeValidate(cancellationToken);
+            return new TwitchTokenValidation(clientId, "account", "reader", scopes, 3600);
+        }
 
         public Task StoreNewAuthorizationAsync(
             TwitchTokenSet tokenSet,
@@ -543,6 +863,137 @@ public sealed class SettingsViewModelTwitchRestoreTests
                     [],
                     []),
                 cancellationToken);
+    }
+
+    private sealed class RegisteredCategoryPolicyStore(
+        SqliteConnectionFactory connectionFactory) : IPolicyStore
+    {
+        public Task EnsureBroadcasterSeededAsync(
+            string broadcasterId,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public async Task<EffectivePolicySnapshot> GetEffectivePolicyAsync(
+            string broadcasterId,
+            string? categoryId,
+            CancellationToken cancellationToken = default)
+        {
+            await using var connection = await connectionFactory.OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM twitch_categories WHERE category_id = @category_id;";
+            command.Parameters.AddWithValue("@category_id", categoryId ?? string.Empty);
+            var categoryKnown = Convert.ToInt64(
+                await command.ExecuteScalarAsync(cancellationToken),
+                System.Globalization.CultureInfo.InvariantCulture) > 0;
+            return new EffectivePolicySnapshot(
+                broadcasterId, categoryId, 1, categoryKnown ? 1 : 0,
+                $"policy-{broadcasterId}", string.Empty, [], []);
+        }
+    }
+
+    private sealed class RecordingChannelStateRepository : IChannelStateRepository
+    {
+        public List<ChannelStateRecord> Upserts { get; } = [];
+
+        public Task UpsertAsync(ChannelStateRecord state, CancellationToken cancellationToken = default)
+        {
+            Upserts.Add(state);
+            return Task.CompletedTask;
+        }
+
+        public Task<ChannelStateRecord?> GetAsync(
+            string broadcasterId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(Upserts.LastOrDefault(state => state.BroadcasterId == broadcasterId));
+    }
+
+    private sealed class SettingsSaveHarness : IAsyncDisposable
+    {
+        private readonly string _databaseDirectory = Path.Combine(
+            Path.GetTempPath(), "TwitchAI.App.Tests", Guid.NewGuid().ToString("N"));
+        private readonly SqliteWriteCoordinator _writeCoordinator = new();
+        private readonly SqliteConnectionFactory _connectionFactory;
+
+        private SettingsSaveHarness(bool isRunning, ITwitchHelixClient? helixClient)
+        {
+            Directory.CreateDirectory(_databaseDirectory);
+            Options = new InfrastructureOptions
+            {
+                DatabasePath = Path.Combine(_databaseDirectory, "settings.db"),
+                TwitchOAuth = new TwitchOAuthOptions { ClientId = "public-client-id" },
+            };
+            Options.LocalAi.Model = "coding/old-model";
+            Options.TwitchApi.SetBroadcasterIds(["old-channel"]);
+            Options.TwitchApi.ReaderUserId = "old-reader";
+            Options.TwitchApi.ModeratorUserId = "old-moderator";
+            _connectionFactory = new SqliteConnectionFactory(Options);
+            Storage = new MemoryLocalAppStorage(new Dictionary<string, string>
+            {
+                ["TwitchClientId"] = "public-client-id",
+                ["ChannelLogin"] = "channelone",
+                ["LocalAiModel"] = "coding/old-model",
+                ["ReasoningEffort"] = "auto",
+                ["BroadcasterIds"] = "old-channel",
+                ["ReaderUserId"] = "old-reader",
+                ["ModeratorUserId"] = "old-moderator",
+                ["BackseatgamingEnabled"] = "True",
+                ["RemoveIdenticalAiQueueMessages"] = "True",
+                ["ReadOnlyMode"] = "False",
+            });
+            State = new AppState
+            {
+                IsAnalysisRunning = isRunning,
+                IsTwitchConnectionReady = true,
+                ChannelDisplayName = "Old channel",
+                CategoryName = "Old category",
+                ActivePolicies = "Nur General",
+            };
+            Coordinator = new TrackingCoordinator(isRunning);
+            TokenProvider = new ValidTokenProvider("public-client-id", Options.TwitchOAuth.Scopes);
+            ViewModel = new SettingsViewModel(
+                State, Options, null!, TokenProvider,
+                helixClient ?? new CompleteAsynchronousMultiChannelHelixClient(),
+                new TwitchConnectionReadiness(), null!, _connectionFactory, _writeCoordinator,
+                new RegisteredCategoryPolicyStore(_connectionFactory), Storage, QueueRuntime,
+                TwitchRuntime, Coordinator, null!, PolicyRuntime, ChannelStates);
+        }
+
+        public InfrastructureOptions Options { get; }
+
+        public AppState State { get; }
+
+        public MemoryLocalAppStorage Storage { get; }
+
+        public SettingsViewModel ViewModel { get; }
+
+        public TrackingCoordinator Coordinator { get; }
+
+        public ValidTokenProvider TokenProvider { get; }
+
+        public ModerationPolicyRuntimeSettings PolicyRuntime { get; } = new();
+
+        public ModerationQueueRuntimeSettings QueueRuntime { get; } = new();
+
+        public TwitchRuntimeModeSettings TwitchRuntime { get; } = new();
+
+        public RecordingChannelStateRepository ChannelStates { get; } = new();
+
+        public static async Task<SettingsSaveHarness> CreateAsync(
+            bool isRunning,
+            ITwitchHelixClient? helixClient = null)
+        {
+            var harness = new SettingsSaveHarness(isRunning, helixClient);
+            await CreateCategoryTableAsync(harness._connectionFactory);
+            return harness;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            ViewModel.Dispose();
+            _writeCoordinator.Dispose();
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(_databaseDirectory, recursive: true);
+            return ValueTask.CompletedTask;
+        }
     }
 
     private sealed class PumpingSynchronizationContext : SynchronizationContext, IDisposable
@@ -728,18 +1179,28 @@ public sealed class SettingsViewModelTwitchRestoreTests
 
         public int StopCalls { get; private set; }
 
-        public Task StartAsync(CancellationToken cancellationToken = default)
+        public Action? OnStart { get; set; }
+
+        public Action? OnStop { get; set; }
+
+        public Func<CancellationToken, Task>? StartResponse { get; set; }
+
+        public Func<CancellationToken, Task>? StopResponse { get; set; }
+
+        public async Task StartAsync(CancellationToken cancellationToken = default)
         {
+            OnStart?.Invoke();
             StartCalls++;
+            if (StartResponse is not null) await StartResponse(cancellationToken);
             IsRunning = true;
-            return Task.CompletedTask;
         }
 
-        public Task StopAsync(CancellationToken cancellationToken = default)
+        public async Task StopAsync(CancellationToken cancellationToken = default)
         {
+            OnStop?.Invoke();
             StopCalls++;
+            if (StopResponse is not null) await StopResponse(cancellationToken);
             IsRunning = false;
-            return Task.CompletedTask;
         }
 
         public Task ReanalyzeCaseAsync(
@@ -761,6 +1222,9 @@ public sealed class SettingsViewModelTwitchRestoreTests
         public string LocalFolderPath => string.Empty;
 
         public string? GetString(string key) => _values.GetValueOrDefault(key);
+
+        public KeyValuePair<string, string>[] Snapshot() =>
+            _values.OrderBy(pair => pair.Key, StringComparer.Ordinal).ToArray();
 
         public void SetString(string key, string value)
         {

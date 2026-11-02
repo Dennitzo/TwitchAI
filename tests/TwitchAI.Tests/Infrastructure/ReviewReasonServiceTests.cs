@@ -13,7 +13,7 @@ public sealed class ReviewReasonServiceTests
     public async Task GenerateAsync_UsesMessageContextAndRepairsOnceWithManualPriority()
     {
         var responseNumber = 0;
-        var client = new FakeLmStudioClient(
+        var client = new FakeLocalAiClient(
             _ => Completion(
                 Interlocked.Increment(ref responseNumber) == 1
                     ? "{\"reason\":\"Gezielte persönliche Herabsetzung von Max.\"}"
@@ -61,7 +61,7 @@ public sealed class ReviewReasonServiceTests
     public async Task GenerateAsync_BackseatgamingReasonMustNameBackseatgaming()
     {
         var responseNumber = 0;
-        var client = new FakeLmStudioClient(
+        var client = new FakeLocalAiClient(
             _ => Completion(
                 Interlocked.Increment(ref responseNumber) == 1
                     ? "{\"reason\":\"Unaufgeforderte Spielanweisung an einen Nutzer oder den Streamer.\"}"
@@ -81,7 +81,7 @@ public sealed class ReviewReasonServiceTests
     }
 
     private static ReviewReasonService CreateService(
-        ILmStudioClient client,
+        ILocalAiClient client,
         StoredPolicy policy) =>
         new(
             new FakePolicyStore(policy),
@@ -146,10 +146,10 @@ public sealed class ReviewReasonServiceTests
             Phrases: []);
     }
 
-    private static LmStudioModerationCompletion Completion(string envelope) =>
+    private static LocalAiModerationCompletion Completion(string envelope) =>
         new(
             envelope,
-            new LmStudioUsageMetrics(
+            new LocalAiUsageMetrics(
                 PromptTokens: 12,
                 CompletionTokens: 8,
                 TotalTokens: 20,
@@ -172,14 +172,14 @@ public sealed class ReviewReasonServiceTests
             Task.FromResult(policy);
     }
 
-    private sealed class FakeLmStudioClient(
-        Func<LmStudioModerationRequest, LmStudioModerationCompletion> response)
-        : ILmStudioClient
+    private sealed class FakeLocalAiClient(
+        Func<LocalAiModerationRequest, LocalAiModerationCompletion> response)
+        : ILocalAiClient
     {
-        public List<LmStudioModerationRequest> Requests { get; } = [];
+        public List<LocalAiModerationRequest> Requests { get; } = [];
 
-        public Task<LmStudioModerationCompletion> CompleteModerationAsync(
-            LmStudioModerationRequest request,
+        public Task<LocalAiModerationCompletion> CompleteModerationAsync(
+            LocalAiModerationRequest request,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();

@@ -324,7 +324,7 @@ public sealed class TwitchChatReplyExecutorTests
             "user-1",
             "viewer_name",
             "Viewer Name",
-            "Wie lange lÃ¤uft das Event?",
+            "Wie lange läuft das Event?",
             receivedAt);
         var context = new ChannelContextSnapshot(
             "channel-1",

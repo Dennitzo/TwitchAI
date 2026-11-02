@@ -200,6 +200,9 @@ public interface ITwitchEventSubClient
 
 public interface ILocalModerationClient
 {
+    ValueTask PrepareAsync(CancellationToken cancellationToken = default) =>
+        ValueTask.CompletedTask;
+
     ValueTask<string> ModerateAsync(
         ModerationRequestEnvelopeV3 request,
         CancellationToken cancellationToken = default);

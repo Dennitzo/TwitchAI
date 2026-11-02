@@ -2561,8 +2561,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly ITwitchAccessTokenProvider _tokenProvider;
     private readonly ITwitchHelixClient _helixClient;
     private readonly ITwitchConnectionReadiness _twitchConnectionReadiness;
-    private readonly ILmStudioClient _lmStudioClient;
-    private readonly ILmStudioCredentialVault _lmStudioCredentialVault;
+    private readonly ILocalAiClient _localAiClient;
     private readonly ISqliteConnectionFactory _connectionFactory;
     private readonly ISqliteWriteCoordinator _writeCoordinator;
     private readonly IPolicyStore _policyStore;
@@ -2572,6 +2571,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly TwitchRuntimeModeSettings _twitchRuntimeModeSettings;
     private readonly IModerationCoordinator _coordinator;
     private readonly IDatabaseTransferService _databaseTransferService;
+    private readonly IChannelStateRepository? _channelStateRepository;
     private readonly SemaphoreSlim _twitchSessionGate = new(1, 1);
     private bool _isInitializing = true;
 
@@ -2582,8 +2582,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ITwitchAccessTokenProvider tokenProvider,
         ITwitchHelixClient helixClient,
         ITwitchConnectionReadiness twitchConnectionReadiness,
-        ILmStudioClient lmStudioClient,
-        ILmStudioCredentialVault lmStudioCredentialVault,
+        ILocalAiClient localAiClient,
         ISqliteConnectionFactory connectionFactory,
         ISqliteWriteCoordinator writeCoordinator,
         IPolicyStore policyStore,
@@ -2592,7 +2591,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         TwitchRuntimeModeSettings twitchRuntimeModeSettings,
         IModerationCoordinator coordinator,
         IDatabaseTransferService databaseTransferService,
-        ModerationPolicyRuntimeSettings? policyRuntimeSettings = null)
+        ModerationPolicyRuntimeSettings? policyRuntimeSettings = null,
+        IChannelStateRepository? channelStateRepository = null)
     {
         _state = state;
         _options = options;
@@ -2600,8 +2600,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _tokenProvider = tokenProvider;
         _helixClient = helixClient;
         _twitchConnectionReadiness = twitchConnectionReadiness;
-        _lmStudioClient = lmStudioClient;
-        _lmStudioCredentialVault = lmStudioCredentialVault;
+        _localAiClient = localAiClient;
         _connectionFactory = connectionFactory;
         _writeCoordinator = writeCoordinator;
         _policyStore = policyStore;
@@ -2615,16 +2614,20 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _twitchRuntimeModeSettings = twitchRuntimeModeSettings;
         _coordinator = coordinator;
         _databaseTransferService = databaseTransferService;
+        _channelStateRepository = channelStateRepository;
         TwitchClientId = _localStorage.GetString("TwitchClientId")
             ?? options.TwitchOAuth.ClientId;
         ChannelLogin = TwitchChannelSelection.FormatLogins(
             TwitchChannelSelection.ParseLogins(
                 _localStorage.GetString("ChannelLogin")));
-        LmStudioBaseUrl = _localStorage.GetString("LmStudioBaseUrl")
-            ?? options.LmStudio.BaseAddress.ToString().TrimEnd('/');
-        LmStudioModel = _localStorage.GetString("LmStudioModel")
-            ?? options.LmStudio.Model;
-        AvailableLmStudioModels.Add(LmStudioModel);
+        LocalAiBaseUrl = options.LocalAi.BaseAddress.ToString().TrimEnd('/');
+        ReasoningEffort = options.LocalAi.ReasoningEffort;
+        LocalAiModel = _localStorage.GetString("LocalAiModel")
+            ?? options.LocalAi.Model;
+        if (!string.IsNullOrWhiteSpace(LocalAiModel))
+        {
+            AvailableLocalAiModels.Add(LocalAiModel);
+        }
         SelectedTheme = _localStorage.GetString("Theme") ?? "System";
         _removeIdenticalAiQueueMessages = _localStorage.GetBooleanOrDefault(
             LocalAppSettingKeys.RemoveIdenticalAiQueueMessages,
@@ -2648,34 +2651,51 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public partial string ChannelLogin { get; set; } = string.Empty;
 
     [ObservableProperty]
-    public partial string LmStudioBaseUrl { get; set; } = "http://127.0.0.1:1234";
+    public partial string LocalAiBaseUrl { get; set; } = "http://127.0.0.1:8180";
 
     [ObservableProperty]
-    public partial string LmStudioModel { get; set; } = "openai/gpt-oss-20b";
+    public partial string LocalAiModel { get; set; } = string.Empty;
 
-    public ObservableCollection<string> AvailableLmStudioModels { get; } = [];
+    [ObservableProperty]
+    public partial string ReasoningEffort { get; set; } = "auto";
 
-    partial void OnLmStudioModelChanged(string value)
+    public ObservableCollection<string> ReasoningLevels { get; } = ["auto"];
+
+    private void RefreshReasoningLevels()
+    {
+        var levels = _localAiClient?.GetReasoningLevels(LocalAiModel).ToArray()
+            ?? ["auto"];
+        var selected = levels.Contains(ReasoningEffort, StringComparer.Ordinal)
+            ? ReasoningEffort
+            : "auto";
+        if (!ReasoningLevels.SequenceEqual(levels, StringComparer.Ordinal))
+        {
+            ReasoningLevels.Clear();
+            foreach (var level in levels) ReasoningLevels.Add(level);
+        }
+        ReasoningEffort = selected;
+        OnPropertyChanged(nameof(ReasoningEffort));
+    }
+
+    partial void OnReasoningEffortChanged(string value)
+    {
+        if (!_isInitializing)
+        {
+            SaveStatus = "Reasoning geändert · Speichern übernimmt die Auswahl";
+        }
+    }
+
+    public ObservableCollection<string> AvailableLocalAiModels { get; } = [];
+
+    partial void OnLocalAiModelChanged(string value)
     {
         if (_isInitializing || string.IsNullOrWhiteSpace(value))
         {
             return;
         }
 
-        var model = value.Trim();
-        _options.LmStudio.Model = model;
-        try
-        {
-            _localStorage.SetString("LmStudioModel", model);
-            SaveStatus = "LM-Studio-Modell automatisch gespeichert";
-        }
-        catch (Exception exception)
-            when (exception is IOException or UnauthorizedAccessException)
-        {
-            SaveStatus =
-                "Das LM-Studio-Modell ist sofort aktiv, konnte aber nicht "
-                + $"gespeichert werden: {exception.Message}";
-        }
+        RefreshReasoningLevels();
+        SaveStatus = "Lokale-AI-Modell geändert · Speichern übernimmt die Auswahl";
     }
 
     [ObservableProperty]
@@ -2688,26 +2708,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         get => _removeIdenticalAiQueueMessages;
         set
         {
-            if (!SetProperty(ref _removeIdenticalAiQueueMessages, value))
-            {
-                return;
-            }
-
-            _queueRuntimeSettings.RemoveIdenticalMessages = value;
-            try
-            {
-                _localStorage.SetString(
-                    LocalAppSettingKeys.RemoveIdenticalAiQueueMessages,
-                    value.ToString());
-                SaveStatus =
-                    "AI-Warteschlangenfilter automatisch gespeichert";
-            }
-            catch (Exception exception)
-                when (exception is IOException or UnauthorizedAccessException)
+            if (SetProperty(ref _removeIdenticalAiQueueMessages, value))
             {
                 SaveStatus =
-                    "AI-Warteschlangenfilter ist sofort aktiv, konnte aber "
-                    + $"nicht gespeichert werden: {exception.Message}";
+                    "AI-Warteschlangenfilter geändert · Speichern übernimmt die Auswahl";
             }
         }
     }
@@ -2719,27 +2723,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         get => _backseatgamingEnabled;
         set
         {
-            if (!SetProperty(ref _backseatgamingEnabled, value))
+            if (SetProperty(ref _backseatgamingEnabled, value))
             {
-                return;
-            }
-
-            _policyRuntimeSettings.BackseatgamingEnabled = value;
-            try
-            {
-                _localStorage.SetString(
-                    LocalAppSettingKeys.BackseatgamingEnabled,
-                    value.ToString());
-                SaveStatus = value
-                    ? "Backseatgaming aktiviert und automatisch gespeichert"
-                    : "Backseatgaming deaktiviert und automatisch gespeichert";
-            }
-            catch (Exception exception)
-                when (exception is IOException or UnauthorizedAccessException)
-            {
-                SaveStatus =
-                    "Die Backseatgaming-Einstellung gilt sofort, konnte aber "
-                    + $"nicht gespeichert werden: {exception.Message}";
+                SaveStatus = "Backseatgaming geändert · Speichern übernimmt die Auswahl";
             }
         }
     }
@@ -2751,25 +2737,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         get => _readOnlyMode;
         set
         {
-            if (!ApplyReadOnlyModeInMemory(value))
+            if (SetProperty(ref _readOnlyMode, value))
             {
-                return;
-            }
-            try
-            {
-                _localStorage.SetString(
-                    LocalAppSettingKeys.ReadOnlyMode,
-                    value.ToString());
-                SaveStatus = value
-                    ? "Read-Only-Modus automatisch gespeichert"
-                    : "Twitch-Ausführung automatisch gespeichert";
-            }
-            catch (Exception exception)
-                when (exception is IOException or UnauthorizedAccessException)
-            {
-                SaveStatus =
-                    "Der Read-Only-Modus ist sofort aktiv, konnte aber nicht "
-                    + $"gespeichert werden: {exception.Message}";
+                SaveStatus = "Read-Only-Modus geändert · Speichern übernimmt die Auswahl";
             }
         }
     }
@@ -2781,54 +2751,189 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public partial string TwitchConnectionStatus { get; set; } = "Nicht verbunden";
 
     [ObservableProperty]
-    public partial string LmStudioConnectionStatus { get; set; } = "Nicht geprüft";
+    public partial string LocalAiConnectionStatus { get; set; } = "Nicht geprüft";
 
-    [ObservableProperty]
-    public partial string LmStudioCredentialStatus { get; set; } =
-        "Tokenstatus wird geprüft";
 
     [ObservableProperty]
     public partial bool IsBusy { get; set; }
 
-    public void Save()
+    public async Task SaveAsync(CancellationToken cancellationToken = default)
     {
-        if (!Uri.TryCreate(LmStudioBaseUrl, UriKind.Absolute, out var baseAddress)
-            || !IsAllowedLmStudioAddress(baseAddress))
+        if (!Uri.TryCreate(LocalAiBaseUrl, UriKind.Absolute, out var baseAddress)
+            || !IsAllowedLocalAiAddress(baseAddress))
         {
             throw new InvalidOperationException(
-                "LM Studio muss über localhost oder eine private lokale Netzwerkadresse erreichbar sein.");
+                "Lokale AI muss über localhost oder eine private lokale Netzwerkadresse erreichbar sein.");
         }
 
-        if (string.IsNullOrWhiteSpace(LmStudioModel))
+        if (string.IsNullOrWhiteSpace(LocalAiModel))
         {
-            throw new InvalidOperationException("Ein LM-Studio-Modell ist erforderlich.");
+            throw new InvalidOperationException("Ein Lokale-AI-Modell ist erforderlich.");
         }
 
-        PersistTwitchClientId();
-        _options.LmStudio.BaseAddress = EnsureTrailingSlash(baseAddress);
-        _options.LmStudio.Model = LmStudioModel.Trim();
+        await _twitchSessionGate.WaitAsync(cancellationToken);
+        var analysisStopped = false;
+        var settingsApplied = false;
+        var analysisGateEntered = false;
+        try
+        {
+            _state.IsApplyingSettings = true;
+            await _state.AnalysisLifecycleGate.WaitAsync(cancellationToken);
+            analysisGateEntered = true;
+            // A running batch keeps its old model, reasoning and policy until
+            // all old workers have stopped. Apply one captured draft together.
+            var draft = new SettingsDraft(
+                TwitchClientId.Trim(),
+                TwitchChannelSelection.FormatLogins(
+                    TwitchChannelSelection.ParseLogins(ChannelLogin)),
+                LocalAiModel.Trim(),
+                ReasoningEffort,
+                SelectedTheme,
+                RemoveIdenticalAiQueueMessages,
+                BackseatgamingEnabled,
+                ReadOnlyMode);
+            if (draft.Model.Length == 0)
+            {
+                throw new InvalidOperationException("Ein Lokale-AI-Modell ist erforderlich.");
+            }
+            IsBusy = true;
+            SaveStatus = "Einstellungen werden geprüft und angewandt …";
+            var restartAnalysis = _coordinator?.IsRunning == true;
+            var wasConnected = restartAnalysis || _state.IsTwitchConnectionReady;
+            PreparedTwitchIdentity? prepared = null;
+            if (_tokenProvider is not null)
+            {
+                try
+                {
+                    if (wasConnected || await _tokenProvider.HasStoredAuthorizationAsync(cancellationToken))
+                    {
+                        var validation = await _tokenProvider.ValidateStoredAuthorizationAsync(cancellationToken);
+                        var clientId = draft.TwitchClientId.Length == 0
+                            ? validation.ClientId
+                            : draft.TwitchClientId;
+                        EnsureRequiredScopes(validation, clientId);
+                        draft = draft with { TwitchClientId = clientId };
+                        var previousClientId = _options.TwitchOAuth.ClientId;
+                        if (restartAnalysis && !string.Equals(clientId, previousClientId, StringComparison.Ordinal))
+                        {
+                            await _coordinator!.StopAsync(cancellationToken);
+                            analysisStopped = true;
+                            _state.IsAnalysisRunning = false;
+                        }
+                        _options.TwitchOAuth.ClientId = clientId;
+                        try
+                        {
+                            prepared = await PrepareTwitchIdentityAsync(
+                                draft.ReadOnlyMode,
+                                cancellationToken,
+                                draft.BackseatgamingEnabled,
+                                draft.ChannelLogin);
+                        }
+                        finally
+                        {
+                            _options.TwitchOAuth.ClientId = previousClientId;
+                        }
+                    }
+                }
+                catch (Exception exception) when (!wasConnected
+                    && !cancellationToken.IsCancellationRequested
+                    && (exception is TwitchAuthorizationRequiredException or InvalidDataException
+                        || exception is HttpRequestException
+                        || IsTransientConnectionFailure(exception)))
+                {
+                    // Offline settings still apply now. A missing/expired login
+                    // requires reconnecting, never an application restart.
+                    SetTwitchRestoreResult(
+                        TwitchSessionRestoreOutcome.TemporarilyUnavailable,
+                        "Twitch nicht verbunden: " + MeaningfulExceptionMessage(exception));
+                }
+            }
 
-        ChannelLogin = TwitchChannelSelection.FormatLogins(
-            TwitchChannelSelection.ParseLogins(ChannelLogin));
-        _localStorage.SetString("ChannelLogin", ChannelLogin);
-        _localStorage.SetString(
-            "LmStudioBaseUrl",
-            _options.LmStudio.BaseAddress.ToString());
-        _localStorage.SetString("LmStudioModel", _options.LmStudio.Model);
-        _localStorage.SetString("Theme", SelectedTheme);
-        _localStorage.SetString(
-            LocalAppSettingKeys.RemoveIdenticalAiQueueMessages,
-            RemoveIdenticalAiQueueMessages.ToString());
-        _localStorage.SetString(
-            LocalAppSettingKeys.BackseatgamingEnabled,
-            BackseatgamingEnabled.ToString());
-        _localStorage.SetString(
-            LocalAppSettingKeys.ReadOnlyMode,
-            ReadOnlyMode.ToString());
-        SaveStatus = "Lokal gespeichert · Verbindungsänderungen gelten nach App-Neustart";
+            cancellationToken.ThrowIfCancellationRequested();
+            if (restartAnalysis && !analysisStopped)
+            {
+                SaveStatus = "Laufende Analyse wird neu initialisiert …";
+                await _coordinator!.StopAsync(cancellationToken);
+                analysisStopped = true;
+                _state.IsAnalysisRunning = false;
+            }
+
+            ApplySavedSettings(draft);
+            settingsApplied = true;
+            if (prepared is not null)
+            {
+                await ApplyPreparedTwitchIdentityAsync(prepared, cancellationToken);
+            }
+            if (restartAnalysis)
+            {
+                await _coordinator!.StartAsync(cancellationToken);
+                _state.IsAnalysisRunning = true;
+            }
+
+            SaveStatus = prepared is null
+                ? "Einstellungen gespeichert und angewandt · Twitch nicht verbunden"
+                : "Einstellungen gespeichert und angewandt · TwitchAI neu initialisiert";
+        }
+        catch (Exception exception)
+        {
+            if (analysisStopped && !settingsApplied && !cancellationToken.IsCancellationRequested)
+            {
+                await _coordinator!.StartAsync(CancellationToken.None);
+                _state.IsAnalysisRunning = true;
+            }
+            SaveStatus = settingsApplied
+                ? "Einstellungen gespeichert · Neuinitialisierung fehlgeschlagen: " + MeaningfulExceptionMessage(exception)
+                : "Einstellungen nicht übernommen: " + MeaningfulExceptionMessage(exception);
+            WriteTwitchConnectionDiagnostic("Einstellungen konnten nicht vollständig angewendet werden.", exception);
+            throw;
+        }
+        finally
+        {
+            IsBusy = false;
+            if (analysisGateEntered) _state.AnalysisLifecycleGate.Release();
+            _state.IsApplyingSettings = false;
+            _twitchSessionGate.Release();
+        }
     }
 
-    private static bool IsAllowedLmStudioAddress(Uri address)
+    private void ApplySavedSettings(SettingsDraft draft)
+    {
+        _localStorage.SetStrings(new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["TwitchClientId"] = draft.TwitchClientId,
+            ["ChannelLogin"] = draft.ChannelLogin,
+            ["LocalAiBaseUrl"] = "http://127.0.0.1:8180/",
+            ["LocalAiModel"] = draft.Model,
+            ["ReasoningEffort"] = draft.ReasoningEffort,
+            ["Theme"] = draft.Theme,
+            [LocalAppSettingKeys.RemoveIdenticalAiQueueMessages] = draft.RemoveIdenticalMessages.ToString(),
+            [LocalAppSettingKeys.BackseatgamingEnabled] = draft.BackseatgamingEnabled.ToString(),
+            [LocalAppSettingKeys.ReadOnlyMode] = draft.ReadOnlyMode.ToString(),
+        });
+        ApplyTwitchClientId(draft.TwitchClientId);
+        ChannelLogin = draft.ChannelLogin;
+        _options.LocalAi.BaseAddress = new Uri("http://127.0.0.1:8180/");
+        _options.LocalAi.Model = draft.Model;
+        _options.LocalAi.ReasoningEffort = draft.ReasoningEffort;
+        _policyRuntimeSettings.BackseatgamingEnabled = draft.BackseatgamingEnabled;
+        _queueRuntimeSettings.RemoveIdenticalMessages = draft.RemoveIdenticalMessages;
+        ApplyReadOnlyModeInMemory(draft.ReadOnlyMode);
+        TwitchClientIdPersistenceStatus = draft.TwitchClientId.Length == 0
+            ? "Keine Client-ID gespeichert."
+            : "Client-ID lokal gespeichert.";
+    }
+
+    private sealed record SettingsDraft(
+        string TwitchClientId,
+        string ChannelLogin,
+        string Model,
+        string ReasoningEffort,
+        string Theme,
+        bool RemoveIdenticalMessages,
+        bool BackseatgamingEnabled,
+        bool ReadOnlyMode);
+
+    private static bool IsAllowedLocalAiAddress(Uri address)
     {
         if (address.IsLoopback)
         {
@@ -2864,58 +2969,6 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         SaveStatus = "Datenbank importiert · TwitchAI bitte neu starten";
     }
 
-    public async Task ApplyReadOnlyModeChangeAsync(
-        bool isReadOnly,
-        CancellationToken cancellationToken = default)
-    {
-        var restartAnalysis = _coordinator.IsRunning;
-        if (!restartAnalysis && !_state.IsTwitchConnectionReady)
-        {
-            ReadOnlyMode = isReadOnly;
-            return;
-        }
-
-        await _twitchSessionGate.WaitAsync(cancellationToken);
-        try
-        {
-            IsBusy = true;
-            TwitchConnectionStatus = "Twitch-Verbindung wird neu geprüft";
-            ApplyTwitchClientId(TwitchClientId);
-            var validation = await _tokenProvider
-                .ValidateStoredAuthorizationAsync(cancellationToken);
-            EnsureValidatedTwitchClientId(validation);
-
-            var prepared = await PrepareTwitchIdentityAsync(
-                    isReadOnly,
-                    cancellationToken);
-            await ApplyPreparedTwitchIdentityAndRestartAnalysisAsync(
-                    prepared,
-                    restartAnalysis,
-                    cancellationToken);
-
-            SaveStatus = isReadOnly
-                ? "Read-Only aktiv · Analyse verwendet nur lesende Twitch-Ereignisse"
-                : "Twitch-Ausführung aktiv · Moderationsrechte wurden neu geprüft";
-        }
-        catch (Exception exception)
-        {
-            WriteTwitchConnectionDiagnostic(
-                "Read-Only-Modus konnte nicht umgestellt werden.",
-                exception);
-            OnPropertyChanged(nameof(ReadOnlyMode));
-            throw;
-        }
-        finally
-        {
-            IsBusy = false;
-            _twitchSessionGate.Release();
-        }
-    }
-
-    public void SaveTwitchClientId()
-    {
-        PersistTwitchClientId();
-    }
 
     public async Task<TwitchDeviceAuthorization> StartDeviceAuthorizationAsync(
         CancellationToken cancellationToken = default)
@@ -3152,97 +3205,63 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
     }
 
-    public async Task<IReadOnlyList<string>> CheckLmStudioAsync(
+    public async Task<IReadOnlyList<string>> CheckLocalAiAsync(
         CancellationToken cancellationToken = default)
     {
+        await _twitchSessionGate.WaitAsync(cancellationToken);
         IsBusy = true;
-        LmStudioConnectionStatus = "Prüfe verfügbare Modelle";
+        LocalAiConnectionStatus = "Prüfe verfügbare Modelle";
         try
         {
-            var models = await _lmStudioClient.GetLoadedModelsAsync(cancellationToken);
+            var models = await _localAiClient.GetLoadedModelsAsync(cancellationToken);
             var availableModels = models
+                .Where(model => !string.IsNullOrWhiteSpace(model))
                 .Distinct(StringComparer.Ordinal)
                 .Order(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            for (var index = AvailableLmStudioModels.Count - 1; index >= 0; index--)
+            var selectedModel = availableModels.Contains(LocalAiModel, StringComparer.Ordinal)
+                ? LocalAiModel
+                : availableModels.FirstOrDefault() ?? string.Empty;
+            for (var index = AvailableLocalAiModels.Count - 1; index >= 0; index--)
             {
-                var existingModel = AvailableLmStudioModels[index];
-                if (!string.Equals(existingModel, LmStudioModel, StringComparison.Ordinal)
-                    && !availableModels.Contains(existingModel, StringComparer.Ordinal))
+                var existingModel = AvailableLocalAiModels[index];
+                if (!availableModels.Contains(existingModel, StringComparer.Ordinal))
                 {
-                    AvailableLmStudioModels.RemoveAt(index);
+                    AvailableLocalAiModels.RemoveAt(index);
                 }
             }
 
             foreach (var availableModel in availableModels)
             {
-                if (!AvailableLmStudioModels.Contains(
+                if (!AvailableLocalAiModels.Contains(
                         availableModel,
                         StringComparer.Ordinal))
                 {
-                    AvailableLmStudioModels.Add(availableModel);
+                    AvailableLocalAiModels.Add(availableModel);
                 }
             }
-            var isConfiguredModelAvailable = models.Contains(
-                _options.LmStudio.Model,
+            LocalAiModel = selectedModel;
+            RefreshReasoningLevels();
+            var isConfiguredModelAvailable = availableModels.Contains(
+                _options.LocalAi.Model,
                 StringComparer.Ordinal);
-            LmStudioConnectionStatus = isConfiguredModelAvailable
+            LocalAiConnectionStatus = isConfiguredModelAvailable
                 ? "Modell verfügbar"
-                : "Verbunden · Modell nicht verfügbar";
-            _state.LmStudioStatus = LmStudioConnectionStatus;
-            return models;
+                : "Verbunden · kein vollständiges GGUF-Modell im Hugging-Face-Cache gefunden";
+            _state.LocalAiStatus = LocalAiConnectionStatus;
+            return availableModels;
         }
-        catch
+        catch (Exception exception)
         {
-            LmStudioConnectionStatus = "LM Studio nicht erreichbar";
-            _state.LmStudioStatus = LmStudioConnectionStatus;
+            LocalAiConnectionStatus = $"Lokale AI nicht erreichbar: {exception.Message}";
+            _state.LocalAiStatus = LocalAiConnectionStatus;
             throw;
         }
         finally
         {
             IsBusy = false;
+            _twitchSessionGate.Release();
         }
-    }
-
-    public async Task RefreshLmStudioCredentialStatusAsync(
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            var token = await _lmStudioCredentialVault
-                .LoadTokenAsync(cancellationToken);
-            LmStudioCredentialStatus = string.IsNullOrWhiteSpace(token)
-                ? "Kein optionaler API-Token gespeichert"
-                : "API-Token sicher im Credential Locker gespeichert";
-        }
-        catch
-        {
-            LmStudioCredentialStatus = "Tokenstatus konnte nicht gelesen werden";
-            throw;
-        }
-    }
-
-    public async Task SaveLmStudioTokenAsync(
-        string token,
-        CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            throw new InvalidOperationException(
-                "Gib einen API-Token ein oder verwende „Token entfernen“.");
-        }
-
-        await _lmStudioCredentialVault
-            .SaveTokenAsync(token.Trim(), cancellationToken);
-        LmStudioCredentialStatus =
-            "API-Token sicher im Credential Locker gespeichert";
-    }
-
-    public async Task DeleteLmStudioTokenAsync(
-        CancellationToken cancellationToken = default)
-    {
-        await _lmStudioCredentialVault.DeleteTokenAsync(cancellationToken);
-        LmStudioCredentialStatus = "Kein optionaler API-Token gespeichert";
     }
 
     private async Task ConfigureTwitchIdentityAndRestartAnalysisAsync(
@@ -3260,14 +3279,17 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private async Task<PreparedTwitchIdentity> PrepareTwitchIdentityAsync(
         bool isReadOnly,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool? backseatgamingEnabled = null,
+        string? channelLogin = null)
     {
         var currentUser = await _helixClient
             .GetCurrentUserAsync(cancellationToken);
         var targets = await ResolveTargetChannelsAsync(
                 currentUser,
                 isReadOnly,
-                cancellationToken);
+                cancellationToken,
+                channelLogin);
 
         var channelInfos = new List<TwitchChannelInfo>(targets.Count);
         foreach (var target in targets)
@@ -3336,6 +3358,16 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         {
             try
             {
+                var info = channelInfos[index];
+                if (!string.IsNullOrWhiteSpace(info.CategoryId))
+                {
+                    // The policy store only includes category rules for known
+                    // categories. Register the freshly verified game first.
+                    await PersistVerifiedCategoryAsync(
+                        info.CategoryId,
+                        info.CategoryName ?? info.CategoryId,
+                        cancellationToken);
+                }
                 policies.Add(
                     await _policyStore.GetEffectivePolicyAsync(
                         targets[index].BroadcasterId,
@@ -3367,6 +3399,24 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             _ => "Mehrere Kategorien",
         };
 
+        var resolver = new EffectivePolicyResolver(
+            justChatting.Id,
+            irl.Id,
+            new ModerationPolicyRuntimeSettings(
+                backseatgamingEnabled ?? _policyRuntimeSettings.BackseatgamingEnabled));
+        var hasBackseatgaming = policies.Select((policy, index) => resolver.Resolve(
+                new ChannelContextSnapshot(
+                    targets[index].BroadcasterId,
+                    channelInfos[index].CategoryId,
+                    channelInfos[index].CategoryName ?? string.Empty,
+                    DateTimeOffset.UtcNow,
+                    1,
+                    IsVerified: policy.CategoryRevision > 0
+                        && string.Equals(policy.CategoryId, channelInfos[index].CategoryId, StringComparison.Ordinal)),
+                Math.Max(1, policy.GeneralRevision),
+                Math.Max(1, policy.CategoryRevision)))
+            .Any(policy => policy.Contains(PolicySetCode.Backseatgaming));
+
         return new PreparedTwitchIdentity(
             currentUser,
             targets,
@@ -3377,7 +3427,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
             normalizedChannelLogins,
             string.Join(", ", targets.Select(target => target.BroadcasterName)),
             categoryName,
-            policies.Any(policy => policy.CategoryRevision > 0)
+            hasBackseatgaming
                 ? "General + Backseatgaming"
                 : "Nur General",
             isReadOnly);
@@ -3412,6 +3462,22 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
                 prepared.JustChatting.Id,
                 prepared.JustChatting.Name,
                 cancellationToken);
+
+        if (_channelStateRepository is not null)
+        {
+            foreach (var info in prepared.ChannelInfos)
+            {
+                await _channelStateRepository.UpsertAsync(new ChannelStateRecord(
+                    info.BroadcasterId,
+                    info.BroadcasterLogin,
+                    info.BroadcasterName,
+                    prepared.CurrentUser.Id,
+                    info.CategoryId,
+                    info.CategoryName,
+                    DateTimeOffset.UtcNow,
+                    IsVerified: true), cancellationToken);
+            }
+        }
         await PersistVerifiedCategoryAsync(
                 prepared.Irl.Id,
                 prepared.Irl.Name,
@@ -3469,9 +3535,10 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private async Task<IReadOnlyList<TwitchModeratedChannel>> ResolveTargetChannelsAsync(
         TwitchUserInfo currentUser,
         bool isReadOnly,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? channelLogin = null)
     {
-        var requestedLogins = TwitchChannelSelection.ParseLogins(ChannelLogin);
+        var requestedLogins = TwitchChannelSelection.ParseLogins(channelLogin ?? ChannelLogin);
         if (requestedLogins.Count == 0)
         {
             requestedLogins = [currentUser.Login];
@@ -3601,11 +3668,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private bool ApplyReadOnlyModeInMemory(bool value)
     {
-        if (!SetProperty(ref _readOnlyMode, value, nameof(ReadOnlyMode)))
-        {
-            return false;
-        }
-
+        SetProperty(ref _readOnlyMode, value, nameof(ReadOnlyMode));
         _twitchRuntimeModeSettings.IsReadOnly = value;
         _state.IsReadOnlyMode = value;
         return true;
@@ -3743,11 +3806,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         GC.SuppressFinalize(this);
     }
 
-    private void EnsureRequiredScopes(TwitchTokenValidation validation)
+    private void EnsureRequiredScopes(TwitchTokenValidation validation, string? clientId = null)
     {
         if (!string.Equals(
                 validation.ClientId,
-                _options.TwitchOAuth.ClientId,
+                clientId ?? _options.TwitchOAuth.ClientId,
                 StringComparison.Ordinal))
         {
             throw new InvalidOperationException(

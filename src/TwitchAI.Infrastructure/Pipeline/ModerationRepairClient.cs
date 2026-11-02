@@ -60,23 +60,23 @@ public sealed class ModerationRepairClient : IModerationRepairClient
 {
     private const int MaximumInvalidResponseCharacters = 16_384;
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
-    private readonly ILmStudioClient _client;
+    private readonly ILocalAiClient _client;
     private readonly IModerationPromptCompiler _promptCompiler;
 
-    public ModerationRepairClient(ILmStudioClient client)
+    public ModerationRepairClient(ILocalAiClient client)
         : this(client, new ModerationPromptCompiler(), new InfrastructureOptions())
     {
     }
 
     public ModerationRepairClient(
-        ILmStudioClient client,
+        ILocalAiClient client,
         IModerationPromptCompiler promptCompiler)
         : this(client, promptCompiler, new InfrastructureOptions())
     {
     }
 
     public ModerationRepairClient(
-        ILmStudioClient client,
+        ILocalAiClient client,
         IModerationPromptCompiler promptCompiler,
         InfrastructureOptions options)
     {
@@ -152,7 +152,7 @@ public sealed class ModerationRepairClient : IModerationRepairClient
         };
         var completion = await _client
             .CompleteModerationAsync(
-                new LmStudioModerationRequest(
+                new LocalAiModerationRequest(
                     $"{subsetEnvelope.BatchId:D}-repair",
                     compiled.PolicyHash,
                     compiled.MessageIds.Count,
@@ -160,7 +160,7 @@ public sealed class ModerationRepairClient : IModerationRepairClient
                     compiled.UserPrompt,
                     compiled.ActiveRuleCodes,
                     compiled.ReplyTemplateIds,
-                    LmStudioResponseSchemaKind.ModerationV6,
+                    LocalAiResponseSchemaKind.ModerationV6,
                     LocalAiRunKind.Moderation,
                     compiled.ResponseFormat,
                     SchedulingKey: request.SchedulingKey),
@@ -284,7 +284,7 @@ public sealed class ModerationRepairClient : IModerationRepairClient
                 item => $"{item.Code}:{item.Revision}"));
         var completion = await _client
             .CompleteModerationAsync(
-                new LmStudioModerationRequest(
+                new LocalAiModerationRequest(
                     $"{legacyRequest.BatchId:D}-repair",
                     policyFingerprint,
                     legacyRequest.Messages.Count,

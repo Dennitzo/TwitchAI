@@ -16,6 +16,7 @@ public static partial class ModerationReasonComposer
     public static readonly string StructuredAiReasonInstruction =
         "For timeout and ban, return two separate German fields: violationReason and guidance. "
         + "violationReason must follow all violation-reason rules below. guidance must be a short, polite, clear instruction for future behavior. "
+        + "In guidance include the German word bitte and an explicit future marker such as künftig or zukünftig. Use impersonal infinitive phrasing, not a description of current expectations. "
         + "Vary its natural wording; do not copy a stock phrase. guidance must not name or address any person, username, @mention, target role, message excerpt, trigger phrase, rule code, action, duration, punishment, or threat. "
         + "Do not use du, dich, dir, dein, ihr, euch, Sie, or Ihnen. Do not refer to 'die Nachricht'. "
         + $"violationReason is at most {MaximumViolationReasonLength} characters and guidance is at most {MaximumGuidanceLength} characters. "

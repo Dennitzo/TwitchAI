@@ -12,7 +12,7 @@ public sealed class ModerationRepairClientTests
     public async Task RepairAsync_LegacyPromptRequiresMessageSpecificReason()
     {
         var request = RequestWithMessages("m1");
-        var client = new RecordingLmStudioClient();
+        var client = new RecordingLocalAiClient();
         var sut = new ModerationRepairClient(client);
 
         await sut.RepairAsync(
@@ -22,7 +22,7 @@ public sealed class ModerationRepairClientTests
                 "reason_not_contextual",
                 "invalid")]);
 
-        var sent = Assert.IsType<LmStudioModerationRequest>(client.Request);
+        var sent = Assert.IsType<LocalAiModerationRequest>(client.Request);
         Assert.Contains(
             ModerationReasonNormalizer.ContextualAiReasonInstruction,
             sent.SystemPrompt,
@@ -34,7 +34,7 @@ public sealed class ModerationRepairClientTests
     {
         var envelope = RequestWithMessages("m1", "m2");
         var compiled = new ModerationPromptCompiler().Compile(envelope);
-        var client = new RecordingLmStudioClient();
+        var client = new RecordingLocalAiClient();
         var sut = new ModerationRepairClient(client);
 
         await sut.RepairAsync(
@@ -48,9 +48,9 @@ public sealed class ModerationRepairClientTests
                 RequiresFullBatchRepair: false,
                 SchedulingKey: "channel-1"));
 
-        var sent = Assert.IsType<LmStudioModerationRequest>(client.Request);
+        var sent = Assert.IsType<LocalAiModerationRequest>(client.Request);
         Assert.Equal(1, sent.MessageCount);
-        Assert.Equal(LmStudioResponseSchemaKind.ModerationV6, sent.ResponseSchema);
+        Assert.Equal(LocalAiResponseSchemaKind.ModerationV6, sent.ResponseSchema);
         Assert.NotNull(sent.ResponseFormat);
         Assert.Equal("channel-1", sent.SchedulingKey);
         Assert.Contains("\"messageId\":\"m2\"", sent.UserPrompt, StringComparison.Ordinal);
@@ -72,7 +72,7 @@ public sealed class ModerationRepairClientTests
     {
         var compiled = new ModerationPromptCompiler().Compile(
             RequestWithMessages("m1", "m2"));
-        var client = new RecordingLmStudioClient();
+        var client = new RecordingLocalAiClient();
         var sut = new ModerationRepairClient(client);
 
         var exception = await Assert.ThrowsAsync<ArgumentException>(
@@ -114,7 +114,7 @@ public sealed class ModerationRepairClientTests
         var compiler = new ModerationPromptCompiler();
         var compiled = compiler.CompileClassification(
             new ModerationClassificationRequest(envelope, []));
-        var client = new RecordingLmStudioClient();
+        var client = new RecordingLocalAiClient();
         var sut = new ModerationRepairClient(client, compiler);
 
         var result = await sut.RepairWithDiagnosticsAsync(
@@ -128,7 +128,7 @@ public sealed class ModerationRepairClientTests
                 RequiresFullBatchRepair: false,
                 SchedulingKey: "channel-1"));
 
-        var sent = Assert.IsType<LmStudioModerationRequest>(client.Request);
+        var sent = Assert.IsType<LocalAiModerationRequest>(client.Request);
         Assert.Equal(ModerationPromptStage.Classification, result.Prompt?.Stage);
         Assert.Contains(
             ModerationPromptCompiler.ClassificationResponseEnvelopeVersion,
@@ -147,8 +147,8 @@ public sealed class ModerationRepairClientTests
         var envelope = RequestWithMessages("m1", "m2");
         var compiled = new ModerationPromptCompiler().Compile(envelope);
         var options = new InfrastructureOptions();
-        options.LmStudio.UseCompactModerationContractV6 = false;
-        var client = new RecordingLmStudioClient();
+        options.LocalAi.UseCompactModerationContractV6 = false;
+        var client = new RecordingLocalAiClient();
         var sut = new ModerationRepairClient(
             client,
             new ModerationPromptCompiler(),
@@ -161,9 +161,9 @@ public sealed class ModerationRepairClientTests
                 [new ModerationValidationIssue("rule_inactive", "invalid", "m2")],
                 RequiresFullBatchRepair: false));
 
-        var sent = Assert.IsType<LmStudioModerationRequest>(client.Request);
+        var sent = Assert.IsType<LocalAiModerationRequest>(client.Request);
         Assert.Equal(1, sent.MessageCount);
-        Assert.Equal(LmStudioResponseSchemaKind.ModerationV6, sent.ResponseSchema);
+        Assert.Equal(LocalAiResponseSchemaKind.ModerationV6, sent.ResponseSchema);
         Assert.NotNull(sent.ResponseFormat);
         Assert.DoesNotContain("validationErrors", sent.UserPrompt, StringComparison.Ordinal);
         Assert.Contains(
@@ -214,7 +214,7 @@ public sealed class ModerationRepairClientTests
             ],
             ReplyTemplates = [new ChatReplyTemplatePrompt("r1", "event dauer")],
         };
-        var client = new RecordingLmStudioClient();
+        var client = new RecordingLocalAiClient();
         var sut = new ModerationRepairClient(client);
 
         await sut.RepairAsync(
@@ -227,7 +227,7 @@ public sealed class ModerationRepairClientTests
                     "m1")],
                 RequiresFullBatchRepair: false));
 
-        var sent = Assert.IsType<LmStudioModerationRequest>(client.Request);
+        var sent = Assert.IsType<LocalAiModerationRequest>(client.Request);
         Assert.DoesNotContain(
             ModerationRuleCodes.Backseatgaming,
             sent.ActiveRuleCodes!);
@@ -260,7 +260,7 @@ public sealed class ModerationRepairClientTests
                     Priority: 100),
             ],
         };
-        var client = new RecordingLmStudioClient();
+        var client = new RecordingLocalAiClient();
         var sut = new ModerationRepairClient(client);
 
         await sut.RepairAsync(
@@ -302,7 +302,7 @@ public sealed class ModerationRepairClientTests
             [new ModerationRequestMessageV3("m1", "du idiot", [])],
             [],
             [new ChatReplyTemplatePrompt("r1", "wie lange läuft das event?")]);
-        var client = new RecordingLmStudioClient();
+        var client = new RecordingLocalAiClient();
         var sut = new ModerationRepairClient(client);
 
         var result = await sut.RepairAsync(
@@ -434,20 +434,20 @@ public sealed class ModerationRepairClientTests
             []);
     }
 
-    private sealed class RecordingLmStudioClient : ILmStudioClient
+    private sealed class RecordingLocalAiClient : ILocalAiClient
     {
-        public LmStudioModerationRequest? Request { get; private set; }
+        public LocalAiModerationRequest? Request { get; private set; }
 
-        public Task<LmStudioModerationCompletion> CompleteModerationAsync(
-            LmStudioModerationRequest request,
+        public Task<LocalAiModerationCompletion> CompleteModerationAsync(
+            LocalAiModerationRequest request,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Request = request;
             return Task.FromResult(
-                new LmStudioModerationCompletion(
+                new LocalAiModerationCompletion(
                     """{"repaired":true}""",
-                    new LmStudioUsageMetrics(
+                    new LocalAiUsageMetrics(
                         PromptTokens: 1,
                         CompletionTokens: 1,
                         TotalTokens: 2,

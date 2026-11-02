@@ -1,0 +1,13 @@
+name: twitchai-ai-stack
+services:
+  gateway:
+    image: twitchai-gateway:local
+    build: .
+    container_name: twitchai-gateway
+    restart: "no"
+    ports:
+      - "127.0.0.1:8180:8180"
+    labels:
+      com.twitchai.runtime.owner: twitchai
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

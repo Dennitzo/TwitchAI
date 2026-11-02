@@ -30,6 +30,8 @@ public enum ModerationPipelineEventKind
     StaleLearningRequeued,
     AvailabilityChanged,
     Faulted,
+    ModelLoading,
+    ModelReady,
 }
 
 public sealed class ModerationPipelineEventArgs : EventArgs
@@ -288,8 +290,9 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 _activeInferenceChannels.Clear();
                 _lastReleasedInferenceChannel = null;
             }
-            ChannelContextSnapshot? initialContext = null;
-            CoreEffectivePolicySnapshot? initialPolicy = null;
+            var initialChannels = new List<(
+                ChannelContextSnapshot Context,
+                CoreEffectivePolicySnapshot Policy)>(broadcasterIds.Count);
             foreach (var broadcasterId in broadcasterIds)
             {
                 await _policyStore
@@ -301,11 +304,10 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 SetCurrentContext(context);
                 var policy = await ResolvePolicyAsync(context, source.Token)
                     .ConfigureAwait(false);
-                initialContext ??= context;
-                initialPolicy ??= policy;
+                initialChannels.Add((context, policy));
             }
 
-            if (initialContext is null || initialPolicy is null)
+            if (initialChannels.Count == 0)
             {
                 throw new InvalidOperationException(
                     "Mindestens ein Twitch-Kanal mit Regelkontext muss für die Analyse konfiguriert sein.");
@@ -318,6 +320,28 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                     "Die Twitch-Verbindung wurde während des Analysestarts getrennt. "
                     + "Bitte Twitch erneut verbinden.");
             }
+
+            Publish(new(
+                ModerationPipelineEventKind.ModelLoading,
+                "ai_model_loading",
+                "Das ausgewählte lokale AI-Modell wird geladen."));
+            try
+            {
+                await _localModerationClient.PrepareAsync(source.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                Publish(new(
+                    ModerationPipelineEventKind.Faulted,
+                    "ai_model_load_failed",
+                    exception.Message,
+                    exception: exception));
+                throw;
+            }
+            Publish(new(
+                ModerationPipelineEventKind.ModelReady,
+                "ai_model_ready",
+                "Das ausgewählte lokale AI-Modell ist geladen."));
 
             var inferenceWorkerCount = Math.Min(
                 LocalAiExecutionGate.MaximumConcurrency,
@@ -367,15 +391,43 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 }
             }
 
+            // EventSub can observe a category change while startup is waiting
+            // for readiness. Project that current context after Started resets
+            // the UI's previous per-channel policy presentation.
+            for (var index = 0; index < initialChannels.Count; index++)
+            {
+                var initial = initialChannels[index];
+                var context = GetCurrentContext(initial.Context.ChannelId)
+                    ?? initial.Context;
+                if (context != initial.Context)
+                {
+                    initialChannels[index] = (
+                        context,
+                        await ResolvePolicyAsync(context, source.Token)
+                            .ConfigureAwait(false));
+                }
+            }
+
             Publish(
                 new(
                     ModerationPipelineEventKind.Started,
                     "analysis_started",
                     "Twitch moderation analysis started.",
-                    channelContext: initialContext,
-                    activePolicySets: initialPolicy.ActivePolicySets
+                    channelContext: initialChannels[0].Context,
+                    activePolicySets: initialChannels[0].Policy.ActivePolicySets
                         .Select(item => item.Code)
                         .ToArray()));
+            foreach (var (context, policy) in initialChannels)
+            {
+                Publish(new(
+                    ModerationPipelineEventKind.CategoryChanged,
+                    "channel_policy_initialized",
+                    "The current channel policy was applied after analysis startup.",
+                    channelContext: context,
+                    activePolicySets: policy.ActivePolicySets
+                        .Select(item => item.Code)
+                        .ToArray()));
+            }
         }
         catch
         {
@@ -1011,8 +1063,8 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
         // Live moderation has one canonical request/response path. The legacy
         // staged branch remains below only as temporary source compatibility;
         // persisted settings can no longer select it.
-        if (_options.LmStudio.UseCompactModerationContractV6 ||
-            !_options.LmStudio.UseCompactModerationContractV6)
+        if (_options.LocalAi.UseCompactModerationContractV6 ||
+            !_options.LocalAi.UseCompactModerationContractV6)
         {
             var stagedValidation = await AnalyzeStagedBatchAsync(
                     batch,
@@ -1336,7 +1388,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
             }
 
             // The manual whitelist is deliberately not learned from moderation
-            // decisions and can change while LM Studio is evaluating a batch.
+            // decisions and can change while Lokale AI is evaluating a batch.
             // Re-check it immediately before a case becomes actionable.
             if (await _whitelist
                     .ShouldSkipAsync(
@@ -2205,7 +2257,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
     private ModerationValidationReport ValidateRuntimeResponse(
         string rawResponse,
         ModerationBatch batch) =>
-        _options.LmStudio.UseCompactModerationContractV6
+        _options.LocalAi.UseCompactModerationContractV6
             ? _envelopeValidator.ValidateV6(rawResponse, batch)
             : _envelopeValidator.ValidateV4(rawResponse, batch);
 
@@ -2867,7 +2919,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 batch.BatchId.ToString("D"),
                 LocalAiRunState.Queued,
                 batch.Messages.Count,
-                _options.LmStudio.Model,
+                _options.LocalAi.Model,
                 PromptTokens: null,
                 CompletionTokens: null,
                 TotalTokens: null,
@@ -2909,7 +2961,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 batch.BatchId.ToString("D"),
                 state,
                 batch.Messages.Count,
-                _options.LmStudio.Model,
+                _options.LocalAi.Model,
                 PromptTokens: null,
                 CompletionTokens: null,
                 TotalTokens: null,
@@ -2938,7 +2990,7 @@ public sealed class ModerationCoordinator : IModerationCoordinator, IAsyncDispos
                 batchId.ToString("D"),
                 LocalAiRunState.Superseded,
                 messageCount,
-                _options.LmStudio.Model,
+                _options.LocalAi.Model,
                 PromptTokens: null,
                 CompletionTokens: null,
                 TotalTokens: null,

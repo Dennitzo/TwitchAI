@@ -351,7 +351,7 @@ public sealed class CoreModerationCaseRepository : IModerationCaseRepository
                 @chatter_name, @message_original, @message_normalized,
                 @category_id, @category_name,
                 @policy_hash, @policy_revisions, @message_snapshot,
-                NULL, 'local-lm-studio', @decision_json, @batch_id,
+                NULL, 'twitchai-llama', @decision_json, @batch_id,
                 @local_match_codes, @ai_latency_ms,
                 @action, @timeout_seconds, @violation_rule_code,
                 @reason, @policy_set, @trigger_phrases, @confidence,

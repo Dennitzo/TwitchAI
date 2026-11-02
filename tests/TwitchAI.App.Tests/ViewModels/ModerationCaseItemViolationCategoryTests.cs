@@ -359,7 +359,7 @@ public sealed class ModerationCaseItemViolationCategoryTests
             }
 
             _started.Release();
-            // Deliberately ignore cancellation to model a late LM Studio response.
+            // Deliberately ignore cancellation to model a late Lokale AI response.
             return new(completion.Task);
         }
 

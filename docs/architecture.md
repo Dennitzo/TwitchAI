@@ -5,7 +5,7 @@
 - `TwitchAI.Core`: unveränderliche Domänenmodelle, Normalisierung, Whitelist,
   Policyauflösung, Batching, Envelope-Validierung und Identitätsschutz.
 - `TwitchAI.Infrastructure`: SQLite, Migrationen, Twitch OAuth/Helix/EventSub,
-  LM-Studio-Client, Retrieval, Moderationsausführung und Datenbankeditor.
+  lokaler Gateway-Client, Retrieval, Moderationsausführung und Datenbankeditor.
 - `TwitchAI.App`: WinUI-Shell, MVVM-Zustand, Moderationskarten,
   Regel-/Whitelistansichten, Datenbankraster, Audit und Einstellungen.
 - `TwitchAI.Tests`: Unit- und SQLite-Integrationstests.
@@ -114,3 +114,32 @@ Normale Chats verbleiben im begrenzten RAM-Ringpuffer. Nur Nachrichten, für die
 ein Moderationsfall erzeugt wurde, werden mit Originaltext dauerhaft
 gespeichert. EventSub-Verfügbarkeitsevents ohne Case enthalten keinen Chattext
 und werden zeitlich begrenzt vorgehalten.
+
+## Lokaler AI-Prozesslebenszyklus
+
+`LocalAiRuntime` startet beim Host-Start den eigenen TwitchAI-Stack im Hintergrund.
+AI-Anfragen warten auf denselben Startpfad. Beim Schließen der nativen Anwendung
+wartet der UI-Thread auf den Host-Shutdown, damit Gateway, Modell-Unload und native
+Prozessbeendigung vor dem Prozessende abgeschlossen werden können.
+`ModerationCoordinator.StartAsync` ruft nach der Kanal-/Policyprüfung
+`ILocalModerationClient.PrepareAsync` auf. Der Gateway bestätigt das ausgewählte
+Modell über `POST /v1/models/load`, bevor EventSub und Inferenzworker starten.
+Die Runtime-Skripte, der Katalog und die Gateway-Konfiguration sind als Ressourcen
+in der Infrastructure-Assembly enthalten. `LocalAiRuntimeSupport` stellt sie in
+einem versionsgebundenen Verzeichnis unter `.twitchai/runtime-support` bereit und
+ersetzt fehlende oder abweichende Dateien atomar. Der Startpfad hängt dadurch
+nicht vom temporären Entpackverzeichnis der portablen EXE ab.
+
+Der Gateway übernimmt Modellauflösung und die Übersetzung der ausgewählten,
+modellabhängigen Reasoning-Stufe. Er lädt Modelle über die GPU-Steuerung des aus
+Missum übernommenen nativen Supervisors. Der Supervisor prüft GGUF-Metadaten,
+vollständige Shards und verfügbaren GPU-Speicher. Er beendet nur eigene Prozesse,
+deren Prozessidentität und Startzeit zur gespeicherten Eigentümerdatei passen.
+Compose-Projekt, Container, Modell-Tags, Umgebungsvariablen, Status-/Cacheordner
+und Ports sind für TwitchAI getrennt. Die Modellgewichte werden ausschließlich
+lesend aus dem vorgegebenen Hugging-Face-Cache geöffnet.
+Laden und Inferenz sind im Gateway serialisiert; ein Modellwechsel entlädt keine
+laufende Anfrage. Die TwitchAI-Runtime lädt keine ungenutzte Subagenteninstanz vor.
+HTTP-JSON-Bodies werden mit begrenzter Größe sowohl über Content-Length als auch
+Chunked gelesen. SSE-Antworten werden fortlaufend weitergeleitet. Native
+Reasoning-Stufen steuern zusätzlich die passenden Chat-Template-Argumente.

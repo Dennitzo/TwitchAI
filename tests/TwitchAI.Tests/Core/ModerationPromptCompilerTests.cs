@@ -616,11 +616,11 @@ public sealed class ModerationPromptCompilerTests
                 new ModerationRuleDefinition(
                     ModerationRuleCodes.PersonalData,
                     PolicySetCode.General,
-                    "PersÃ¶nliche Daten",
-                    "PersÃ¶nliche Daten erkennen.",
+                    "Persönliche Daten",
+                    "Persönliche Daten erkennen.",
                     ModerationActionKind.Timeout,
                     600,
-                    "VerÃ¶ffentlichung persÃ¶nlicher Daten.",
+                    "Veröffentlichung persönlicher Daten.",
                     Priority: 1),
             ],
         };

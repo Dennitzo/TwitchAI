@@ -333,6 +333,14 @@ public sealed partial class MainWindow : Window
 
     private void OnNavigated(object sender, NavigationEventArgs e)
     {
+        var isSettingsPage = e.SourcePageType == typeof(SettingsPage);
+        ApplicationScrollViewer.ChangeView(null, 0, null, disableAnimation: true);
+        ApplicationScrollViewer.VerticalScrollMode = isSettingsPage
+            ? ScrollMode.Disabled
+            : ScrollMode.Enabled;
+        ApplicationScrollViewer.VerticalScrollBarVisibility = isSettingsPage
+            ? ScrollBarVisibility.Disabled
+            : ScrollBarVisibility.Visible;
         ViewModel.ActivePageTitle = e.SourcePageType.Name switch
         {
             nameof(ModerationQueuePage) => "Moderationswarteschlange",

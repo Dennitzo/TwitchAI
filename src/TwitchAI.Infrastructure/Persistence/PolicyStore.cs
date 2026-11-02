@@ -174,7 +174,7 @@ public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
         var category = scopes.SingleOrDefault(item => item.ScopeKind == PolicyScopeKind.Category);
         var key = new PolicyCacheKey(
             broadcasterId,
-            category?.CategoryId,
+            category is null ? null : categoryId,
             general.Revision,
             category?.Revision ?? 0);
 
@@ -256,6 +256,7 @@ public sealed class SqlitePolicyStore : IPolicyStore, IPolicyCacheInvalidator
             }
 
             if (changeSet.ScopeKind == PolicyScopeKind.Category &&
+                changeSet.CategoryId is not null &&
                 !StringComparer.Ordinal.Equals(key.CategoryId, changeSet.CategoryId))
             {
                 continue;

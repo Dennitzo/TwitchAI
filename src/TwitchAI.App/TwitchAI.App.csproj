@@ -60,6 +60,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="..\..\windows\*.ps1" Link="Runtime\windows\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\workers\coding\*.py" Link="Runtime\workers\coding\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\deploy\twitchai\compose.yaml;..\..\deploy\twitchai\Dockerfile;..\..\deploy\twitchai\gateway.py" Link="Runtime\deploy\twitchai\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Manifest Include="$(ApplicationManifest)" />
   </ItemGroup>
 

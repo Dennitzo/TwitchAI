@@ -89,19 +89,11 @@ public partial class App : Application
                         _localStorage.GetString("ReaderUserId") ?? string.Empty;
                     options.TwitchApi.ModeratorUserId =
                         _localStorage.GetString("ModeratorUserId") ?? string.Empty;
-                    if (Uri.TryCreate(
-                            _localStorage.GetString("LmStudioBaseUrl"),
-                            UriKind.Absolute,
-                            out var baseAddress)
-                        && baseAddress.Scheme is "http" or "https")
-                    {
-                        options.LmStudio.BaseAddress = baseAddress;
-                    }
-
-                    options.LmStudio.Model =
-                        _localStorage.GetString("LmStudioModel")
-                        ?? "openai/gpt-oss-20b";
-                    options.LmStudio.UseCompactModerationContractV6 =
+                    options.LocalAi.Model =
+                        _localStorage.GetString("LocalAiModel")
+                        ?? string.Empty;
+                    options.LocalAi.ReasoningEffort = _localStorage.GetString("ReasoningEffort") ?? "auto";
+                    options.LocalAi.UseCompactModerationContractV6 =
                         _localStorage.GetBooleanOrDefault(
                             LocalAppSettingKeys.UseCompactModerationContractV6,
                             defaultValue: true);
@@ -224,7 +216,7 @@ public partial class App : Application
         }
     }
 
-    private async void OnWindowClosed(object sender, WindowEventArgs args)
+    private void OnWindowClosed(object sender, WindowEventArgs args)
     {
         // Detach UI projections before stopping the host. Coordinator
         // cancellation can still publish a final failed/cancelled activity,
@@ -232,7 +224,7 @@ public partial class App : Application
         GetService<ModerationUiBridge>().Dispose();
         try
         {
-            await _host.StopAsync(TimeSpan.FromSeconds(3));
+            _host.StopAsync(TimeSpan.FromSeconds(90)).GetAwaiter().GetResult();
         }
         catch (Exception exception)
         {

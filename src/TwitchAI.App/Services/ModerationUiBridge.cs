@@ -170,7 +170,18 @@ public sealed class ModerationUiBridge : IDisposable
     {
         switch (eventArgs.Kind)
         {
+            case ModerationPipelineEventKind.ModelLoading:
+                _state.IsLocalAiModelLoading = true;
+                _state.LocalAiStatus = "Modell wird geladen …";
+                break;
+            case ModerationPipelineEventKind.ModelReady:
+                _state.IsLocalAiModelLoading = false;
+                _state.LocalAiStatus = "Modell geladen";
+                break;
             case ModerationPipelineEventKind.Started:
+                _channelStates.Clear();
+                _state.CategoryName = "Kategorie unbekannt";
+                _state.ActivePolicies = "Nur General";
                 _state.IsAnalysisRunning = true;
                 var connectedChannelCount =
                     _options.TwitchApi.GetBroadcasterIds().Count;
@@ -181,6 +192,7 @@ public sealed class ModerationUiBridge : IDisposable
                 ApplyCategory(eventArgs.ChannelContext, eventArgs.ActivePolicySets);
                 break;
             case ModerationPipelineEventKind.Stopped:
+                _state.IsLocalAiModelLoading = false;
                 _state.IsAnalysisRunning = false;
                 _state.EventSubStatus = "EventSub pausiert";
                 break;
@@ -204,20 +216,25 @@ public sealed class ModerationUiBridge : IDisposable
                 _state.SkippedOverloadCount++;
                 break;
             case ModerationPipelineEventKind.BatchRejected:
-                _state.LmStudioStatus = eventArgs.StatusCode == "ai_batch_failed"
+                _state.LocalAiStatus = eventArgs.StatusCode == "ai_batch_failed"
                     ? "AI-Fehler · Analyse läuft weiter"
                     : "Ungültige AI-Antwort · Analyse läuft weiter";
                 break;
             case ModerationPipelineEventKind.StalePolicyRequeued:
-                _state.LmStudioStatus = "Policy geändert · neue Analyse";
+                _state.LocalAiStatus = "Policy geändert · neue Analyse";
                 break;
             case ModerationPipelineEventKind.StaleLearningRequeued:
-                _state.LmStudioStatus = "Learning geändert · neue Analyse";
+                _state.LocalAiStatus = "Learning geändert · neue Analyse";
                 break;
             case ModerationPipelineEventKind.AvailabilityChanged:
                 ApplyAvailability(eventArgs);
                 break;
             case ModerationPipelineEventKind.Faulted:
+                _state.IsLocalAiModelLoading = false;
+                if (eventArgs.StatusCode == "ai_model_load_failed")
+                {
+                    _state.LocalAiStatus = $"Modell konnte nicht geladen werden · {eventArgs.Message}";
+                }
                 _state.EventSubStatus = $"Fehler · {eventArgs.StatusCode}";
                 _state.IsAnalysisRunning = false;
                 break;
@@ -518,7 +535,7 @@ public sealed class ModerationUiBridge : IDisposable
             _state.CurrentLocalAiRun.Clear();
             if (queuedActivities.FirstOrDefault() is { } waiting)
             {
-                _state.LmStudioStatus =
+                _state.LocalAiStatus =
                     $"AI wartet · {waiting.MessageCount:N0} Nachrichten";
             }
 
@@ -536,12 +553,12 @@ public sealed class ModerationUiBridge : IDisposable
             var messageLabel = messageCount == 1
                 ? "1 Nachricht"
                 : $"{messageCount:N0} Nachrichten";
-            _state.LmStudioStatus =
+            _state.LocalAiStatus =
                 $"AI arbeitet · {runLabel} · {messageLabel}";
             return;
         }
 
-        _state.LmStudioStatus = activity.State switch
+        _state.LocalAiStatus = activity.State switch
         {
             LocalAiRunState.Queued =>
                 $"AI wartet · {activity.MessageCount:N0} Nachrichten",

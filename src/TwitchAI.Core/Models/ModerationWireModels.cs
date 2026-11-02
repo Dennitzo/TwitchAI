@@ -103,7 +103,7 @@ public sealed record ModerationPromptCharacterCounts(
     int Schema);
 
 /// <summary>
-/// The exact prompt artifacts sent to LM Studio. Keeping the response format as
+/// The exact prompt artifacts sent to Lokale AI. Keeping the response format as
 /// a cloned JsonElement avoids rebuilding the dynamic schema in the HTTP client.
 /// </summary>
 public sealed record CompiledModerationPrompt(

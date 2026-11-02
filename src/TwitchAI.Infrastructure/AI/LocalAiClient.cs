@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Net;
-using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using TwitchAI.Core.Models;
@@ -9,14 +8,14 @@ using TwitchAI.Infrastructure.Persistence;
 
 namespace TwitchAI.Infrastructure.AI;
 
-public enum LmStudioResponseSchemaKind
+public enum LocalAiResponseSchemaKind
 {
     Moderation,
     ModerationV6,
     LearningTest,
 }
 
-public sealed record LmStudioModerationRequest(
+public sealed record LocalAiModerationRequest(
     string CorrelationId,
     string PolicyHash,
     int MessageCount,
@@ -24,14 +23,14 @@ public sealed record LmStudioModerationRequest(
     string UserPrompt,
     IReadOnlyList<string>? ActiveRuleCodes = null,
     IReadOnlyList<string>? ReplyTemplateIds = null,
-    LmStudioResponseSchemaKind ResponseSchema =
-        LmStudioResponseSchemaKind.Moderation,
+    LocalAiResponseSchemaKind ResponseSchema =
+        LocalAiResponseSchemaKind.Moderation,
     LocalAiRunKind RunKind = LocalAiRunKind.Moderation,
     JsonElement? ResponseFormat = null,
     LocalAiRunPriority Priority = LocalAiRunPriority.Normal,
     string? SchedulingKey = null);
 
-public sealed record LmStudioUsageMetrics(
+public sealed record LocalAiUsageMetrics(
     int? PromptTokens,
     int? CompletionTokens,
     int? TotalTokens,
@@ -39,13 +38,13 @@ public sealed record LmStudioUsageMetrics(
     string Model,
     string? FinishReason);
 
-public sealed record LmStudioModerationCompletion(
+public sealed record LocalAiModerationCompletion(
     string RawEnvelope,
-    LmStudioUsageMetrics Usage);
+    LocalAiUsageMetrics Usage);
 
-public sealed class LmStudioException : HttpRequestException
+public sealed class LocalAiException : HttpRequestException
 {
-    public LmStudioException(
+    public LocalAiException(
         string message,
         HttpStatusCode statusCode,
         string? responseBody)
@@ -57,10 +56,15 @@ public sealed class LmStudioException : HttpRequestException
     public string? ResponseBody { get; }
 }
 
-public interface ILmStudioClient
+public interface ILocalAiClient
 {
-    Task<LmStudioModerationCompletion> CompleteModerationAsync(
-        LmStudioModerationRequest request,
+    IReadOnlyList<string> GetReasoningLevels(string model) => ["auto"];
+
+    Task EnsureModelLoadedAsync(CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
+
+    Task<LocalAiModerationCompletion> CompleteModerationAsync(
+        LocalAiModerationRequest request,
         CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<string>> GetLoadedModelsAsync(
@@ -144,8 +148,12 @@ public sealed class SqliteLlmRunMetricsStore : ILlmRunMetricsStore
     }
 }
 
-public sealed class LmStudioClient : ILmStudioClient
+public sealed class LocalAiClient : ILocalAiClient
 {
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string[]> _reasoningLevels = new(StringComparer.Ordinal);
+
+    public IReadOnlyList<string> GetReasoningLevels(string model) => _reasoningLevels.TryGetValue(model, out var levels) ? levels : ["auto"];
+
     private static readonly (
         ModerationActionKind Action,
         int? TimeoutSeconds)[] LearningTestModerationSuggestions =
@@ -160,29 +168,62 @@ public sealed class LmStudioClient : ILmStudioClient
 
     private readonly HttpClient _httpClient;
     private readonly ILlmRunMetricsStore _metricsStore;
-    private readonly ILmStudioCredentialVault _credentialVault;
-    private readonly LmStudioOptions _options;
+    private readonly LocalAiOptions _options;
+    private readonly LocalAiRuntime _runtime;
     private readonly ILocalAiRunActivityMonitor? _activityMonitor;
     private readonly ILocalAiExecutionGate _executionGate;
 
-    public LmStudioClient(
+    public LocalAiClient(
         HttpClient httpClient,
         ILlmRunMetricsStore metricsStore,
-        ILmStudioCredentialVault credentialVault,
         InfrastructureOptions options,
+        LocalAiRuntime runtime,
         ILocalAiRunActivityMonitor? activityMonitor = null,
         ILocalAiExecutionGate? executionGate = null)
     {
         _httpClient = httpClient;
         _metricsStore = metricsStore;
-        _credentialVault = credentialVault;
-        _options = options.LmStudio;
+        _options = options.LocalAi;
+        _runtime = runtime;
         _activityMonitor = activityMonitor;
         _executionGate = executionGate ?? LocalAiExecutionGate.ProcessWide;
     }
 
-    public async Task<LmStudioModerationCompletion> CompleteModerationAsync(
-        LmStudioModerationRequest request,
+    public async Task EnsureModelLoadedAsync(CancellationToken cancellationToken = default)
+    {
+        var model = _options.Model;
+        var reasoningEffort = _options.ReasoningEffort;
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            throw new InvalidOperationException("Bitte zuerst ein lokales AI-Modell in den Einstellungen auswählen.");
+        }
+
+        await _runtime.EnsureStartedAsync(cancellationToken).ConfigureAwait(false);
+        using var request = new HttpRequestMessage(HttpMethod.Post, BuildRequestUri("v1/models/load"))
+        {
+            Content = JsonContent.Create(new { model, reasoning_effort = reasoningEffort }),
+        };
+        await request.Content.LoadIntoBufferAsync(cancellationToken).ConfigureAwait(false);
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new LocalAiException(
+                TryReadError(body) ?? response.ReasonPhrase ?? "Das lokale AI-Modell konnte nicht geladen werden.",
+                response.StatusCode,
+                body);
+        }
+
+        using var document = JsonDocument.Parse(body);
+        if (!string.Equals(OptionalString(document.RootElement, "model"), model, StringComparison.Ordinal)
+            || !string.Equals(OptionalString(document.RootElement, "status"), "loaded", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Der Gateway hat das ausgewählte Modell nicht als geladen bestätigt.");
+        }
+    }
+
+    public async Task<LocalAiModerationCompletion> CompleteModerationAsync(
+        LocalAiModerationRequest request,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -197,12 +238,15 @@ public sealed class LmStudioClient : ILmStudioClient
         await using var executionLease = await _executionGate
             .AcquireAsync(request.Priority, request.SchedulingKey, cancellationToken)
             .ConfigureAwait(false);
+        var model = _options.Model;
+        var reasoningEffort = _options.ReasoningEffort;
+        await _runtime.EnsureStartedAsync(cancellationToken).ConfigureAwait(false);
         var requestedAt = DateTimeOffset.UtcNow;
         var stopwatch = Stopwatch.StartNew();
         PublishActivity(
             request,
             LocalAiRunState.Running,
-            _options.Model,
+            model,
             elapsedMilliseconds: null,
             occurredAtUtc: requestedAt);
         try
@@ -220,9 +264,9 @@ public sealed class LmStudioClient : ILmStudioClient
                 Content = JsonContent.Create(
                     new
                     {
-                        model = _options.Model,
+                        model,
                         temperature = _options.Temperature,
-                        reasoning_effort = "low",
+                        reasoning_effort = reasoningEffort,
                         max_tokens = _options.MaximumOutputTokens,
                         stream = false,
                         messages = new object[]
@@ -233,8 +277,7 @@ public sealed class LmStudioClient : ILmStudioClient
                         response_format = responseFormat,
                     }),
             };
-            await ApplyOptionalAuthorizationAsync(httpRequest, cancellationToken)
-                .ConfigureAwait(false);
+            await httpRequest.Content.LoadIntoBufferAsync(cancellationToken).ConfigureAwait(false);
             using var response = await _httpClient.SendAsync(
                     httpRequest,
                     cancellationToken)
@@ -244,8 +287,8 @@ public sealed class LmStudioClient : ILmStudioClient
                 .ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                throw new LmStudioException(
-                    TryReadError(body) ?? response.ReasonPhrase ?? "LM Studio request failed.",
+                throw new LocalAiException(
+                    TryReadError(body) ?? response.ReasonPhrase ?? "Lokale AI request failed.",
                     response.StatusCode,
                     body);
             }
@@ -255,15 +298,15 @@ public sealed class LmStudioClient : ILmStudioClient
             var choice = root.GetProperty("choices").EnumerateArray().FirstOrDefault();
             if (choice.ValueKind != JsonValueKind.Object)
             {
-                throw new InvalidDataException("LM Studio response contains no completion choice.");
+                throw new InvalidDataException("Lokale AI response contains no completion choice.");
             }
 
             var content = choice.GetProperty("message").GetProperty("content").GetString()
-                ?? throw new InvalidDataException("LM Studio returned an empty moderation envelope.");
+                ?? throw new InvalidDataException("Lokale AI returned an empty moderation envelope.");
             if (string.IsNullOrWhiteSpace(content))
             {
                 throw new InvalidDataException(
-                    "LM Studio returned an empty moderation envelope.");
+                    "Lokale AI returned an empty moderation envelope.");
             }
 
             // Return the model payload unchanged. The domain validator owns
@@ -275,7 +318,7 @@ public sealed class LmStudioClient : ILmStudioClient
             var usage = ParseUsage(
                 root,
                 stopwatch.ElapsedMilliseconds,
-                OptionalString(root, "model") ?? _options.Model,
+                OptionalString(root, "model") ?? model,
                 OptionalString(choice, "finish_reason"));
             await _metricsStore.RecordAsync(
                 new LlmRunMetric(
@@ -301,7 +344,7 @@ public sealed class LmStudioClient : ILmStudioClient
                 usage.TotalTokens,
                 usage.ElapsedMilliseconds,
                 DateTimeOffset.UtcNow);
-            return new LmStudioModerationCompletion(content, usage);
+            return new LocalAiModerationCompletion(content, usage);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -309,7 +352,7 @@ public sealed class LmStudioClient : ILmStudioClient
             PublishActivity(
                 request,
                 LocalAiRunState.Failed,
-                _options.Model,
+                model,
                 elapsedMilliseconds: stopwatch.ElapsedMilliseconds,
                 occurredAtUtc: DateTimeOffset.UtcNow,
                 errorCode: "cancelled");
@@ -323,7 +366,7 @@ public sealed class LmStudioClient : ILmStudioClient
                 await _metricsStore.RecordAsync(
                     new LlmRunMetric(
                         request.CorrelationId,
-                        _options.Model,
+                        model,
                         request.PolicyHash,
                         request.MessageCount,
                         PromptTokens: null,
@@ -341,7 +384,7 @@ public sealed class LmStudioClient : ILmStudioClient
                 PublishActivity(
                     request,
                     LocalAiRunState.Failed,
-                    _options.Model,
+                    model,
                     elapsedMilliseconds: stopwatch.ElapsedMilliseconds,
                     occurredAtUtc: DateTimeOffset.UtcNow,
                     errorCode: exception.GetType().Name);
@@ -354,19 +397,18 @@ public sealed class LmStudioClient : ILmStudioClient
     public async Task<IReadOnlyList<string>> GetLoadedModelsAsync(
         CancellationToken cancellationToken = default)
     {
+        await _runtime.EnsureStartedAsync(cancellationToken).ConfigureAwait(false);
         using var request = new HttpRequestMessage(
             HttpMethod.Get,
             BuildRequestUri("v1/models"));
-        await ApplyOptionalAuthorizationAsync(request, cancellationToken)
-            .ConfigureAwait(false);
         using var response = await _httpClient.SendAsync(request, cancellationToken)
             .ConfigureAwait(false);
         var body = await response.Content.ReadAsStringAsync(cancellationToken)
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            throw new LmStudioException(
-                TryReadError(body) ?? response.ReasonPhrase ?? "LM Studio model lookup failed.",
+            throw new LocalAiException(
+                TryReadError(body) ?? response.ReasonPhrase ?? "Lokale AI model lookup failed.",
                 response.StatusCode,
                 body);
         }
@@ -382,9 +424,14 @@ public sealed class LmStudioClient : ILmStudioClient
         else if (!root.TryGetProperty("data", out data) ||
                  data.ValueKind != JsonValueKind.Array)
         {
-            throw new InvalidDataException("LM Studio models response is missing its data array.");
+            throw new InvalidDataException("Lokale AI models response is missing its data array.");
         }
 
+        foreach (var item in data.EnumerateArray())
+        {
+            if (OptionalString(item, "id") is { } id && item.TryGetProperty("reasoning_levels", out var levels))
+                _reasoningLevels[id] = levels.EnumerateArray().Select(level => level.GetString()!).ToArray();
+        }
         return data.EnumerateArray()
             .Select(item => OptionalString(item, "id"))
             .Where(item => item is not null)
@@ -392,24 +439,10 @@ public sealed class LmStudioClient : ILmStudioClient
             .ToArray();
     }
 
-    private async Task ApplyOptionalAuthorizationAsync(
-        HttpRequestMessage request,
-        CancellationToken cancellationToken)
-    {
-        var token = await _credentialVault.LoadTokenAsync(cancellationToken)
-            .ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(token))
-        {
-            request.Headers.Authorization = new AuthenticationHeaderValue(
-                "Bearer",
-                token);
-        }
-    }
-
     private Uri BuildRequestUri(string relativePath) =>
         new(_options.BaseAddress, relativePath);
 
-    private static LmStudioUsageMetrics ParseUsage(
+    private static LocalAiUsageMetrics ParseUsage(
         JsonElement root,
         long elapsedMilliseconds,
         string model,
@@ -418,7 +451,7 @@ public sealed class LmStudioClient : ILmStudioClient
         if (!root.TryGetProperty("usage", out var usage) ||
             usage.ValueKind != JsonValueKind.Object)
         {
-            return new LmStudioUsageMetrics(
+            return new LocalAiUsageMetrics(
                 null,
                 null,
                 null,
@@ -427,7 +460,7 @@ public sealed class LmStudioClient : ILmStudioClient
                 finishReason);
         }
 
-        return new LmStudioUsageMetrics(
+        return new LocalAiUsageMetrics(
             OptionalInt32(usage, "prompt_tokens"),
             OptionalInt32(usage, "completion_tokens"),
             OptionalInt32(usage, "total_tokens"),
@@ -439,7 +472,7 @@ public sealed class LmStudioClient : ILmStudioClient
     private static object CreateResponseFormat(
         IReadOnlyList<string>? activeRuleCodes,
         IReadOnlyList<string>? replyTemplateIds,
-        LmStudioResponseSchemaKind responseSchema)
+        LocalAiResponseSchemaKind responseSchema)
     {
         var ruleCodes = (activeRuleCodes ?? [])
             .Where(code => !string.IsNullOrWhiteSpace(code))
@@ -458,12 +491,12 @@ public sealed class LmStudioClient : ILmStudioClient
             .ToArray();
         return responseSchema switch
         {
-            LmStudioResponseSchemaKind.Moderation =>
+            LocalAiResponseSchemaKind.Moderation =>
                 CreateModerationResponseFormat(ruleCodes, templateIds),
-            LmStudioResponseSchemaKind.ModerationV6 =>
+            LocalAiResponseSchemaKind.ModerationV6 =>
                 throw new InvalidOperationException(
                     "The compact moderation contract requires a compiled response format."),
-            LmStudioResponseSchemaKind.LearningTest =>
+            LocalAiResponseSchemaKind.LearningTest =>
                 CreateLearningTestResponseFormat(ruleCodes),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(responseSchema),
@@ -885,7 +918,7 @@ public sealed class LmStudioClient : ILmStudioClient
     }
 
     private void PublishActivity(
-        LmStudioModerationRequest request,
+        LocalAiModerationRequest request,
         LocalAiRunState state,
         string modelId,
         int? promptTokens = null,
