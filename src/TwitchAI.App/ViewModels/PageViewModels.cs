@@ -573,12 +573,6 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
                 item.Status = result.LearningAccepted
                     ? "Extern erledigt · als bestätigt gelernt"
                     : "Extern erledigt · ohne Lernen abgeschlossen";
-                AddAudit(
-                    item,
-                    result.LearningAccepted
-                        ? "Extern bestätigt"
-                        : "Extern abgeschlossen",
-                    "Keine Twitch-Aktion");
                 RemoveResolvedCase(item);
             }
             else
@@ -654,11 +648,6 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
             if (result.Outcome == ModerationExecutionOutcome.Succeeded)
             {
                 item.RowVersion++;
-                AddAudit(
-                    item,
-                    learnAsAllowed ? "Erlaubt" : "Verworfen",
-                    "Keine Twitch-Aktion",
-                    includeActionDetails: false);
                 RemoveResolvedCase(item);
             }
             else
@@ -703,7 +692,7 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         };
     }
 
-    private void ApplyExecutionResult(
+    private static void ApplyExecutionResult(
         ModerationCaseItem item,
         ModerationExecutionResult result)
     {
@@ -715,20 +704,6 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
                     : result.LearningAccepted
                         ? "Read-Only · lokal gelernt"
                         : "Abgeschlossen";
-                AddAudit(
-                    item,
-                    item.Action switch
-                    {
-                        "delete" => "Löschen",
-                        "timeout" => "Timeout",
-                        "ban" => "Ban",
-                        _ => "Moderation",
-                    },
-                    result.TwitchExecuted
-                        ? "Twitch ausgeführt"
-                        : result.LearningAccepted
-                            ? "Read-Only · lokal gelernt"
-                            : "Keine Twitch-Aktion");
                 break;
             case ModerationExecutionOutcome.AlreadyUnavailable:
                 item.Status = "Extern erledigt · Lernentscheidung offen";
@@ -766,38 +741,6 @@ public sealed partial class ModerationQueueViewModel : ObservableObject
         {
             throw new InvalidOperationException(
                 "Der Freigabeauftrag gehört nicht zum angezeigten Moderationsfall.");
-        }
-    }
-
-    private void AddAudit(
-        ModerationCaseItem item,
-        string decision,
-        string twitchResult,
-        bool includeActionDetails = true)
-    {
-        var auditItem = new AuditItem(
-            item.CaseId,
-            DateTimeOffset.UtcNow,
-            item.UserName,
-            item.OriginalMessage,
-            decision,
-            twitchResult,
-            item.CategoryName,
-            item.PolicySet,
-            includeActionDetails && item.Action == "timeout"
-                ? checked((int)item.TimeoutSeconds)
-                : null,
-            includeActionDetails && item.Action is "timeout" or "ban"
-                ? item.Reason
-                : string.Empty);
-        try
-        {
-            _state.AuditItems.Insert(0, auditItem);
-        }
-        catch (COMException) when (_state.AuditItems.Contains(auditItem))
-        {
-            // WinUI can surface a late binding failure after the collection
-            // mutation already succeeded. The persisted outcome remains valid.
         }
     }
 
@@ -1116,6 +1059,74 @@ public sealed partial class PoliciesViewModel : ObservableObject
         catch (Exception exception)
         {
             item.RestoreEnabled();
+            OnPropertyChanged(nameof(SortedPhrases));
+            StatusMessage = FriendlyError(exception);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
+    public async Task SetEnabledAsync(
+        IEnumerable<PolicyPhraseItem> items,
+        bool isEnabled,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        var pendingItems = items
+            .Where(item => item is not null && item.PersistedIsEnabled != isEnabled)
+            .Distinct()
+            .ToArray();
+        if (pendingItems.Length == 0)
+        {
+            return;
+        }
+
+        if (IsBusy)
+        {
+            foreach (var item in pendingItems)
+            {
+                item.RestoreEnabled();
+            }
+            return;
+        }
+
+        IsBusy = true;
+        try
+        {
+            var entries = pendingItems
+                .Select(item => (item.PhraseId, item.RowVersion))
+                .ToArray();
+            var rowVersions = await _configuration.SetPolicyPhrasesEnabledAsync(
+                entries,
+                isEnabled,
+                cancellationToken);
+            for (var i = 0; i < pendingItems.Length; i++)
+            {
+                pendingItems[i].AcceptEnabled(isEnabled, rowVersions[i]);
+            }
+            OnPropertyChanged(nameof(SortedPhrases));
+            StatusMessage = isEnabled
+                ? $"{pendingItems.Length:N0} Blacklist-Zeile(n) sind aktiv."
+                : $"{pendingItems.Length:N0} Blacklist-Zeile(n) sind deaktiviert.";
+        }
+        catch (DatabaseConcurrencyException)
+        {
+            foreach (var item in pendingItems)
+            {
+                item.RestoreEnabled();
+            }
+            await ReloadCoreAsync(cancellationToken);
+            StatusMessage =
+                "Eine Zeile wurde zwischenzeitlich geändert. Die Auswahl wurde nicht gespeichert. Die SQLite-Daten wurden neu geladen.";
+        }
+        catch (Exception exception)
+        {
+            foreach (var item in pendingItems)
+            {
+                item.RestoreEnabled();
+            }
             OnPropertyChanged(nameof(SortedPhrases));
             StatusMessage = FriendlyError(exception);
         }
@@ -2257,14 +2268,16 @@ public sealed partial class ChatViewModel : ObservableObject
         IsBusy = true;
         try
         {
-            foreach (var item in pendingItems)
+            var entries = pendingItems
+                .Select(item => (item.TemplateId, item.RowVersion))
+                .ToArray();
+            var rowVersions = await _chatReplyStore.SetTemplatesEnabledAsync(
+                entries,
+                isEnabled,
+                cancellationToken);
+            for (var i = 0; i < pendingItems.Length; i++)
             {
-                var rowVersion = await _chatReplyStore.SetTemplateEnabledAsync(
-                    item.TemplateId,
-                    item.RowVersion,
-                    isEnabled,
-                    cancellationToken);
-                item.AcceptEnabled(isEnabled, rowVersion);
+                pendingItems[i].AcceptEnabled(isEnabled, rowVersions[i]);
             }
             OnPropertyChanged(nameof(SortedTemplates));
             StatusMessage = isEnabled
@@ -2356,179 +2369,6 @@ public sealed partial class ChatViewModel : ObservableObject
             InvalidOperationException => exception.Message,
             _ => $"Chat-Konfiguration fehlgeschlagen: {exception.Message}",
         };
-}
-
-public sealed partial class AuditViewModel : ObservableObject
-{
-    private const string SortScope = "audit";
-
-    private static readonly HashSet<string> SortableColumns =
-    [
-        "Id",
-        "OccurredAt",
-        "UserName",
-        "OriginalMessage",
-        "DecisionDetail",
-        "Reason",
-        "TwitchResult",
-        "CategoryName",
-        "PolicySet",
-    ];
-
-    private readonly ITableSortPreferenceStore _sortPreferences;
-
-    public AuditViewModel(
-        AppState state,
-        ITableSortPreferenceStore sortPreferences)
-    {
-        _sortPreferences = sortPreferences;
-        Items = state.AuditItems;
-        Items.CollectionChanged += (_, _) => NotifyFilteredState();
-        var preference = _sortPreferences.GetOrDefault(
-            SortScope,
-            defaultColumn: "OccurredAt",
-            defaultDescending: true,
-            validColumns: SortableColumns);
-        SortColumn = preference.Column;
-        SortDescending = preference.Descending;
-    }
-
-    public ObservableCollection<AuditItem> Items { get; }
-
-    public IEnumerable<AuditItem> FilteredItems =>
-        ApplySort(
-            Items.Where(item =>
-                MatchesText(item)
-                && MatchesResult(item)
-                && (PolicyFilter == "Alle" || item.PolicySet == PolicyFilter)));
-
-    public bool CanExport => FilteredItems.Any();
-
-    public Visibility EmptyVisibility =>
-        CanExport
-            ? Visibility.Collapsed
-            : Visibility.Visible;
-
-    public string SortColumn { get; private set; } = "OccurredAt";
-
-    public bool SortDescending { get; private set; } = true;
-
-    [ObservableProperty]
-    public partial string SearchText { get; set; } = string.Empty;
-
-    [ObservableProperty]
-    public partial string ResultFilter { get; set; } = "Alle";
-
-    [ObservableProperty]
-    public partial string PolicyFilter { get; set; } = "Alle";
-
-    partial void OnSearchTextChanged(string value) => NotifyFilteredState();
-
-    partial void OnResultFilterChanged(string value) => NotifyFilteredState();
-
-    partial void OnPolicyFilterChanged(string value) => NotifyFilteredState();
-
-    public void SortByColumn(string columnName)
-    {
-        if (!SortableColumns.Contains(columnName))
-        {
-            return;
-        }
-
-        if (string.Equals(SortColumn, columnName, StringComparison.Ordinal))
-        {
-            SortDescending = !SortDescending;
-        }
-        else
-        {
-            SortColumn = columnName;
-            SortDescending = false;
-        }
-
-        _sortPreferences.Save(
-            SortScope,
-            SortColumn,
-            SortDescending);
-        NotifyFilteredState();
-    }
-
-    private void NotifyFilteredState()
-    {
-        OnPropertyChanged(nameof(FilteredItems));
-        OnPropertyChanged(nameof(CanExport));
-        OnPropertyChanged(nameof(EmptyVisibility));
-    }
-
-    private IEnumerable<AuditItem> ApplySort(IEnumerable<AuditItem> source)
-    {
-        var textComparer = StringComparer.CurrentCultureIgnoreCase;
-        return SortColumn switch
-        {
-            "Id" => SortDescending
-                ? source.OrderByDescending(item => item.Id)
-                : source.OrderBy(item => item.Id),
-            "OccurredAt" => SortDescending
-                ? source.OrderByDescending(item => item.OccurredAt)
-                : source.OrderBy(item => item.OccurredAt),
-            "UserName" => SortDescending
-                ? source.OrderByDescending(item => item.UserName, textComparer)
-                : source.OrderBy(item => item.UserName, textComparer),
-            "OriginalMessage" => SortDescending
-                ? source.OrderByDescending(item => item.OriginalMessage, textComparer)
-                : source.OrderBy(item => item.OriginalMessage, textComparer),
-            "DecisionDetail" => SortDescending
-                ? source.OrderByDescending(item => item.DecisionDetail, textComparer)
-                : source.OrderBy(item => item.DecisionDetail, textComparer),
-            "Reason" => SortDescending
-                ? source.OrderByDescending(item => item.Reason, textComparer)
-                : source.OrderBy(item => item.Reason, textComparer),
-            "TwitchResult" => SortDescending
-                ? source.OrderByDescending(item => item.TwitchResult, textComparer)
-                : source.OrderBy(item => item.TwitchResult, textComparer),
-            "CategoryName" => SortDescending
-                ? source.OrderByDescending(item => item.CategoryName, textComparer)
-                : source.OrderBy(item => item.CategoryName, textComparer),
-            "PolicySet" => SortDescending
-                ? source.OrderByDescending(item => item.PolicySet, textComparer)
-                : source.OrderBy(item => item.PolicySet, textComparer),
-            _ => source.OrderByDescending(item => item.OccurredAt),
-        };
-    }
-
-    private bool MatchesText(AuditItem item)
-    {
-        if (string.IsNullOrWhiteSpace(SearchText))
-        {
-            return true;
-        }
-
-        return item.UserName.Contains(SearchText, StringComparison.OrdinalIgnoreCase)
-            || item.OriginalMessage.Contains(SearchText, StringComparison.OrdinalIgnoreCase)
-            || item.Decision.Contains(SearchText, StringComparison.OrdinalIgnoreCase)
-            || item.TwitchResult.Contains(SearchText, StringComparison.OrdinalIgnoreCase)
-            || item.Reason.Contains(SearchText, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private bool MatchesResult(AuditItem item)
-    {
-        return ResultFilter switch
-        {
-            "Alle" => true,
-            "Ausgeführt" => item.TwitchResult.StartsWith(
-                "Twitch ausgeführt",
-                StringComparison.OrdinalIgnoreCase),
-            "Verworfen" => item.Decision.Equals(
-                "Verworfen",
-                StringComparison.OrdinalIgnoreCase),
-            "Extern erledigt" => item.Decision.StartsWith(
-                "Extern",
-                StringComparison.OrdinalIgnoreCase),
-            "Unbekannt" =>
-                item.Decision.Contains("unbekannt", StringComparison.OrdinalIgnoreCase) ||
-                item.TwitchResult.Contains("unbekannt", StringComparison.OrdinalIgnoreCase),
-            _ => false,
-        };
-    }
 }
 
 public enum TwitchSessionRestoreOutcome

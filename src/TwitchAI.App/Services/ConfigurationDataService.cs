@@ -129,6 +129,11 @@ public interface IConfigurationDataService
         bool isEnabled,
         CancellationToken cancellationToken = default);
 
+    Task<long[]> SetPolicyPhrasesEnabledAsync(
+        IReadOnlyList<(long PhraseId, long ExpectedRowVersion)> entries,
+        bool isEnabled,
+        CancellationToken cancellationToken = default);
+
     Task<long> ArchivePolicyPhraseAsync(
         long phraseId,
         long expectedRowVersion,
@@ -573,6 +578,42 @@ public sealed class ConfigurationDataService : IConfigurationDataService, IDispo
             isEnabled,
             "Blacklist-Phrase aktiviert oder deaktiviert",
             cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<long[]> SetPolicyPhrasesEnabledAsync(
+        IReadOnlyList<(long PhraseId, long ExpectedRowVersion)> entries,
+        bool isEnabled,
+        CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(entries);
+        if (entries.Count == 0)
+        {
+            return [];
+        }
+
+        var drafts = entries.Select(entry =>
+            new DatabaseRowDraft(
+                "phrase_rules",
+                entry.PhraseId,
+                entry.ExpectedRowVersion,
+                new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["enabled"] = isEnabled,
+                },
+                ArchiveState: null)).ToArray();
+        var result = await _database.CommitAsync(
+            new DatabaseChangeSet(
+                drafts,
+                "Blacklist-Phrasen aktiviert oder deaktiviert"),
+            cancellationToken).ConfigureAwait(false);
+        if (result.ChangedRows != drafts.Length)
+        {
+            throw new InvalidOperationException(
+                "Die Konfigurationsänderung wurde nicht eindeutig gespeichert.");
+        }
+
+        return entries.Select(entry => checked(entry.ExpectedRowVersion + 1)).ToArray();
     }
 
     public Task<long> ArchivePolicyPhraseAsync(

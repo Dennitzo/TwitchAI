@@ -4102,6 +4102,190 @@ public sealed class DatabaseMigrationTests
                 "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
     }
 
+    [Fact]
+    public async Task Version37_RemovesPureHistoryCasesAndPreservesNeededModerationData()
+    {
+        const string timestamp = "2026-09-01T12:00:00.0000000+00:00";
+        await using var database = await TestDatabase.CreateAtSchemaVersionAsync(36);
+
+        await using (var connection = await database.OpenConnectionAsync())
+        await using (var transaction = connection.BeginTransaction())
+        {
+            await using var fixture = connection.CreateCommand();
+            fixture.Transaction = transaction;
+            fixture.CommandText =
+                """
+                INSERT INTO chat_message_snapshots(
+                    twitch_message_id, eventsub_notification_id, broadcaster_id,
+                    chatter_user_id, chatter_login_original, chatter_name_original,
+                    message_text_original, lower_text, message_text_normalized,
+                    normalization_version, original_sha256, normalized_sha256,
+                    identity_fingerprint, channel_context_revision, category_is_verified,
+                    ingress_sequence, badges_json, received_utc)
+                VALUES
+                    ('v37-msg-1001','v37-event-1001','channel','user-1001','user1001','User1001','h1001','h1001','h1001',1,'o1001','n1001','f1001',1,1,1,'{}',@timestamp),
+                    ('v37-msg-1002','v37-event-1002','channel','user-1002','user1002','User1002','h1002','h1002','h1002',1,'o1002','n1002','f1002',1,1,1,'{}',@timestamp),
+                    ('v37-msg-1003','v37-event-1003','channel','user-1003','user1003','User1003','h1003','h1003','h1003',1,'o1003','n1003','f1003',1,1,1,'{}',@timestamp),
+                    ('v37-msg-1004','v37-event-1004','channel','user-1004','user1004','User1004','h1004','h1004','h1004',1,'o1004','n1004','f1004',1,1,1,'{}',@timestamp),
+                    ('v37-msg-1005','v37-event-1005','channel','user-1005','user1005','User1005','h1005','h1005','h1005',1,'o1005','n1005','f1005',1,1,1,'{}',@timestamp),
+                    ('v37-msg-1006','v37-event-1006','channel','user-1006','user1006','User1006','h1006','h1006','h1006',1,'o1006','n1006','f1006',1,1,1,'{}',@timestamp),
+                    ('v37-msg-1007','v37-event-1007','channel','user-1007','user1007','User1007','h1007','h1007','h1007',1,'o1007','n1007','f1007',1,1,1,'{}',@timestamp),
+                    ('v37-msg-1008','v37-event-1008','channel','user-1008','user1008','User1008','h1008','h1008','h1008',1,'o1008','n1008','f1008',1,1,1,'{}',@timestamp),
+                    ('v37-msg-1009','v37-event-1009','channel','user-1009','user1009','User1009','h1009','h1009','h1009',1,'o1009','n1009','f1009',1,1,1,'{}',@timestamp);
+
+                INSERT INTO moderation_cases(
+                    case_id, twitch_message_id, broadcaster_id, chatter_user_id,
+                    chatter_name_snapshot, message_text_original,
+                    message_text_normalized, effective_policy_hash,
+                    model_id, envelope_json, proposed_action,
+                    proposed_timeout_seconds, violation_rule_code, reason,
+                    policy_set, confidence, status, created_utc, resolved_utc)
+                VALUES
+                    (1001,'v37-msg-1001','channel','user-1001','User1001','h1001','h1001','policy','model','{}','timeout',600,'G_TEST','reason-1001','general',0.9,'executed',@timestamp,@timestamp),
+                    (1002,'v37-msg-1002','channel','user-1002','User1002','h1002','h1002','policy','model','{}','timeout',600,'G_TEST','reason-1002','general',0.9,'executed',@timestamp,@timestamp),
+                    (1003,'v37-msg-1003','channel','user-1003','User1003','h1003','h1003','policy','model','{}','timeout',600,'G_TEST','reason-1003','general',0.9,'pending',@timestamp,NULL),
+                    (1004,'v37-msg-1004','channel','user-1004','User1004','h1004','h1004','policy','model','{}','timeout',600,'G_TEST','reason-1004','general',0.9,'externally_completed',@timestamp,@timestamp),
+                    (1005,'v37-msg-1005','channel','user-1005','User1005','h1005','h1005','policy','model','{}','timeout',600,'G_TEST','reason-1005','general',0.9,'executed',@timestamp,@timestamp),
+                    (1006,'v37-msg-1006','channel','user-1006','User1006','h1006','h1006','policy','model','{}','timeout',600,'G_TEST','reason-1006','general',0.9,'executed',@timestamp,@timestamp),
+                    (1007,'v37-msg-1007','channel','user-1007','User1007','h1007','h1007','policy','model','{}','timeout',600,'G_TEST','reason-1007','general',0.9,'executed',@timestamp,@timestamp),
+                    (1008,'v37-msg-1008','channel','user-1008','User1008','h1008','h1008','policy','model','{}','timeout',600,'G_TEST','reason-1008','general',0.9,'executed',@timestamp,@timestamp),
+                    (1009,'v37-msg-1009','channel','user-1009','User1009','h1009','h1009','policy','model','{}','timeout',600,'G_TEST','reason-1009','general',0.9,'executing',@timestamp,NULL);
+
+                INSERT INTO action_attempts(
+                    execution_id, case_id, broadcaster_id, twitch_message_id,
+                    target_user_id, action, timeout_seconds, reason, status,
+                    requested_utc, completed_utc, http_status, response_json,
+                    rule_code)
+                VALUES
+                    (2002, 1002, 'channel', 'v37-msg-1002', 'user-1002',
+                     'timeout', 600, 'attempt-1002', 'succeeded',
+                     @timestamp, @timestamp, 204, '{}', 'G_TEST');
+
+                INSERT INTO moderation_feedback(
+                    feedback_id, case_id, operator_decision, actual_action,
+                    actual_timeout_seconds, actual_reason, discard_reason,
+                    eligible_for_learning, human_approved, twitch_executed,
+                    learning_accepted, decided_utc, review_completed, rule_code)
+                VALUES
+                    (4004, 1004, 'discarded', 'none', NULL, NULL,
+                     'open-review', 1, 1, 0, 0, @timestamp, 0, 'G_TEST'),
+                    (4007, 1007, 'executed', 'timeout', 600, 'done', NULL,
+                     1, 1, 1, 1, @timestamp, 1, 'G_TEST');
+
+                INSERT INTO phrase_feedback(
+                    feedback_id, case_id, source_kind, source_event_id,
+                    label_action, rule_code, trigger_phrase, policy_set,
+                    is_positive, category_id, message_normalized, eligible,
+                    confirmed_utc)
+                VALUES
+                    (3005, 1005, 'operator_execute', NULL, 'timeout', 'G_TEST',
+                     'phrase-1005', 'general', 1, NULL, 'h1005', 1, @timestamp);
+
+                INSERT INTO message_availability_events(
+                    availability_event_id, eventsub_message_id, broadcaster_id,
+                    twitch_message_id, target_user_id, availability,
+                    occurred_utc, received_utc, correlation_kind, learning_state,
+                    case_id)
+                VALUES
+                    (4006, 'v37-eventsub-1006', 'channel', 'v37-msg-1006',
+                     'user-1006', 'available', @timestamp, @timestamp,
+                     'local', 'pending_review', 1006);
+
+                INSERT INTO learning_example_overrides(
+                    source_kind, source_id, original_text, lower_text,
+                    learning_decision, policy_set, rule_code, action,
+                    timeout_seconds, reason, is_removed, row_version,
+                    created_utc, updated_utc)
+                VALUES
+                    ('twitch_moderation', 1008, 'h1008', 'h1008', 'moderate',
+                     'general', 'G_TEST', 'timeout', 600, 'reason-1008',
+                     0, 1, @timestamp, @timestamp);
+
+                INSERT INTO record_annotations(
+                    annotation_id, record_type, record_id, annotation_kind,
+                    annotation_text, created_utc)
+                VALUES
+                    (5001, 'moderation_cases', '1001', 'history',
+                     'annotation-1001', @timestamp),
+                    (5007, 'moderation_cases', '1007', 'history',
+                     'annotation-1007', @timestamp);
+                """;
+            fixture.Parameters.AddWithValue("@timestamp", timestamp);
+            await fixture.ExecuteNonQueryAsync();
+            await transaction.CommitAsync();
+        }
+
+        await database.Initializer.InitializeAsync();
+        await database.Initializer.InitializeAsync();
+
+        await using var verify = await database.OpenConnectionAsync();
+
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM moderation_cases WHERE case_id = 1001;"));
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM record_annotations WHERE record_type = 'moderation_cases' AND record_id = '1001';"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM record_annotations WHERE record_type = 'moderation_cases' AND record_id = '1007';"));
+
+        foreach (var caseId in new[] { 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009 })
+        {
+            Assert.Equal(
+                1L,
+                await ScalarAsync<long>(
+                    verify,
+                    $"SELECT COUNT(*) FROM moderation_cases WHERE case_id = {caseId};"));
+        }
+
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM action_attempts WHERE case_id = 1002;"));
+        Assert.Equal(
+            2L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM moderation_feedback WHERE case_id IN (1004,1007);"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM phrase_feedback WHERE case_id = 1005;"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM message_availability_events WHERE case_id = 1006;"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM learning_example_overrides WHERE source_kind = 'twitch_moderation' AND source_id = 1008;"));
+        Assert.Equal(
+            1L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 37;"));
+        Assert.Equal(
+            "ok",
+            await ScalarAsync<string>(verify, "PRAGMA integrity_check;"),
+            ignoreCase: true);
+        Assert.Equal(
+            0L,
+            await ScalarAsync<long>(
+                verify,
+                "SELECT COUNT(*) FROM pragma_foreign_key_check;"));
+    }
+
     private static async Task<IReadOnlyList<string>> ReadStringsAsync(
         SqliteConnection connection,
         string sql)

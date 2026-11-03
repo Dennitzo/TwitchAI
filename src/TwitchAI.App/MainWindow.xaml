@@ -225,11 +225,6 @@
             <FontIcon Glyph="&#xE8BD;" />
           </NavigationViewItem.Icon>
         </NavigationViewItem>
-        <NavigationViewItem Content="Ausführungslog" Tag="audit">
-          <NavigationViewItem.Icon>
-            <FontIcon Glyph="&#xE9D5;" />
-          </NavigationViewItem.Icon>
-        </NavigationViewItem>
       </NavigationView.MenuItems>
 
       <NavigationView.FooterMenuItems>

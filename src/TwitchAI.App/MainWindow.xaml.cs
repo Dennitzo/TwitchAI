@@ -43,7 +43,6 @@ public sealed partial class MainWindow : Window
         ["backseatgaming"] = typeof(BackseatgamingPage),
         ["whitelist"] = typeof(WhitelistPage),
         ["chat"] = typeof(ChatPage),
-        ["audit"] = typeof(AuditPage),
         ["settings"] = typeof(SettingsPage),
     };
     private readonly ILocalAppStorage _localStorage;
@@ -105,6 +104,15 @@ public sealed partial class MainWindow : Window
         _appWindow.TitleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
         _appWindow.Changed += OnAppWindowChanged;
         _appWindow.Closing += OnAppWindowClosing;
+        ApplicationScrollViewer.SizeChanged += OnApplicationScrollViewerSizeChanged;
+    }
+
+    private void OnApplicationScrollViewerSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (ContentFrame.Content is SettingsPage)
+        {
+            ContentFrame.Height = double.NaN;
+        }
     }
 
     private void OnNavigationLoaded(object sender, RoutedEventArgs e)
@@ -333,14 +341,10 @@ public sealed partial class MainWindow : Window
 
     private void OnNavigated(object sender, NavigationEventArgs e)
     {
-        var isSettingsPage = e.SourcePageType == typeof(SettingsPage);
         ApplicationScrollViewer.ChangeView(null, 0, null, disableAnimation: true);
-        ApplicationScrollViewer.VerticalScrollMode = isSettingsPage
-            ? ScrollMode.Disabled
-            : ScrollMode.Enabled;
-        ApplicationScrollViewer.VerticalScrollBarVisibility = isSettingsPage
-            ? ScrollBarVisibility.Disabled
-            : ScrollBarVisibility.Visible;
+        ApplicationScrollViewer.VerticalScrollMode = ScrollMode.Enabled;
+        ApplicationScrollViewer.VerticalScrollBarVisibility = ScrollBarVisibility.Visible;
+        ContentFrame.Height = double.NaN;
         ViewModel.ActivePageTitle = e.SourcePageType.Name switch
         {
             nameof(ModerationQueuePage) => "Moderationswarteschlange",
@@ -348,7 +352,6 @@ public sealed partial class MainWindow : Window
             nameof(BackseatgamingPage) => "Backseatgaming",
             nameof(WhitelistPage) => "Whitelist",
             nameof(ChatPage) => "Chat",
-            nameof(AuditPage) => "Ausführungslog",
             nameof(SettingsPage) => "Einstellungen",
             _ => "TwitchAI",
         };

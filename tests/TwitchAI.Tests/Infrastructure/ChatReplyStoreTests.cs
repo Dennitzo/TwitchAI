@@ -153,6 +153,74 @@ public sealed class ChatReplyStoreTests
         Assert.Null(result);
     }
 
+    [Fact]
+    public async Task SetTemplatesEnabledAsync_BulkDisablesAllSelectedRowsAtomically()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var store = new SqliteChatReplyStore(database.ConnectionFactory);
+
+        var firstId = await store.AddTemplateAsync(
+            "Wie lange geht das Event noch?",
+            "!event @Username");
+        var secondId = await store.AddTemplateAsync(
+            "Wann endet das Event?",
+            "!end @Username");
+
+        var templates = await store.LoadTemplatesAsync();
+        var first = Assert.Single(templates, t => t.TemplateId == firstId);
+        var second = Assert.Single(templates, t => t.TemplateId == secondId);
+
+        var newVersions = await store.SetTemplatesEnabledAsync(
+            [(first.TemplateId, first.RowVersion), (second.TemplateId, second.RowVersion)],
+            isEnabled: false);
+
+        Assert.Equal(2, newVersions.Length);
+        Assert.Equal(first.RowVersion + 1, newVersions[0]);
+        Assert.Equal(second.RowVersion + 1, newVersions[1]);
+        Assert.Empty(await store.LoadActiveTemplatesAsync());
+
+        var persisted = await store.LoadTemplatesAsync();
+        Assert.All(persisted, t => Assert.False(t.IsEnabled));
+
+        var reloadedStore = new SqliteChatReplyStore(database.ConnectionFactory);
+        var afterReopen = await reloadedStore.LoadTemplatesAsync();
+        Assert.All(afterReopen, t => Assert.False(t.IsEnabled));
+    }
+
+    [Fact]
+    public async Task SetTemplatesEnabledAsync_ConcurrentChangeRejectsWholeSelection()
+    {
+        await using var database = await TestDatabase.CreateAsync();
+        var store = new SqliteChatReplyStore(database.ConnectionFactory);
+
+        var firstId = await store.AddTemplateAsync(
+            "Wie lange geht das Event noch?",
+            "!event @Username");
+        var secondId = await store.AddTemplateAsync(
+            "Wann endet das Event?",
+            "!end @Username");
+
+        var templates = await store.LoadTemplatesAsync();
+        var first = Assert.Single(templates, t => t.TemplateId == firstId);
+        var second = Assert.Single(templates, t => t.TemplateId == secondId);
+
+        await store.SetTemplateEnabledAsync(
+            first.TemplateId,
+            first.RowVersion,
+            isEnabled: false);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            store.SetTemplatesEnabledAsync(
+                [(first.TemplateId, first.RowVersion), (second.TemplateId, second.RowVersion)],
+                isEnabled: false));
+
+        var after = await store.LoadTemplatesAsync();
+        var persistedFirst = Assert.Single(after, t => t.TemplateId == firstId);
+        var persistedSecond = Assert.Single(after, t => t.TemplateId == secondId);
+        Assert.False(persistedFirst.IsEnabled);
+        Assert.True(persistedSecond.IsEnabled);
+    }
+
     private static ChatMessageSnapshot CreateMessage(
         string twitchMessageId,
         string login,

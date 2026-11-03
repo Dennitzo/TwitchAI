@@ -145,7 +145,6 @@ public partial class App : Application
                 services.AddSingleton<WhitelistViewModel>();
                 services.AddSingleton<ChatViewModel>();
                 services.AddTransient<LearningDatasetViewModel>();
-                services.AddSingleton<AuditViewModel>();
                 services.AddSingleton<SettingsViewModel>();
             })
             .Build();

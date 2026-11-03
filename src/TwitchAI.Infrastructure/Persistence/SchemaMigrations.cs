@@ -3764,5 +3764,79 @@ internal static class SchemaMigrations
 
             DROP TABLE twitchai_v36_affected_policy_scopes;
             """),
+        new(
+            37,
+            "Remove pure moderation history rows no longer shown or created",
+            """
+            DELETE FROM record_annotations
+            WHERE record_type = 'moderation_cases'
+              AND record_id IN (
+                  SELECT CAST(case_id AS TEXT)
+                  FROM moderation_cases
+                  WHERE status NOT IN ('pending', 'executing')
+                    AND NOT (
+                        status = 'externally_completed'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM moderation_feedback f
+                            WHERE f.case_id = moderation_cases.case_id
+                              AND f.review_completed = 0
+                        )
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM action_attempts a
+                        WHERE a.case_id = moderation_cases.case_id
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM phrase_feedback p
+                        WHERE p.case_id = moderation_cases.case_id
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM message_availability_events m
+                        WHERE m.case_id = moderation_cases.case_id
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM moderation_feedback f
+                        WHERE f.case_id = moderation_cases.case_id
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1 FROM learning_example_overrides o
+                        WHERE o.source_kind = 'twitch_moderation'
+                          AND o.source_id = moderation_cases.case_id
+                    )
+              );
+
+            DELETE FROM moderation_cases
+            WHERE status NOT IN ('pending', 'executing')
+              AND NOT (
+                  status = 'externally_completed'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM moderation_feedback f
+                      WHERE f.case_id = moderation_cases.case_id
+                        AND f.review_completed = 0
+                  )
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM action_attempts a
+                  WHERE a.case_id = moderation_cases.case_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM phrase_feedback p
+                  WHERE p.case_id = moderation_cases.case_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM message_availability_events m
+                  WHERE m.case_id = moderation_cases.case_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM moderation_feedback f
+                  WHERE f.case_id = moderation_cases.case_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM learning_example_overrides o
+                  WHERE o.source_kind = 'twitch_moderation'
+                    AND o.source_id = moderation_cases.case_id
+              );
+            """,
+            RequiresBackup: true),
     ];
 }

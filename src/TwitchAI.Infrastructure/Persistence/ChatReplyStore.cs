@@ -70,6 +70,11 @@ public interface IChatReplyStore
         bool isEnabled,
         CancellationToken cancellationToken = default);
 
+    Task<long[]> SetTemplatesEnabledAsync(
+        IReadOnlyList<(long TemplateId, long ExpectedRowVersion)> entries,
+        bool isEnabled,
+        CancellationToken cancellationToken = default);
+
     Task<ChatReplyProposalAddResult?> AddProposalAsync(
         ChatMessageSnapshot message,
         ChatReplyTemplateRecord replyTemplate,
@@ -244,6 +249,71 @@ public sealed class SqliteChatReplyStore : IChatReplyStore
             "enabled = @enabled,",
             command => command.Parameters.AddWithValue("@enabled", isEnabled ? 1 : 0),
             cancellationToken);
+
+    public async Task<long[]> SetTemplatesEnabledAsync(
+        IReadOnlyList<(long TemplateId, long ExpectedRowVersion)> entries,
+        bool isEnabled,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        if (entries.Count == 0)
+        {
+            return [];
+        }
+
+        await using var writeLease = await _writeCoordinator
+            .AcquireAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var connection = await _connectionFactory
+            .OpenConnectionAsync(cancellationToken)
+            .ConfigureAwait(false);
+        await using var transaction = connection.BeginTransaction();
+        var now = SqliteData.ToDatabaseTimestamp(DateTimeOffset.UtcNow);
+        var newRowVersions = new long[entries.Count];
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var (templateId, expectedRowVersion) = entries[i];
+            if (templateId <= 0 || expectedRowVersion <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(entries));
+            }
+
+            await using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText =
+                """
+                UPDATE chat_reply_templates
+                SET enabled = @enabled,
+                    row_version = row_version + 1,
+                    updated_utc = @updated_utc
+                WHERE template_id = @template_id
+                  AND row_version = @row_version;
+                """;
+            command.Parameters.AddWithValue("@enabled", isEnabled ? 1 : 0);
+            command.Parameters.AddWithValue("@template_id", templateId);
+            command.Parameters.AddWithValue("@row_version", expectedRowVersion);
+            command.Parameters.AddWithValue("@updated_utc", now);
+            try
+            {
+                if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+                {
+                    throw new InvalidOperationException(
+                        "Eine Chat-Zeile wurde parallel geändert. Die Auswahl wurde nicht gespeichert.");
+                }
+            }
+            catch (SqliteException exception) when (exception.SqliteErrorCode == 19)
+            {
+                throw new InvalidOperationException(
+                    "Diese Beispielphrase existiert bereits im Chat-Reiter.",
+                    exception);
+            }
+
+            newRowVersions[i] = checked(expectedRowVersion + 1);
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return newRowVersions;
+    }
 
     public async Task<ChatReplyProposalAddResult?> AddProposalAsync(
         ChatMessageSnapshot message,

@@ -174,7 +174,15 @@ public sealed partial class BackseatgamingPage : Page
             return;
         }
 
-        await ViewModel.SetEnabledAsync(item, isEnabled);
+        var selectedItems = PhraseTable.SelectedItems
+            .OfType<PolicyPhraseItem>()
+            .ToArray();
+        if (!selectedItems.Contains(item))
+        {
+            selectedItems = [item];
+        }
+
+        await ViewModel.SetEnabledAsync(selectedItems, isEnabled);
     }
 
     private async void OnDeleteSelectedClicked(

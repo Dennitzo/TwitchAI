@@ -25,8 +25,6 @@ public sealed partial class AppState : ObservableObject
 
     public ObservableCollection<WhitelistPhraseItem> WhitelistPhrases { get; } = [];
 
-    public ObservableCollection<AuditItem> AuditItems { get; } = [];
-
     [ObservableProperty]
     public partial string ChannelDisplayName { get; set; } = "Nicht verbunden";
 
@@ -864,37 +862,6 @@ public sealed partial class WhitelistPhraseItem : ObservableObject
     {
         OriginalPhrase = PersistedOriginalPhrase;
     }
-}
-
-// The audit ID is the persistent moderation_cases.case_id. It is available
-// for every terminal moderation outcome, unlike action_attempts.execution_id,
-// and SQLite assigns it monotonically for the lifetime of the database.
-public sealed record AuditItem(
-    long Id,
-    DateTimeOffset OccurredAt,
-    string UserName,
-    string OriginalMessage,
-    string Decision,
-    string TwitchResult,
-    string CategoryName,
-    string PolicySet,
-    int? TimeoutSeconds,
-    string Reason)
-{
-    public string OccurredAtDisplay =>
-        OccurredAt.ToLocalTime().ToString(
-            "dd.MM.yyyy HH:mm:ss",
-            System.Globalization.CultureInfo.CurrentCulture);
-
-    public string DecisionDetail =>
-        TimeoutSeconds is { } seconds
-            ? $"{Decision} · {seconds:N0} s"
-            : Decision;
-
-    public Visibility ReasonVisibility =>
-        string.IsNullOrWhiteSpace(Reason)
-            ? Visibility.Collapsed
-            : Visibility.Visible;
 }
 
 public sealed partial class DatabaseTableItem : ObservableObject

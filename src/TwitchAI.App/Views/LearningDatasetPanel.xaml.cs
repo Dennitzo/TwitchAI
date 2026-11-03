@@ -183,7 +183,7 @@ public sealed partial class LearningDatasetPanel : UserControl
                 : $"{items.Length:N0} Learning-Beispiele entfernen?",
             Content =
                 "Die Auswahl wird nicht mehr als Kontext an die lokale AI gesendet. "
-                + "Historische Twitch-Aktionen und Ausführungslogs bleiben erhalten.",
+                + "Historische Twitch-Aktionen bleiben erhalten.",
             PrimaryButtonText = "Aus Learning entfernen",
             CloseButtonText = "Abbrechen",
             DefaultButton = ContentDialogButton.Close,
